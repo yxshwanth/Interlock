@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Interlock — Evidence Viewer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    background: #0d1117;
+    color: #c9d1d9;
+    min-height: 100vh;
+    padding: 2rem;
+    line-height: 1.5;
+  }
+
+  .container { max-width: 900px; margin: 0 auto; }
+
+  h1 {
+    font-size: 1.4rem;
+    color: #58a6ff;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 0.75rem;
+  }
+  h1 span { color: #8b949e; font-weight: normal; }
+
+  h2 {
+    font-size: 1rem;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 2rem 0 0.75rem;
+  }
+
+  .badge {
+    display: inline-block;
+    font-size: 2.5rem;
+    font-weight: 700;
+    padding: 0.5rem 1.5rem;
+    border-radius: 8px;
+    letter-spacing: 0.05em;
+  }
+  .badge-blocked { background: #da3633; color: #fff; }
+  .badge-flagged { background: #d29922; color: #1c1e21; }
+
+  .variant-label {
+    display: inline-block;
+    margin-left: 1rem;
+    font-size: 1rem;
+    color: #8b949e;
+    vertical-align: middle;
+  }
+
+  .meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+  .meta-item { background: #161b22; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid #21262d; }
+  .meta-label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; }
+  .meta-value { font-size: 0.95rem; color: #c9d1d9; margin-top: 0.25rem; word-break: break-all; }
+
+  .legs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    margin-top: 0.75rem;
+  }
+  .leg {
+    background: #161b22;
+    border: 2px solid #21262d;
+    border-radius: 8px;
+    padding: 1rem;
+    transition: border-color 0.2s;
+  }
+  .leg.lit { border-color: #3fb950; }
+  .leg.unlit { border-color: #21262d; opacity: 0.5; }
+  .leg-status {
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+  }
+  .leg.lit .leg-status { color: #3fb950; }
+  .leg.unlit .leg-status { color: #484f58; }
+  .leg-name { font-size: 0.85rem; color: #c9d1d9; font-weight: 600; margin-bottom: 0.25rem; }
+  .leg-detail { font-size: 0.75rem; color: #8b949e; }
+  .leg-seq { font-size: 0.7rem; color: #484f58; margin-top: 0.25rem; }
+
+  .overlap {
+    background: #161b22;
+    border: 1px solid #da3633;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-top: 0.75rem;
+  }
+  .overlap-title { color: #da3633; font-weight: 700; font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .overlap-row { display: flex; gap: 2rem; font-size: 0.85rem; margin-bottom: 0.25rem; }
+  .overlap-label { color: #8b949e; min-width: 100px; }
+  .overlap-value { color: #c9d1d9; font-family: monospace; }
+
+  .timeline {
+    margin-top: 0.75rem;
+    position: relative;
+    padding-left: 1.5rem;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 0.5rem;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #21262d;
+  }
+  .tl-item {
+    position: relative;
+    padding: 0.5rem 0 0.5rem 1rem;
+    font-size: 0.85rem;
+  }
+  .tl-item::before {
+    content: '';
+    position: absolute;
+    left: -1.05rem;
+    top: 0.85rem;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #30363d;
+    border: 2px solid #484f58;
+  }
+  .tl-item.tl-trigger::before { background: #3fb950; border-color: #3fb950; }
+  .tl-item.tl-sink::before { background: #da3633; border-color: #da3633; }
+  .tl-label { color: #c9d1d9; }
+  .tl-ref { color: #484f58; font-size: 0.75rem; margin-left: 0.5rem; }
+
+  .no-overlap { color: #8b949e; font-style: italic; margin-top: 0.75rem; }
+
+  /* Input area */
+  .input-area {
+    margin-bottom: 2rem;
+  }
+  .input-area textarea {
+    width: 100%;
+    min-height: 120px;
+    background: #161b22;
+    color: #c9d1d9;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 0.75rem;
+    font-family: monospace;
+    font-size: 0.85rem;
+    resize: vertical;
+  }
+  .input-area textarea:focus { border-color: #58a6ff; outline: none; }
+  .input-area button {
+    margin-top: 0.5rem;
+    padding: 0.5rem 1.5rem;
+    background: #238636;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .input-area button:hover { background: #2ea043; }
+  .input-area .hint { font-size: 0.75rem; color: #484f58; margin-top: 0.5rem; }
+  .error-msg { color: #da3633; margin-top: 0.5rem; font-size: 0.85rem; }
+
+  #evidence-display { display: none; }
+  #evidence-display.visible { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Interlock <span>Evidence Viewer</span></h1>
+
+  <div class="input-area" id="input-area">
+    <textarea id="json-input" placeholder="Paste evidence JSON here, or drag and drop an evidence.json file..."></textarea>
+    <button onclick="loadFromTextarea()">Load Evidence</button>
+    <p class="hint">Or drop an evidence.json file anywhere on this page.</p>
+    <p class="error-msg" id="error-msg"></p>
+  </div>
+
+  <div id="evidence-display"></div>
+</div>
+
+<script>
+(function() {
+  // If evidence data is embedded (generated by the sink), load it immediately.
+  if (window.EVIDENCE_DATA) {
+    renderEvidence(window.EVIDENCE_DATA);
+  }
+
+  // Drag and drop support.
+  document.addEventListener('dragover', function(e) { e.preventDefault(); });
+  document.addEventListener('drop', function(e) {
+    e.preventDefault();
+    var file = e.dataTransfer.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      try {
+        var data = JSON.parse(ev.target.result);
+        renderEvidence(data);
+      } catch (err) {
+        showError('Invalid JSON: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  window.loadFromTextarea = function() {
+    var text = document.getElementById('json-input').value.trim();
+    if (!text) { showError('Please paste evidence JSON first.'); return; }
+    try {
+      var data = JSON.parse(text);
+      renderEvidence(data);
+    } catch (err) {
+      showError('Invalid JSON: ' + err.message);
+    }
+  };
+
+  function showError(msg) {
+    document.getElementById('error-msg').textContent = msg;
+  }
+
+  function renderEvidence(ev) {
+    document.getElementById('error-msg').textContent = '';
+    document.getElementById('input-area').style.display = 'none';
+
+    var el = document.getElementById('evidence-display');
+    el.className = 'visible';
+
+    var badgeClass = ev.verdict === 'EXFIL' ? 'badge-blocked' : 'badge-flagged';
+    var variantLabel = ev.variant === 'A_chained_tool' ? 'Variant A: Chained Tool Exfil' : 'Variant B: Server Side Channel';
+    var actionLabel = ev.action || 'unknown';
+
+    var html = '';
+
+    // Verdict badge + action
+    html += '<div class="badge ' + badgeClass + '">' + esc(ev.verdict) + '</div>';
+    html += '<span class="variant-label">' + esc(variantLabel) + ' &mdash; action: ' + esc(actionLabel) + '</span>';
+
+    // Session metadata
+    html += '<h2>Session</h2>';
+    html += '<div class="meta">';
+    html += metaItem('Session ID', ev.session_id);
+    html += metaItem('Confidence', (ev.confidence * 100).toFixed(0) + '%');
+    html += metaItem('Trip Time', ev.trip_ts_ns ? formatTS(ev.trip_ts_ns) : 'N/A');
+    html += '</div>';
+
+    // Legs
+    html += '<h2>Trifecta Legs</h2>';
+    html += '<div class="legs">';
+    html += legCard('sensitive_source_touched', ev.legs.sensitive_source_touched);
+    html += legCard('untrusted_content_present', ev.legs.untrusted_content_present);
+    html += legCard('external_sink_invoked', ev.legs.external_sink_invoked);
+    html += '</div>';
+
+    // Value overlap
+    html += '<h2>Value Overlap</h2>';
+    if (ev.value_overlap) {
+      html += '<div class="overlap">';
+      html += '<div class="overlap-title">TAINTED VALUE DETECTED IN SINK</div>';
+      html += overlapRow('Hash', ev.value_overlap.tainted_hash);
+      html += overlapRow('Preview', ev.value_overlap.preview);
+      html += overlapRow('Found In', ev.value_overlap.where_found);
+      html += '</div>';
+    } else {
+      html += '<p class="no-overlap">No value overlap detected (legs-only detection).</p>';
+    }
+
+    // Sink call
+    if (ev.sink_call) {
+      html += '<h2>Blocked Sink Call</h2>';
+      html += '<div class="meta">';
+      if (ev.sink_call.tool_name) html += metaItem('Tool', ev.sink_call.tool_name);
+      if (ev.sink_call.server_id) html += metaItem('Server', ev.sink_call.server_id);
+      if (ev.sink_call.seq) html += metaItem('Seq', '#' + ev.sink_call.seq);
+      html += '</div>';
+    }
+
+    // Timeline
+    html += '<h2>Timeline</h2>';
+    html += '<div class="timeline">';
+    if (ev.timeline && ev.timeline.length > 0) {
+      for (var i = 0; i < ev.timeline.length; i++) {
+        var item = ev.timeline[i];
+        var cls = 'tl-item';
+        if (item.label && item.label.indexOf('external_sink') >= 0) cls += ' tl-sink';
+        else if (item.label && (item.label.indexOf('sensitive_source') >= 0 || item.label.indexOf('untrusted_content') >= 0)) cls += ' tl-trigger';
+
+        html += '<div class="' + cls + '">';
+        html += '<span class="tl-label">' + esc(item.label || 'event') + '</span>';
+        if (item.ref) html += '<span class="tl-ref">#' + item.ref + '</span>';
+        html += '</div>';
+      }
+    } else {
+      html += '<p class="no-overlap">No timeline data.</p>';
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+  }
+
+  function metaItem(label, value) {
+    return '<div class="meta-item"><div class="meta-label">' + esc(label) + '</div><div class="meta-value">' + esc(String(value)) + '</div></div>';
+  }
+
+  function legCard(name, leg) {
+    var litClass = leg && leg.lit ? 'lit' : 'unlit';
+    var status = leg && leg.lit ? 'LIT' : 'NOT LIT';
+    var detail = (leg && leg.detail) ? leg.detail : '';
+    var seq = (leg && leg.trigger_seq) ? 'Trigger: #' + leg.trigger_seq : '';
+    var displayName = name.replace(/_/g, ' ');
+
+    return '<div class="leg ' + litClass + '">' +
+      '<div class="leg-status">' + status + '</div>' +
+      '<div class="leg-name">' + esc(displayName) + '</div>' +
+      '<div class="leg-detail">' + esc(detail) + '</div>' +
+      '<div class="leg-seq">' + esc(seq) + '</div>' +
+      '</div>';
+  }
+
+  function overlapRow(label, value) {
+    return '<div class="overlap-row"><span class="overlap-label">' + esc(label) + '</span><span class="overlap-value">' + esc(String(value)) + '</span></div>';
+  }
+
+  function formatTS(ns) {
+    try {
+      var ms = Math.floor(ns / 1000000);
+      return new Date(ms).toISOString();
+    } catch (e) {
+      return String(ns);
+    }
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(s));
+    return d.innerHTML;
+  }
+})();
+</script>
+</body>
+</html>
