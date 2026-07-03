@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yxshwanth/Interlock/internal/config"
+	"github.com/yxshwanth/Interlock/internal/engine"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
@@ -78,31 +79,42 @@ type serverConn struct {
 	tools  []json.RawMessage // raw tool definitions from tools/list
 }
 
+// pendingCall tracks an in-flight tools/call so the response can be
+// attributed to the correct server and tool.
+type pendingCall struct {
+	sc       *serverConn
+	toolName string
+}
+
 // Proxy is the multi-server MCP proxy. It launches all configured servers,
 // initializes them, builds a tool routing table, and dispatches agent
 // requests to the correct server.
 type Proxy struct {
 	cfg         *config.Config
 	logger      *EventLogger
+	engine      *engine.Engine
 	log         *log.Logger
 	servers     map[string]*serverConn
 	toolRoute   map[string]*serverConn   // tool name -> server
 	allTools    []json.RawMessage        // merged tool list
 	session     *Session
 	agentWriter *FrameWriter
-	pending     map[string]*serverConn   // stringified request ID -> server
+	pending     map[string]*pendingCall  // stringified request ID -> pending call info
 	mu          sync.Mutex
 }
 
-// New creates a Proxy from the given config. Pass nil for logger to disable JSONL logging.
-func New(cfg *config.Config, logger *EventLogger) *Proxy {
+// New creates a Proxy from the given config.
+// Pass nil for logger to disable JSONL logging.
+// Pass nil for eng to disable enforcement (Week 1 passthrough mode).
+func New(cfg *config.Config, logger *EventLogger, eng *engine.Engine) *Proxy {
 	return &Proxy{
 		cfg:       cfg,
 		logger:    logger,
+		engine:    eng,
 		log:       log.New(os.Stderr, "[interlock] ", log.LstdFlags),
 		servers:   make(map[string]*serverConn),
 		toolRoute: make(map[string]*serverConn),
-		pending:   make(map[string]*serverConn),
+		pending:   make(map[string]*pendingCall),
 	}
 }
 
@@ -395,12 +407,26 @@ func (p *Proxy) handleToolsCall(frame []byte, msg model.JSONRPCMessage) {
 	}
 
 	ev := p.session.CreateEvent(frame, model.AgentToServer, sc.proc.ID, sc.proc.PID)
+
+	// --- Hold-before-forward enforcement gate ---
+	if p.engine != nil {
+		decision := p.engine.EvaluateRequest(ev)
+		if !decision.Allow {
+			ev.Decision = "blocked"
+			ev.BlockReason = decision.Reason
+			p.logEvent(ev)
+			p.sendAgentError(msg.ID, -32000,
+				fmt.Sprintf("call blocked by Interlock: %s", decision.Reason))
+			return
+		}
+	}
+
 	p.logEvent(ev)
 
 	// Track the pending request so we can attribute the response.
 	idKey := string(msg.ID)
 	p.mu.Lock()
-	p.pending[idKey] = sc
+	p.pending[idKey] = &pendingCall{sc: sc, toolName: tc.Name}
 	p.mu.Unlock()
 
 	// Forward to the correct server.
@@ -455,15 +481,25 @@ func (p *Proxy) readServerFrames(ctx context.Context, sc *serverConn) {
 		}
 
 		ev := p.session.CreateEvent(frame, model.ServerToAgent, sc.proc.ID, sc.proc.PID)
-		p.logEvent(ev)
 
-		// Clean up pending tracking.
+		// Resolve the tool name from the pending request so the engine
+		// can attribute this result to the correct tool.
 		var msg model.JSONRPCMessage
 		if json.Unmarshal(frame, &msg) == nil && msg.IsResponse() {
 			idKey := string(msg.ID)
 			p.mu.Lock()
-			delete(p.pending, idKey)
+			if pc, ok := p.pending[idKey]; ok {
+				ev.ToolName = pc.toolName
+				delete(p.pending, idKey)
+			}
 			p.mu.Unlock()
+		}
+
+		p.logEvent(ev)
+
+		// Feed the engine with tool results so it can light legs and extract tainted values.
+		if p.engine != nil && ev.ToolName != "" {
+			p.engine.IngestResult(ev)
 		}
 
 		if err := p.agentWriter.WriteFrame(frame); err != nil {

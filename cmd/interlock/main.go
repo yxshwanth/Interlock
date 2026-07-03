@@ -10,12 +10,14 @@ import (
 	"syscall"
 
 	"github.com/yxshwanth/Interlock/internal/config"
+	"github.com/yxshwanth/Interlock/internal/engine"
 	"github.com/yxshwanth/Interlock/internal/proxy"
 )
 
 func main() {
 	cfgPath := flag.String("config", "interlock.yaml", "path to Interlock config file")
 	logPath := flag.String("log", "events.jsonl", "path to JSONL event log (empty to disable)")
+	evidencePath := flag.String("evidence", "evidence.jsonl", "path to JSONL evidence log")
 	flag.Parse()
 
 	logger := log.New(os.Stderr, "[interlock] ", log.LstdFlags)
@@ -32,7 +34,21 @@ func main() {
 	}
 	defer evLogger.Close()
 
-	p := proxy.New(cfg, evLogger)
+	store := engine.NewSessionStore()
+	tagger := engine.NewTagger(cfg)
+
+	var evidenceSink *engine.JSONLEvidenceSink
+	if *evidencePath != "" {
+		evidenceSink, err = engine.NewJSONLEvidenceSink(*evidencePath)
+		if err != nil {
+			logger.Fatalf("evidence sink: %v", err)
+		}
+		defer evidenceSink.Close()
+	}
+
+	eng := engine.NewEngine(store, tagger, cfg.Enforcement, evidenceSink)
+
+	p := proxy.New(cfg, evLogger, eng)
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)

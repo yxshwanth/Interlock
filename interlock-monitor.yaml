@@ -1,0 +1,26 @@
+# Interlock configuration — MONITOR mode (dry-run / "firewall off")
+# Identical to interlock.yaml but enforcement is set to monitor.
+# The engine still detects and logs evidence, but does NOT block calls.
+
+enforcement: monitor        # monitor = detect + log, never block
+
+egress_allowlist:
+  - 127.0.0.1
+  - api.anthropic.com
+
+servers:
+  - id: tickets
+    command: ./servers/tickets/tickets
+    provides_tags: [sensitive_source]
+  - id: messenger
+    command: ./servers/messenger/messenger
+    provides_tags: [external_sink]
+
+tool_tags:
+  read_ticket: [sensitive_source]
+  send_message: [external_sink]
+  http_post:   [external_sink]
+
+untrusted_origins:
+  tool_results: true
+  web_fetches:  true

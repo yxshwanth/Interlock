@@ -55,25 +55,30 @@ This is a security tool; boundaries are the design.
 
 ## 3. Data flow — life of a tool call
 
-1. Agent emits a `tools/call` JSON-RPC request over STDIN → **proxy intercepts the frame**, parses it into an `InterceptedEvent` (direction = agent→server).
-2. Engine runs a **pre-forward `EvaluateRequest`**: is this call an `external_sink`, and are the other two legs already lit for this session? If a trip fires here → **block** (Variant A) and synthesize an error result back to the agent; the call never reaches the server.
-3. Otherwise the proxy **forwards** the frame to the child server over its STDIN.
-4. Server executes and returns a result on its STDOUT → **proxy intercepts the result frame** → `InterceptedEvent` (direction = server→agent).
-5. Engine **ingests the result**: if the tool is a `sensitive_source`, it **registers tainted values** and lights `sensitive_source_touched`; because all tool results are untrusted in v0.1, it also lights `untrusted_content_present`.
-6. In parallel, the **eBPF sensor** streams `SyscallEvent`s from the proxy's PID subtree. A `connect()` from a *server child* to a non-allowlisted destination → `external_sink_invoked` candidate. If the other legs are lit → **trip** (Variant B): emit evidence + **kill the offending child** (containment).
-7. On any trip, the engine writes an `EvidenceRecord` to the sink; the viewer renders it.
+The proxy is **protocol-aware**, not a transparent byte pipe. It terminates `initialize`, `tools/list`, and `ping` internally, synthesizing responses on behalf of all child servers. For `tools/call`, it parses the tool name, resolves it to the owning server via its routing table, and dispatches. This is the enforcement chokepoint.
+
+1. Agent emits a JSON-RPC request over STDIN → **proxy parses the method**. Protocol-level messages (`initialize`, `tools/list`, `ping`, notifications) are handled by the proxy itself — it responds with synthesized results (merged capabilities, merged tool list, etc.) and emits `InterceptedEvent`s for each. These never reach a child server.
+2. For `tools/call`: the proxy parses the tool name and arguments from `params`, resolves the tool name to its owning child server via the routing table, and creates an `InterceptedEvent` (direction = agent→server) attributed to that server.
+3. Engine runs a **pre-forward `EvaluateRequest`** at this parsed dispatch point — after the proxy knows the tool name, args, and target server. Is this call an `external_sink`, and are the other two legs already lit for this session? If a trip fires → **block** (Variant A): the proxy synthesizes a JSON-RPC error result back to the agent using the same response-synthesis mechanism it uses for `initialize` and `tools/list`. The call **never reaches the server**.
+4. Otherwise the proxy **forwards** the raw frame to the resolved child server over its STDIN.
+5. Server executes and returns a result on its STDOUT → **proxy intercepts the result frame** → `InterceptedEvent` (direction = server→agent), attributed to the specific server and forwarded to the agent.
+6. Engine **ingests the result**: if the tool is a `sensitive_source`, it **registers tainted values** and lights `sensitive_source_touched`; because all tool results are untrusted in v0.1, it also lights `untrusted_content_present`.
+7. In parallel, the **eBPF sensor** streams `SyscallEvent`s from the proxy's PID subtree. A `connect()` from a *server child* to a non-allowlisted destination → `external_sink_invoked` candidate. If the other legs are lit → **trip** (Variant B): emit evidence + **kill the offending child** (containment).
+8. On any trip, the engine writes an `EvidenceRecord` to the sink; the viewer renders it.
 
 ---
 
 ## 4. Plane 1 — the MCP proxy (Go)
 
-**STDIO interposition.** Interlock launches the real MCP server as a **child process** and wires its stdin/stdout/stderr. Everything the agent writes toward the server, and everything the server writes back, passes through Interlock.
+**Multi-server, protocol-aware.** The proxy launches **all** configured MCP servers as child processes at startup, wiring each server's stdin/stdout/stderr as pipes. During startup it initializes each server via the MCP handshake (`initialize` + `notifications/initialized`), queries `tools/list` from each, and builds a **tool name → server** routing table. The agent sees a single MCP endpoint; the proxy presents a merged view of all servers' capabilities.
 
-**JSON-RPC framing.** The MCP stdio transport carries newline-delimited JSON-RPC messages (one message per line, no embedded raw newlines). The reader **must buffer partial reads** — a single `read()` may contain a fragment, one message, or several. Do not assume one-read-one-message. *(Verify the exact framing against the current MCP stdio transport spec at implementation time; if any server uses LSP-style `Content-Length` header framing, handle that path too.)*
+**Response synthesis.** The proxy handles `initialize`, `tools/list`, and `ping` internally — it assembles responses from the child servers' capabilities and tool definitions without forwarding these protocol-level messages. `tools/list` returns a merged tool list aggregated from all servers. This is the same response-synthesis mechanism that Week 2's enforcement uses to return block errors.
 
-**Process lifecycle.** Deterministic startup ordering (spawn child, confirm it's alive, then accept agent traffic); graceful shutdown that drains in-flight frames; crash handling that surfaces a clean error to the agent rather than hanging; and **kill-on-detect** — the containment primitive Plane 2 uses for Variant B.
+**JSON-RPC framing.** The MCP stdio transport uses newline-delimited JSON-RPC messages (one compact JSON object per line, no embedded newlines). This was verified against the [MCP stdio transport spec](https://modelcontextprotocol.io/specification/draft/basic/transports/stdio) in Week 1: there are **no Content-Length headers** (unlike LSP) — the newline is the sole message delimiter. The frame reader uses `bufio.Scanner` with a 1MB buffer, handles partial reads across `read()` boundaries, tolerates `\r\n` line endings, and skips blank lines.
 
-**Enforcement (hold-before-forward).** For requests, the proxy holds the frame, asks the engine, and only forwards on `Allow`. On block it **never forwards** and instead returns a synthesized JSON-RPC error (`"call blocked by Interlock: <reason>"`) so the agent gets a clean, legible failure.
+**Process lifecycle.** Deterministic startup ordering (spawn all children, initialize each, confirm tools registered, then accept agent traffic); graceful shutdown that drains in-flight frames; crash handling that surfaces a clean error to the agent rather than hanging; process-group isolation (`Setpgid`) so children can be killed cleanly; and **kill-on-detect** — the containment primitive Plane 2 uses for Variant B.
+
+**Enforcement (hold-before-forward at the `tools/call` dispatch point).** Enforcement hooks at the specific point where the proxy has parsed a `tools/call` request, extracted the tool name and arguments, and resolved the target server — not at a generic frame boundary. The engine's `EvaluateRequest` runs here. On `Allow`, the raw frame is forwarded to the resolved child. On block, the proxy **never forwards** and instead synthesizes a JSON-RPC error (`"call blocked by Interlock: <reason>"`) using the same response-synthesis path it already uses for protocol messages. The agent gets a clean, legible failure.
 
 ---
 
@@ -117,13 +122,20 @@ One state machine **per session**.
 
 **Tainted values.** When a `sensitive_source` returns data, the engine extracts candidate secrets and stores them as `TaintedValue`s — **hashed + masked, never raw** (§12).
 
-**Evaluation & verdict tiers.** The machine evaluates the moment a sink fires:
+**Evaluation — verdict and action are separate dimensions.** The machine evaluates the moment a sink fires. **Verdict** describes what was concluded (the detection result); **Action** describes what was done about it (the enforcement response). This separation is load-bearing: Variant A can *prevent* (hold-before-forward), Variant B can only *contain* (kill after the first packet), and monitor mode *allows* — all three are valid actions for the same verdict.
 
-| Condition at sink time | Verdict | Action (enforce mode) |
+| Condition at sink time | Verdict | Confidence |
 |---|---|---|
-| All three legs lit **and** a tainted value appears in the sink's args/payload | `BLOCKED` (high confidence) | Prevent (Variant A) or kill child (Variant B) |
-| All three legs lit, **no** value overlap | `FLAGGED` (lower confidence) | Configurable: block or warn-and-allow |
-| Fewer than three legs lit | — | Forward normally |
+| All three legs lit **and** a tainted value appears in the sink's args/payload | `EXFIL` | 0.95 |
+| All three legs lit, **no** value overlap | `SUSPICIOUS` | 0.60 |
+| Fewer than three legs lit | — (no trip) | — |
+
+| Action | When | Effect |
+|---|---|---|
+| `prevented` | Variant A, block mode | Call never forwarded; synthesized JSON-RPC error |
+| `allowed_monitor` | Any verdict, monitor mode | Call goes through; evidence logged |
+| `contained_by_kill` | Variant B (eBPF), EXFIL verdict | Offending child killed; first packet may escape |
+| `detected_only` | Variant B, SUSPICIOUS verdict (kill too aggressive) | Detected and logged; no enforcement taken |
 
 **Reset semantics.** Legs are **session-scoped and sticky** — once lit, they stay lit for the life of the session. This is deliberately conservative for v0.1 (favor catching the attack over minimizing false positives). A new session starts clean.
 
@@ -217,8 +229,19 @@ type SessionState struct {
 }
 
 // ---- Evidence (feeds the viewer) ----
+// Verdict = what was concluded (detection). Action = what was done (enforcement).
 type Verdict string
-const ( Blocked Verdict = "BLOCKED"; Flagged Verdict = "FLAGGED" )
+const (
+    VerdictExfil      Verdict = "EXFIL"      // high confidence: all legs + value overlap
+    VerdictSuspicious Verdict = "SUSPICIOUS"  // lower confidence: all legs, no overlap
+)
+type Action string
+const (
+    ActionPrevented    Action = "prevented"        // Variant A block: call never forwarded
+    ActionAllowed      Action = "allowed_monitor"   // monitor mode: call went through
+    ActionContained    Action = "contained_by_kill" // Variant B: child killed (Week 3)
+    ActionDetectedOnly Action = "detected_only"     // detected, no enforcement (kill too aggressive)
+)
 type Variant string
 const (
     VariantA Variant = "A_chained_tool"   // caught by proxy
@@ -229,6 +252,7 @@ type EvidenceRecord struct {
     SessionID    string         `json:"session_id"`
     TripTS       int64          `json:"trip_ts_ns"`
     Verdict      Verdict        `json:"verdict"`
+    Action       Action         `json:"action"`                // what enforcement took
     Variant      Variant        `json:"variant"`
     Confidence   float64        `json:"confidence"`
     Legs         TrifectaLegs   `json:"legs"`
@@ -263,10 +287,10 @@ egress_allowlist:           # anything NOT here is treated as an external sink a
   - api.anthropic.com
 servers:
   - id: tickets
-    command: ./servers/tickets
+    command: ./servers/tickets/tickets
     provides_tags: [sensitive_source]
   - id: messenger
-    command: ./servers/messenger
+    command: ./servers/messenger/messenger
     provides_tags: [external_sink]
 tool_tags:                  # per-tool overrides (authoritative)
   read_ticket: [sensitive_source]
@@ -281,7 +305,7 @@ untrusted_origins:
 
 ## 10. The evidence viewer ("frontend")
 
-A **self-contained local HTML file** that reads one `EvidenceRecord` JSON and renders the timeline: a horizontal time axis, the three legs lighting up in sequence, the tainted-value highlight where it surfaces in the sink, and a big `BLOCKED`/`FLAGGED` badge with the variant label. **Read-only, no framework, no server.** "State" on the frontend is just the single evidence file — this is the money-shot visual, not an app.
+A **self-contained local HTML file** that reads one `EvidenceRecord` JSON and renders the timeline: a horizontal time axis, the three legs lighting up in sequence, the tainted-value highlight where it surfaces in the sink, and a verdict badge (`EXFIL`/`SUSPICIOUS`) plus action label (`prevented`/`allowed_monitor`/`contained_by_kill`). **Read-only, no framework, no server.** "State" on the frontend is just the single evidence file — this is the money-shot visual, not an app.
 
 ---
 
@@ -299,6 +323,7 @@ type EventSource interface {
 type Decision struct {
     Allow    bool
     Verdict  Verdict
+    Action   Action
     Reason   string
     Evidence *EvidenceRecord // set when a trip fires
 }
