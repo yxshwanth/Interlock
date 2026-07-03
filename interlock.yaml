@@ -9,10 +9,10 @@ egress_allowlist:
 
 servers:
   - id: tickets
-    command: ./servers/tickets
+    command: ./servers/tickets/tickets
     provides_tags: [sensitive_source]
   - id: messenger
-    command: ./servers/messenger
+    command: ./servers/messenger/messenger
     provides_tags: [external_sink]
 
 tool_tags:

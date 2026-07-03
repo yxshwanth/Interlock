@@ -6,6 +6,8 @@
 *.dylib
 /interlock
 /cmd/interlock/interlock
+/servers/tickets/tickets
+/servers/messenger/messenger
 
 # Test binary
 *.test
