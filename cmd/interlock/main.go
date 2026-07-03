@@ -1,11 +1,44 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"errors"
+	"flag"
+	"log"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/yxshwanth/Interlock/internal/config"
+	"github.com/yxshwanth/Interlock/internal/proxy"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "interlock: not yet implemented — see docs/task_list.md for roadmap")
-	os.Exit(1)
+	cfgPath := flag.String("config", "interlock.yaml", "path to Interlock config file")
+	logPath := flag.String("log", "events.jsonl", "path to JSONL event log (empty to disable)")
+	flag.Parse()
+
+	logger := log.New(os.Stderr, "[interlock] ", log.LstdFlags)
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		logger.Fatalf("config: %v", err)
+	}
+	logger.Printf("loaded config: %d server(s), enforcement=%s", len(cfg.Servers), cfg.Enforcement)
+
+	evLogger, err := proxy.NewEventLogger(*logPath)
+	if err != nil {
+		logger.Fatalf("logger: %v", err)
+	}
+	defer evLogger.Close()
+
+	p := proxy.New(cfg, evLogger)
+
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	if err := p.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Fatalf("proxy: %v", err)
+	}
 }
