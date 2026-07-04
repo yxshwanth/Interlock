@@ -144,14 +144,15 @@ const (
 
 // SessionState is the per-session trifecta state machine.
 type SessionState struct {
-	SessionID    string         `json:"session_id"`
-	Status       Status         `json:"status"`
-	Legs         TrifectaLegs   `json:"legs"`
-	Tainted      []TaintedValue `json:"tainted_values"`
-	Confidence   float64        `json:"confidence"`
-	Timeline     []uint64       `json:"timeline"`
-	CreatedAt    int64          `json:"created_at_ns"`
-	LastActivity int64          `json:"last_activity_ns"`
+	SessionID      string            `json:"session_id"`
+	Status         Status            `json:"status"`
+	Legs           TrifectaLegs      `json:"legs"`
+	Tainted        []TaintedValue    `json:"tainted_values"`
+	Confidence     float64           `json:"confidence"`
+	Timeline       []uint64          `json:"timeline"`
+	TimelineLabels map[uint64]string `json:"-"`
+	CreatedAt      int64             `json:"created_at_ns"`
+	LastActivity   int64             `json:"last_activity_ns"`
 }
 
 // ---------------------------------------------------------------------------

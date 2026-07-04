@@ -361,7 +361,10 @@
   function formatTS(ns) {
     try {
       var ms = Math.floor(ns / 1000000);
-      return new Date(ms).toISOString();
+      var d = new Date(ms);
+      var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+             pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + ' (local)';
     } catch (e) {
       return String(ns);
     }
