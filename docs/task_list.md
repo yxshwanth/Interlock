@@ -10,8 +10,9 @@ This doc is the **source of truth for progress**. Check items as they land.
 
 - `[x]` **Week 0 — Strategy & specs.** Problem validated against live market data, gap confirmed (runtime/sequence-level behavioral detection), v0.1 scoped, and four docs written: `README.md`, `project_overview.md`, `architecture.md`, this file.
 - `[x]` **Week 1 — Transparent proxy.** Protocol-aware multi-server proxy with merged tool routing, dual-output event logging, two toy servers, scripted demo client, and full test coverage on the framer.
-- `[x]` **Week 2 — Trifecta engine + enforcement.** Full trifecta state machine with tainted-value extraction, value-overlap detection, hold-before-forward enforcement, synthesized block errors, JSONL evidence sink, HTML viewer, poisoned-ticket fixture, and dual-mode demo (monitor vs block).
-- `[~]` **Week 3 — eBPF sensor.** ← *you are here*
+- `[x]` **Week 2 — Trifecta engine + enforcement.** Full trifecta state machine with tainted-value extraction, value-overlap detection, hold-before-forward enforcement, synthesized block errors, JSONL evidence sink, HTML viewer, poisoned-ticket fixture, and dual-mode demo (monitor vs block). Verdict/action split separates detection from enforcement.
+- `[x]` **Week 3 — eBPF sensor (Variant B).** Compiled `connect()` probe via cilium/ebpf with PID-set filtering, ring buffer decode, `IngestSyscall` engine method, egress allowlist check, kill-on-detect containment, exfil server fixture, fused timeline in viewer, and dual-variant demo.
+- `[~]` **Week 4 — Harden, film, write.** ← *you are here*
 
 **Guiding rule:** each week ends in something demoable. If you feel the urge to build a Backlog item during v0.1, that urge is the enemy.
 
@@ -58,23 +59,24 @@ This doc is the **source of truth for progress**. Check items as they land.
 
 ---
 
-## Week 3 — eBPF sensor (Variant B) **[RISK WEEK]**
+## Week 3 — eBPF sensor (Variant B) `[x]`
 
-**Goal:** catch the server-opened side channel the proxy is blind to.
+**Goal:** catch the server-opened side channel the proxy is blind to. Scoped to `connect()` only for v0.1; `sendto`/payload excerpt, `openat()`, and DNS deferred to v0.2 backlog.
 
-- `[ ]` **bpftrace prototypes first** — prove `connect()`, `openat()`, and egress visibility on the target kernel before writing compiled probes
-- `[ ]` Userspace PID-set tracking (proxy PID + live server child PIDs) pushed to a BPF map
-- `[ ]` Compiled probes via `cilium/ebpf`: `connect()` (dest IP/port), socket write/`sendto` (+ redacted excerpt), `openat()` (sensitive paths), DNS
-- `[ ]` Ring/perf buffer → Go decode into `SyscallEvent`
-- `[ ]` Egress allowlist check (non-allowlisted dest → `external_sink_invoked`)
-- `[ ]` Correlate `SyscallEvent` → session via PID map; join within recency window
-- `[ ]` Fuse syscalls into the unified timeline (viewer shows both `intercepted` and `syscall` items)
-- `[ ]` **Kill-on-detect** containment (`Enforcer.KillProcess`) for Variant B
-- `[ ]` Second poisoned fixture: a server that opens **its own** socket to the attacker
+**Scope decision:** ship `connect()` end-to-end rather than four half-built probes. Each additional probe type is its own kernel struct; connect()-only is enough to demonstrate Variant B detection + containment.
 
-**Acceptance:** **Variant B detected + contained** (offending child killed), and the `connect()` syscall appears in the same timeline as the sensitive read that preceded it.
+**Honest containment claim:** eBPF is detect-only at the kernel. The `connect()` may have already left when kill fires. "Contained" means the channel is severed and the process cannot continue — not "the first packet was prevented."
 
-**Antifragile fallback:** if this week fights back, **ship Variant A now** as the launch and post eBPF as **v0.1.1 — "now with kernel-level receipts."** Two posts, not one.
+- `[x]` **Rung 0:** bpftrace prototype — proved `connect()` visibility and PID filtering on kernel 6.17.0-35-generic with BTF at `/sys/kernel/btf/vmlinux`
+- `[x]` **Rung 1:** Minimal compiled `connect()` probe loaded from Go via `cilium/ebpf` — BPF C source (`connect.c`), `bpf2go` code generation, Go loader reads ring buffer events
+- `[x]` **Rung 2:** BPF hash map for PID-set filtering — Go pushes PIDs, kernel probe checks membership before emitting
+- `[x]` **Rung 3:** Ring buffer decode into `SyscallEvent`, `IngestSyscall` method on engine, egress allowlist check lights `external_sink_invoked` leg; Variant B evidence emission with fused timeline
+- `[x]` **Rung 4a:** Kill-on-detect containment — `SIGKILL` offending child on `Action=contained_by_kill`
+- `[x]` **Rung 4b:** Second poisoned fixture — exfil server (`servers/exfil`) that opens its own TCP socket to `203.0.113.66:4444`
+- `[x]` **Rung 4c:** Fused timeline — viewer shows both `intercepted` and `syscall` items in same evidence with distinct styling
+- `[x]` **Rung 4d:** Dual-variant demo script — shows Variant A (blocked at proxy) and Variant B (detected by eBPF, contained by kill)
+
+**Acceptance:** **Variant B detected + contained** (offending child killed), and the `connect()` syscall appears in the same timeline as the sensitive read that preceded it. Viewer renders both variants.
 
 ---
 
@@ -97,6 +99,7 @@ This doc is the **source of truth for progress**. Check items as they land.
 ## Backlog (post-v0.1)
 
 **v0.2**
+- `[ ]` Additional eBPF probes: `sendto`/payload excerpt, `openat()` (sensitive paths), DNS resolution
 - `[ ]` HTTP/SSE transport interception
 - `[ ]` **Kernel-level blocking** via LSM / KRSI (upgrade Variant B from contain to prevent)
 - `[ ]` Policy config UX + allowlist management

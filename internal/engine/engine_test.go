@@ -517,3 +517,177 @@ func TestEngine_Suspicious_MonitorMode_Allows(t *testing.T) {
 		t.Fatalf("expected 1 evidence record emitted, got %d", len(sink.records))
 	}
 }
+
+// --- Variant B (eBPF / IngestSyscall) tests ---
+
+func TestEngine_IngestSyscall_LightsExternalSink(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "ebpf-sink"
+
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+
+	state := eng.store.Get(sid)
+	if state.Legs.ExternalSinkInvoked.Lit {
+		t.Fatal("external_sink_invoked should NOT be lit before syscall")
+	}
+
+	ev := model.SyscallEvent{
+		PID:       12345,
+		Comm:      "exfil-server",
+		Syscall:   "connect",
+		DestIP:    "203.0.113.66",
+		DestPort:  4444,
+		SessionID: sid,
+	}
+	eng.IngestSyscall(ev)
+
+	state = eng.store.Get(sid)
+	if !state.Legs.ExternalSinkInvoked.Lit {
+		t.Fatal("external_sink_invoked should be lit after eBPF connect()")
+	}
+	if !strings.Contains(state.Legs.ExternalSinkInvoked.Detail, "203.0.113.66:4444") {
+		t.Fatalf("detail should mention dest, got %q", state.Legs.ExternalSinkInvoked.Detail)
+	}
+}
+
+func TestEngine_IngestSyscall_TripsWhenAllLegsLit(t *testing.T) {
+	eng, sink := newTestEngine("block")
+	sid := "ebpf-trip"
+
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+
+	ev := model.SyscallEvent{
+		PID:       99,
+		Comm:      "evil",
+		Syscall:   "connect",
+		DestIP:    "10.0.0.1",
+		DestPort:  8080,
+		SessionID: sid,
+	}
+	dec := eng.IngestSyscall(ev)
+
+	if dec.Allow {
+		t.Fatal("should not allow when trifecta trips via eBPF")
+	}
+	if dec.Verdict != model.VerdictSuspicious {
+		t.Fatalf("expected SUSPICIOUS (no value overlap for syscalls), got %q", dec.Verdict)
+	}
+	if dec.Action != model.ActionContained {
+		t.Fatalf("expected action=contained_by_kill, got %q", dec.Action)
+	}
+	if dec.Evidence == nil {
+		t.Fatal("evidence should be emitted")
+	}
+	if dec.Evidence.Variant != model.VariantB {
+		t.Fatalf("expected variant B, got %q", dec.Evidence.Variant)
+	}
+
+	if len(sink.records) != 1 {
+		t.Fatalf("expected 1 evidence record, got %d", len(sink.records))
+	}
+	rec := sink.records[0]
+	if rec.Variant != model.VariantB {
+		t.Fatalf("evidence variant should be B, got %q", rec.Variant)
+	}
+
+	state := eng.store.Get(sid)
+	if state.Status != model.Tripped {
+		t.Fatalf("session should be tripped, got %q", state.Status)
+	}
+}
+
+func TestEngine_IngestSyscall_NoLegs_NoTrip(t *testing.T) {
+	eng, sink := newTestEngine("block")
+
+	eng.store.GetOrCreate("empty-session")
+
+	ev := model.SyscallEvent{
+		PID:       42,
+		Comm:      "curl",
+		Syscall:   "connect",
+		DestIP:    "1.1.1.1",
+		DestPort:  443,
+		SessionID: "empty-session",
+	}
+	dec := eng.IngestSyscall(ev)
+
+	if !dec.Allow {
+		t.Fatal("should allow when only one leg lit")
+	}
+	if len(sink.records) != 0 {
+		t.Fatal("no evidence should be emitted when not tripped")
+	}
+}
+
+func TestEngine_IngestSyscall_TimelineFused(t *testing.T) {
+	eng, sink := newTestEngine("block")
+	sid := "ebpf-timeline"
+
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+
+	ev := model.SyscallEvent{
+		PID:       77,
+		Comm:      "bad-server",
+		Syscall:   "connect",
+		DestIP:    "203.0.113.66",
+		DestPort:  4444,
+		SessionID: sid,
+	}
+	eng.IngestSyscall(ev)
+
+	if len(sink.records) != 1 {
+		t.Fatalf("expected 1 evidence record, got %d", len(sink.records))
+	}
+
+	rec := sink.records[0]
+	if len(rec.Timeline) == 0 {
+		t.Fatal("timeline should not be empty")
+	}
+
+	hasIntercepted := false
+	hasSyscall := false
+	for _, item := range rec.Timeline {
+		switch item.Kind {
+		case "intercepted":
+			hasIntercepted = true
+		case "syscall":
+			hasSyscall = true
+		}
+	}
+	if !hasIntercepted {
+		t.Error("timeline should have intercepted items from proxy")
+	}
+	if !hasSyscall {
+		t.Error("timeline should have a syscall item from eBPF")
+	}
+}
+
+func TestEngine_IngestSyscall_AutoResolvesSession(t *testing.T) {
+	eng, sink := newTestEngine("block")
+	sid := "auto-resolve"
+
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+
+	ev := model.SyscallEvent{
+		PID:      55,
+		Comm:     "exfil",
+		Syscall:  "connect",
+		DestIP:   "10.0.0.1",
+		DestPort: 9999,
+	}
+	dec := eng.IngestSyscall(ev)
+
+	if dec.Allow {
+		t.Fatal("should trip (auto-resolved to the only session)")
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("expected 1 evidence record, got %d", len(sink.records))
+	}
+	if sink.records[0].SessionID != sid {
+		t.Fatalf("evidence should reference session %q, got %q", sid, sink.records[0].SessionID)
+	}
+}

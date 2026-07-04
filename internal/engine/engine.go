@@ -226,6 +226,126 @@ func (e *Engine) buildEvidence(
 	}
 }
 
+// IngestSyscall is called when the eBPF sensor detects a non-allowlisted
+// connect() syscall from a monitored PID. It lights the external_sink_invoked
+// leg via the kernel plane (Variant B) and evaluates the trifecta.
+//
+// For v0.1, syscall events never have value overlap (we don't inspect payload),
+// so the verdict for a trip is always SUSPICIOUS. The action is
+// contained_by_kill for EXFIL or detected_only for SUSPICIOUS.
+func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		sessionID = e.store.FirstSessionID()
+	}
+	if sessionID == "" {
+		return model.Decision{Allow: true}
+	}
+
+	state := e.store.GetOrCreate(sessionID)
+
+	if !state.Legs.ExternalSinkInvoked.Lit {
+		state.Legs.ExternalSinkInvoked = model.Leg{
+			Lit:    true,
+			Detail: fmt.Sprintf("connect() to %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm),
+		}
+		e.log.Printf("leg lit: external_sink_invoked via eBPF (session=%s, dest=%s:%d, pid=%d)",
+			sessionID, ev.DestIP, ev.DestPort, ev.PID)
+	}
+
+	if !state.Legs.AllLit() {
+		return model.Decision{Allow: true}
+	}
+
+	verdict := model.VerdictSuspicious
+	confidence := 0.6
+
+	action := model.ActionContained
+	if verdict == model.VerdictSuspicious {
+		action = model.ActionContained
+	}
+
+	state.Status = model.Tripped
+	state.Confidence = confidence
+
+	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence)
+
+	if e.sink != nil {
+		if err := e.sink.Emit(evidence); err != nil {
+			e.log.Printf("evidence sink error: %v", err)
+		}
+	}
+
+	e.log.Printf("TRIFECTA DETECTED (eBPF): session=%s dest=%s:%d verdict=%s action=%s",
+		sessionID, ev.DestIP, ev.DestPort, verdict, action)
+
+	return model.Decision{
+		Allow:    false,
+		Verdict:  verdict,
+		Action:   action,
+		Reason:   fmt.Sprintf("trifecta %s: connect() to %s:%d by pid %d", verdict, ev.DestIP, ev.DestPort, ev.PID),
+		Evidence: &evidence,
+	}
+}
+
+func (e *Engine) buildEvidenceVariantB(
+	state *model.SessionState,
+	ev model.SyscallEvent,
+	verdict model.Verdict,
+	action model.Action,
+	confidence float64,
+) model.EvidenceRecord {
+	sinkCall := map[string]any{
+		"syscall":   ev.Syscall,
+		"dest_ip":   ev.DestIP,
+		"dest_port": ev.DestPort,
+		"pid":       ev.PID,
+		"comm":      ev.Comm,
+	}
+
+	timeline := make([]model.TimelineItem, 0, len(state.Timeline)+1)
+	for _, seq := range state.Timeline {
+		item := model.TimelineItem{
+			TSMono: time.Now().UnixNano(),
+			Kind:   "intercepted",
+			Ref:    seq,
+		}
+
+		switch {
+		case seq == state.Legs.SensitiveSourceTouched.TriggerSeq:
+			item.Label = fmt.Sprintf("sensitive_source_touched: %s", state.Legs.SensitiveSourceTouched.Detail)
+		case seq == state.Legs.UntrustedContentPresent.TriggerSeq:
+			item.Label = fmt.Sprintf("untrusted_content_present: %s", state.Legs.UntrustedContentPresent.Detail)
+		default:
+			item.Label = fmt.Sprintf("event #%d", seq)
+		}
+
+		timeline = append(timeline, item)
+	}
+
+	// Append the syscall event itself.
+	timeline = append(timeline, model.TimelineItem{
+		TSMono: ev.TSMono,
+		Kind:   "syscall",
+		Label:  fmt.Sprintf("external_sink_invoked: connect() to %s:%d by %s (pid %d)", ev.DestIP, ev.DestPort, ev.Comm, ev.PID),
+	})
+
+	return model.EvidenceRecord{
+		SessionID:  state.SessionID,
+		TripTS:     time.Now().UnixNano(),
+		Verdict:    verdict,
+		Action:     action,
+		Variant:    model.VariantB,
+		Confidence: confidence,
+		Legs:       state.Legs,
+		SinkCall:   sinkCall,
+		Timeline:   timeline,
+	}
+}
+
 // extractResultText pulls the text content from a tools/call MCP result.
 // MCP results are structured as {content: [{type: "text", text: "..."}]}.
 func extractResultText(result json.RawMessage) string {

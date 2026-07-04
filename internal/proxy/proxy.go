@@ -90,17 +90,18 @@ type pendingCall struct {
 // initializes them, builds a tool routing table, and dispatches agent
 // requests to the correct server.
 type Proxy struct {
-	cfg         *config.Config
-	logger      *EventLogger
-	engine      *engine.Engine
-	log         *log.Logger
-	servers     map[string]*serverConn
-	toolRoute   map[string]*serverConn   // tool name -> server
-	allTools    []json.RawMessage        // merged tool list
-	session     *Session
-	agentWriter *FrameWriter
-	pending     map[string]*pendingCall  // stringified request ID -> pending call info
-	mu          sync.Mutex
+	cfg             *config.Config
+	logger          *EventLogger
+	engine          *engine.Engine
+	log             *log.Logger
+	servers         map[string]*serverConn
+	toolRoute       map[string]*serverConn   // tool name -> server
+	allTools        []json.RawMessage        // merged tool list
+	session         *Session
+	agentWriter     *FrameWriter
+	pending         map[string]*pendingCall  // stringified request ID -> pending call info
+	mu              sync.Mutex
+	onServersReady  func(childPIDs []int)    // called after all servers are launched
 }
 
 // New creates a Proxy from the given config.
@@ -116,6 +117,22 @@ func New(cfg *config.Config, logger *EventLogger, eng *engine.Engine) *Proxy {
 		toolRoute: make(map[string]*serverConn),
 		pending:   make(map[string]*pendingCall),
 	}
+}
+
+// OnServersReady registers a callback that fires after all child servers
+// are launched and initialized but before the dispatch loop begins.
+// The callback receives the list of child PIDs.
+func (p *Proxy) OnServersReady(fn func(childPIDs []int)) {
+	p.onServersReady = fn
+}
+
+// ChildPIDs returns the PIDs of all launched child server processes.
+func (p *Proxy) ChildPIDs() []int {
+	pids := make([]int, 0, len(p.servers))
+	for _, sc := range p.servers {
+		pids = append(pids, sc.proc.PID)
+	}
+	return pids
 }
 
 func (p *Proxy) logEvent(ev model.InterceptedEvent) {
@@ -143,6 +160,10 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 
 	p.log.Printf("all servers initialized, %d tools available", len(p.allTools))
+
+	if p.onServersReady != nil {
+		p.onServersReady(p.ChildPIDs())
+	}
 
 	var wg sync.WaitGroup
 

@@ -84,19 +84,24 @@ The proxy is **protocol-aware**, not a transparent byte pipe. It terminates `ini
 
 ## 5. Plane 2 — the eBPF sensor (kernel)
 
-**Attachment.** Probes are scoped to the proxy's **process subtree** — the proxy PID plus every server child PID. Userspace maintains the live PID set and pushes it to a BPF map so the probes filter cheaply in-kernel.
+**Attachment.** Probes are scoped to the proxy's **process subtree** — the proxy PID plus every server child PID. Userspace maintains the live PID set and pushes it to a **BPF hash map** (`BPF_MAP_TYPE_HASH`) so the probe checks membership cheaply in-kernel before emitting events.
 
-**Probes (v0.1):**
-- `connect()` — destination IP/port of every outbound connection.
-- socket write / `sendto` — egress, with an optional **payload excerpt** (first N bytes, redacted) for kernel-side value-overlap.
-- `openat()` — access to sensitive file paths.
-- DNS resolution — names being looked up.
+**Probe (v0.1): `connect()` only.**
+- Tracepoint: `tracepoint/syscalls/sys_enter_connect`.
+- Extracts destination IP/port from `sockaddr_in`, PID, TID, and comm.
+- Events pushed to a **ring buffer** (`BPF_MAP_TYPE_RINGBUF`, 256KB).
+- Compiled from BPF C via `bpf2go` (cilium/ebpf), loaded by Go at runtime. CO-RE via BTF at `/sys/kernel/btf/vmlinux`.
+- `sendto`/payload excerpt, `openat()`, and DNS are deferred to v0.2. Each is its own kernel struct; shipping `connect()` end-to-end is the right scoping for v0.1.
 
-**Transport to userspace.** Perf/ring buffer → decoded in Go (`cilium/ebpf`) into `SyscallEvent`s.
+**Transport to userspace.** Ring buffer → Go decoder in `internal/ebpf/loader.go` → `model.SyscallEvent` structs → engine's `IngestSyscall` method.
 
-**Detect-only in v0.1.** The kernel sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.2. Honest consequence: for Variant B the first packet may already be in flight when detection fires — Interlock **severs the channel** (kills the child) rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
+**Allowlist check.** The sensor checks each `connect()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg.
 
-**Prototype-first.** Prove every probe as a **bpftrace one-liner** before writing a line of compiled eBPF. This de-risks the hardest week.
+**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**: `SIGKILL` to the process group of the offending child. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.2. **Honest consequence:** for Variant B the `connect()` may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
+
+**False-positive surface (stated plainly).** Variant B fires on any non-allowlisted `connect()` from a monitored process once the first two legs are lit. That means a server with a legitimate non-allowlisted API call during a sensitive session gets killed — with no payload evidence that anything was actually exfiltrated. This is a **high-signal tripwire**, not proof of exfil: an unexpected outbound connection from a supervised process during a sensitive session is worth killing and investigating, even without payload proof. The credible claim is "detected an unauthorized outbound connection during a sensitive session," not "detected exfiltration." Payload inspection to distinguish exfil from benign egress is v0.2 (`sendto` excerpt + kernel-side value-overlap).
+
+**Prototype-first.** The `connect()` probe was validated with a `bpftrace` one-liner before writing compiled eBPF. This de-risked the hardest part of the week.
 
 ---
 

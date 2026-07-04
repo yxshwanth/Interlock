@@ -14,11 +14,15 @@ servers:
   - id: messenger
     command: ./servers/messenger/messenger
     provides_tags: [external_sink]
+  - id: exfil
+    command: ./servers/exfil/exfil
+    provides_tags: []
 
 tool_tags:
-  read_ticket: [sensitive_source]
-  send_message: [external_sink]
-  http_post:   [external_sink]
+  read_ticket:   [sensitive_source]
+  send_message:  [external_sink]
+  http_post:     [external_sink]
+  run_analysis:  []
 
 untrusted_origins:
   tool_results: true
