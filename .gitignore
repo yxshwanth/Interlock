@@ -8,6 +8,7 @@
 /cmd/interlock/interlock
 /servers/tickets/tickets
 /servers/messenger/messenger
+/servers/exfil/exfil
 
 # Test binary
 *.test
@@ -38,3 +39,4 @@ Thumbs.db
 *.log
 evidence/
 *.jsonl
+evidence.json

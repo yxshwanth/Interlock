@@ -35,12 +35,23 @@ func NewEngine(store *SessionStore, tagger *Tagger, mode string, sink EvidenceSi
 	if mode == "" {
 		mode = "block"
 	}
+	l := log.New(os.Stderr, "[engine] ", log.LstdFlags)
+
+	if tagger != nil {
+		if !tagger.HasSensitiveSource() {
+			l.Printf("[SECURITY] no sensitive_source tools configured — trifecta leg 1 can never fire")
+		}
+		if !tagger.HasExternalSink() {
+			l.Printf("[SECURITY] no external_sink tools configured — trifecta leg 3 can never fire")
+		}
+	}
+
 	return &Engine{
 		store:  store,
 		tagger: tagger,
 		sink:   sink,
 		mode:   mode,
-		log:    log.New(os.Stderr, "[engine] ", log.LstdFlags),
+		log:    l,
 	}
 }
 
@@ -120,7 +131,7 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 
 	if e.sink != nil {
 		if err := e.sink.Emit(evidence); err != nil {
-			e.log.Printf("evidence sink error: %v", err)
+			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
 		}
 	}
 
@@ -134,6 +145,20 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 		Reason:   fmt.Sprintf("trifecta %s: %s", verdict, ev.ToolName),
 		Evidence: &evidence,
 	}
+}
+
+// RedactEvent scrubs known tainted values from the ToolArgs and Result
+// fields of an InterceptedEvent, replacing raw secrets with masked previews.
+func (e *Engine) RedactEvent(ev *model.InterceptedEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	state := e.store.Get(ev.SessionID)
+	if state == nil || len(state.Tainted) == 0 {
+		return
+	}
+	ev.ToolArgs = RedactJSON(ev.ToolArgs, state.Tainted)
+	ev.Result = RedactJSON(ev.Result, state.Tainted)
 }
 
 func (e *Engine) setSensitiveSourceTouched(state *model.SessionState, ev model.InterceptedEvent) {
@@ -186,16 +211,17 @@ func (e *Engine) buildEvidence(
 	sinkCall := map[string]any{
 		"tool_name": ev.ToolName,
 		"server_id": ev.ServerID,
-		"args":      json.RawMessage(ev.ToolArgs),
+		"args":      RedactJSON(ev.ToolArgs, state.Tainted),
 		"seq":       ev.Seq,
 	}
 
 	timeline := make([]model.TimelineItem, 0, len(state.Timeline))
-	for _, seq := range state.Timeline {
+	for i, seq := range state.Timeline {
 		item := model.TimelineItem{
-			TSMono: time.Now().UnixNano(),
-			Kind:   "intercepted",
-			Ref:    seq,
+			TimelineSeq: i + 1,
+			TSMono:      time.Now().UnixNano(),
+			Kind:        "intercepted",
+			Ref:         seq,
 		}
 
 		switch {
@@ -275,7 +301,7 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 
 	if e.sink != nil {
 		if err := e.sink.Emit(evidence); err != nil {
-			e.log.Printf("evidence sink error: %v", err)
+			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
 		}
 	}
 
@@ -307,11 +333,12 @@ func (e *Engine) buildEvidenceVariantB(
 	}
 
 	timeline := make([]model.TimelineItem, 0, len(state.Timeline)+1)
-	for _, seq := range state.Timeline {
+	for i, seq := range state.Timeline {
 		item := model.TimelineItem{
-			TSMono: time.Now().UnixNano(),
-			Kind:   "intercepted",
-			Ref:    seq,
+			TimelineSeq: i + 1,
+			TSMono:      time.Now().UnixNano(),
+			Kind:        "intercepted",
+			Ref:         seq,
 		}
 
 		switch {
@@ -326,11 +353,12 @@ func (e *Engine) buildEvidenceVariantB(
 		timeline = append(timeline, item)
 	}
 
-	// Append the syscall event itself.
+	// Append the syscall event itself — last in causal order.
 	timeline = append(timeline, model.TimelineItem{
-		TSMono: ev.TSMono,
-		Kind:   "syscall",
-		Label:  fmt.Sprintf("external_sink_invoked: connect() to %s:%d by %s (pid %d)", ev.DestIP, ev.DestPort, ev.Comm, ev.PID),
+		TimelineSeq: len(state.Timeline) + 1,
+		TSMono:      ev.TSMono,
+		Kind:        "syscall",
+		Label:       fmt.Sprintf("external_sink_invoked: connect() to %s:%d by %s (pid %d)", ev.DestIP, ev.DestPort, ev.Comm, ev.PID),
 	})
 
 	return model.EvidenceRecord{

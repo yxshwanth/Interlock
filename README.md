@@ -6,6 +6,26 @@
 
 ---
 
+## Quickstart
+
+```bash
+git clone https://github.com/yxshwanth/Interlock.git
+cd Interlock
+sudo make demo GO=$(which go)   # Full demo: proxy blocking + eBPF side-channel kill
+```
+
+If you'd rather not run as root (fair), the proxy-only demo works without privileges:
+
+```bash
+make demo                       # Variant A only (monitor + block), eBPF pass skipped
+```
+
+**Why root?** Variant B loads a 74-line eBPF probe on the `connect()` tracepoint to detect outbound connections from monitored processes — that requires `CAP_BPF` / root. The probe source is [`internal/ebpf/connect.c`](internal/ebpf/connect.c); it reads destination IP/port for PIDs in a filter map, nothing else. No network traffic is sent, no files are modified, no data leaves the box.
+
+**What to look for:** the three-column comparison table at the end. Monitor mode: breach. Block mode: prevented. eBPF mode: side-channel detected and process killed. That third column is the thing no other tool does. Requires Go 1.21+.
+
+---
+
 ## Why this exists
 
 MCP (the Model Context Protocol) became the default way agents talk to tools in under 18 months, and security did not keep up. The public record for the first half of 2026:
@@ -161,6 +181,8 @@ The demo is the product. Everything serves the 90-second video.
 ## Honest limitations
 
 - The value-overlap check is a **heuristic**, not sound information-flow analysis. It can miss obfuscated / encoded exfiltration and can false-positive on legitimate echoes. Labeled as such by design.
+- **Redaction scope is pattern-matched, not total.** Event logs and evidence files redact known secret patterns (API keys, bearer tokens, account IDs) — values matching those patterns are replaced with masked previews before any file is written. But the event log writes the full tool-result payload with only the regex-matched values scrubbed. Secrets shaped differently (JWTs, private URLs with embedded tokens, passwords, customer PII) pass through unredacted. For real-world use, treat event logs as sensitive artifacts. Full result-body redaction — truncating or hashing result payloads over a length threshold, keeping metadata + a preview — is the natural v0.2 direction.
+- **Cross-plane timestamps are not comparable.** Proxy events use Go's `CLOCK_MONOTONIC`; eBPF events use `bpf_ktime_get_ns()` (kernel boot-time clock). The fused timeline uses engine-assigned causal sequence numbers (`timeline_seq`) for correct ordering, not raw nanosecond timestamps. Real inter-event latency across planes (e.g. "the connect fired 3ms after the read") requires clock-offset normalization at sensor startup — that's a v0.2 capability.
 - eBPF is **kernel-version-sensitive**; v0.1 targets modern Ubuntu with BTF. Enforcement lives in the proxy precisely because kernel-level blocking is harder and deferred.
 - "Sole provider" is a moment, not a moat. AgentSight (arXiv 2508.02736) is the closest prior art and names the same semantic gap — but it's a paper, not a product. First working, well-documented tool wins the window.
 

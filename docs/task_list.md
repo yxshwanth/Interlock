@@ -84,13 +84,13 @@ This doc is the **source of truth for progress**. Check items as they land.
 
 **Goal:** turn a working prototype into a launch.
 
-- `[ ]` Secret **redaction** everywhere in evidence (hash + masked preview; audit that no raw token is ever written)
-- `[ ]` Fail-open/closed decision wired and **documented** (v0.1 = fail-open + loud warning)
-- `[ ]` One-command demo runner (`make demo` → spins up servers + agent + Interlock, runs both variants)
+- `[x]` Secret **redaction** everywhere in evidence (hash + masked preview; `RedactJSON` scrubs `ToolArgs`/`Result` before any file write; verified via `rg sk-live *.jsonl` = 0 hits; redaction-scope limitation documented in README)
+- `[x]` Fail-open/closed decision wired and **documented** (v0.1 = fail-open + `[SECURITY]` warnings on stderr for: nil engine, engine panic, evidence sink failure, missing tool tags; `recover()` guard in enforcement gate; documented in architecture.md §12)
+- `[x]` One-command demo runner (`make demo` / `sudo make demo GO=$(which go)` → builds, cleans evidence, runs all passes; `Makefile` with build/test/demo/clean targets; README quickstart leads with `sudo make demo`)
 - `[ ]` README polish + **money-shot GIF** at the top
 - `[ ]` Record the **90-second demo** (off → breach, on → block, both variants, syscall receipt)
 - `[ ]` Launch post draft (credit **Willison**'s lethal trifecta + **AgentSight**; lead with the MCP-CVE-cadence hook)
-- `[ ]` Repo hygiene: CI, quickstart, clear "verify the ebpf-go / MCP framing APIs" notes, contribution guide
+- `[x]` Repo hygiene: CI workflow, CONTRIBUTING.md, `.gitignore` fixes, cross-plane timeline ordering (`timeline_seq`)
 
 **Acceptance:** a stranger can clone the repo, run one command, and reproduce the demo.
 
@@ -117,7 +117,9 @@ This doc is the **source of truth for progress**. Check items as they land.
 - `[ ]` **eBPF portability** across kernels — mitigate: target BTF Ubuntu 6.x; bpftrace-first; CO-RE.
 - `[x]` **JSON-RPC framing variants** — **resolved in Week 1**: verified against the MCP stdio transport spec. Newline-delimited only; no `Content-Length` headers (unlike LSP). No alternate framing path needed.
 - `[ ]` **Value-overlap false pos/neg** — it's a heuristic (misses obfuscated/encoded exfil, can false-positive on legit echoes); document plainly; dataflow taint is the v0.3 answer.
-- `[ ]` **Fail-open vs fail-closed** default — decided in Week 4; revisit for any production posture.
+- `[x]` **Fail-open vs fail-closed** default — **decided:** v0.1 is fail-open with `[SECURITY]` warnings. Documented in architecture.md §12. Four warning scenarios wired: nil engine, engine panic, evidence sink failure, missing tool tags.
 - `[ ]` **Multi-session PID→session mapping** — schema is ready; logic deferred to v0.2.
-- `[ ]` **Overhead** of interposition + eBPF — measure in Week 4; not optimized in v0.1.
+- `[ ]` **Overhead** of interposition + eBPF — not measured in v0.1; not optimized.
 - `[ ]` **"Sole provider" window** — AgentSight and others are circling; first working + documented tool wins ~6–12 months. Ship.
+- `[x]` **Cross-plane clock mismatch** — proxy uses Go `CLOCK_MONOTONIC`, eBPF uses `bpf_ktime_get_ns()` (boot-time). Fixed via engine-assigned `timeline_seq` for causal ordering. Clock-offset normalization for real cross-plane latency is v0.2.
+- `[x]` **Redaction scope** — regex-matched patterns only (API keys, tokens, account IDs). JWTs, private URLs, PII pass through unredacted. Event logs are sensitive artifacts. Documented in README limitations. Full result-body redaction is v0.2.

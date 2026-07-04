@@ -297,12 +297,16 @@
       html += '</div>';
     }
 
-    // Timeline
+    // Timeline — sort by engine-assigned causal sequence, not by ts_mono_ns
+    // (proxy and kernel clocks use different references).
     html += '<h2>Timeline</h2>';
     html += '<div class="timeline">';
     if (ev.timeline && ev.timeline.length > 0) {
-      for (var i = 0; i < ev.timeline.length; i++) {
-        var item = ev.timeline[i];
+      var sorted = ev.timeline.slice().sort(function(a, b) {
+        return (a.timeline_seq || 0) - (b.timeline_seq || 0);
+      });
+      for (var i = 0; i < sorted.length; i++) {
+        var item = sorted[i];
         var cls = 'tl-item';
         var isSyscall = item.kind === 'syscall';
 

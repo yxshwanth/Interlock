@@ -136,6 +136,9 @@ func (p *Proxy) ChildPIDs() []int {
 }
 
 func (p *Proxy) logEvent(ev model.InterceptedEvent) {
+	if p.engine != nil {
+		p.engine.RedactEvent(&ev)
+	}
 	if p.logger != nil {
 		p.logger.Log(ev)
 	} else {
@@ -150,6 +153,9 @@ func (p *Proxy) Run(ctx context.Context) error {
 
 	p.session = NewSession()
 	p.log.Printf("session %s started", p.session.ID)
+	if p.engine == nil {
+		p.log.Printf("[SECURITY] engine not configured — all calls forwarded without enforcement (FAIL-OPEN)")
+	}
 	p.agentWriter = NewFrameWriter(os.Stdout)
 
 	// Launch and initialize all servers.
@@ -207,6 +213,9 @@ func (p *Proxy) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		p.log.Printf("shutting down (context cancelled)")
 	}
+
+	// Unblock readAgentFrames which may be stuck in ReadFrame on os.Stdin.
+	os.Stdin.Close()
 
 	// Stop all servers.
 	for _, sc := range p.servers {
@@ -431,7 +440,16 @@ func (p *Proxy) handleToolsCall(frame []byte, msg model.JSONRPCMessage) {
 
 	// --- Hold-before-forward enforcement gate ---
 	if p.engine != nil {
-		decision := p.engine.EvaluateRequest(ev)
+		var decision model.Decision
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — FAIL-OPEN, call forwarded: %v", r)
+					decision = model.Decision{Allow: true}
+				}
+			}()
+			decision = p.engine.EvaluateRequest(ev)
+		}()
 		if !decision.Allow {
 			ev.Decision = "blocked"
 			ev.BlockReason = decision.Reason
@@ -516,12 +534,12 @@ func (p *Proxy) readServerFrames(ctx context.Context, sc *serverConn) {
 			p.mu.Unlock()
 		}
 
-		p.logEvent(ev)
-
-		// Feed the engine with tool results so it can light legs and extract tainted values.
+		// Feed the engine BEFORE logging so tainted values are available for redaction.
 		if p.engine != nil && ev.ToolName != "" {
 			p.engine.IngestResult(ev)
 		}
+
+		p.logEvent(ev)
 
 		if err := p.agentWriter.WriteFrame(frame); err != nil {
 			p.log.Printf("error writing to agent: %v", err)

@@ -2,8 +2,10 @@ package engine
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/yxshwanth/Interlock/internal/model"
@@ -73,4 +75,21 @@ func MaskValue(value string) string {
 	default:
 		return value[:3] + "..." + value[n-4:]
 	}
+}
+
+// RedactJSON replaces all known tainted values in a JSON blob with their
+// masked previews. Returns the scrubbed blob. If tainted is empty or raw
+// is nil/empty, the input is returned unchanged.
+func RedactJSON(raw json.RawMessage, tainted []model.TaintedValue) json.RawMessage {
+	if len(raw) == 0 || len(tainted) == 0 {
+		return raw
+	}
+	s := string(raw)
+	for _, tv := range tainted {
+		if tv.Value == "" {
+			continue
+		}
+		s = strings.ReplaceAll(s, tv.Value, tv.Preview)
+	}
+	return json.RawMessage(s)
 }
