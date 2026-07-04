@@ -54,6 +54,30 @@ func (t *Tagger) IsExternalSink(toolName, serverID string) bool {
 	return hasTag(t.TagsFor(toolName, serverID), "external_sink")
 }
 
+// HasSensitiveSource returns true if any tool or server is tagged sensitive_source.
+func (t *Tagger) HasSensitiveSource() bool {
+	return t.hasAnyTag("sensitive_source")
+}
+
+// HasExternalSink returns true if any tool or server is tagged external_sink.
+func (t *Tagger) HasExternalSink() bool {
+	return t.hasAnyTag("external_sink")
+}
+
+func (t *Tagger) hasAnyTag(target string) bool {
+	for _, tags := range t.toolTags {
+		if hasTag(tags, target) {
+			return true
+		}
+	}
+	for _, tags := range t.serverTags {
+		if hasTag(tags, target) {
+			return true
+		}
+	}
+	return false
+}
+
 func hasTag(tags []string, target string) bool {
 	for _, tag := range tags {
 		if tag == target {

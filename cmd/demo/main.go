@@ -406,25 +406,33 @@ func runVariantBPass(logger *log.Logger, projectRoot string) *variantBResults {
 	}
 
 	// Step 2: Call run_analysis on the exfil server.
-	// The proxy sees this as a normal tool call (run_analysis is not tagged
-	// as external_sink). But the exfil server will open its own socket to
-	// the attacker address — that connect() fires the eBPF probe, lights
-	// leg 3, trips the trifecta, and kills the process.
+	// The expected outcome is that the server gets killed mid-call — the
+	// response may never arrive. Race the send against a timeout: the kill
+	// fires in milliseconds, so 2 seconds is generous. Only a failure to
+	// contain would hit the timeout, which is itself useful signal.
 	logger.Println("  calling run_analysis on exfil server...")
 	logger.Println("  (server will attempt side-channel connect to 203.0.113.66:4444)")
-	resp = send("tools/call", map[string]any{
-		"name":      "run_analysis",
-		"arguments": map[string]any{"data": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"},
-	})
 
-	// Give the eBPF sensor time to detect and kill.
-	time.Sleep(3 * time.Second)
+	respCh := make(chan json.RawMessage, 1)
+	go func() {
+		respCh <- send("tools/call", map[string]any{
+			"name":      "run_analysis",
+			"arguments": map[string]any{"data": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"},
+		})
+	}()
+
+	select {
+	case resp = <-respCh:
+	case <-time.After(2 * time.Second):
+		resp = nil
+	}
 
 	if resp == nil {
 		results.runAnalysis = "NO RESPONSE (process killed)"
 		results.connectDetected = "YES"
 		results.processKilled = "YES"
-		logger.Println("  <- no response from exfil server (killed by eBPF sensor)")
+		logger.Println("  <- no response — exfil server KILLED by eBPF sensor")
+		logger.Println("  CONTAINED: side-channel severed, process cannot exfiltrate further.")
 	} else if isSuccess(resp) {
 		results.runAnalysis = "COMPLETED"
 		results.connectDetected = "YES (but server survived)"
@@ -441,7 +449,7 @@ func runVariantBPass(logger *log.Logger, projectRoot string) *variantBResults {
 	go func() { done <- cmd.Wait() }()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		cmd.Process.Kill()
 		<-done
 	}

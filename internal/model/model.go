@@ -209,11 +209,14 @@ type OverlapHit struct {
 }
 
 // TimelineItem is one entry in the evidence timeline.
+// TimelineSeq is an engine-assigned causal ordering — sort on this, not
+// ts_mono_ns, because proxy and kernel clocks use different references.
 type TimelineItem struct {
-	TSMono int64  `json:"ts_mono_ns"`
-	Kind   string `json:"kind"` // intercepted | syscall
-	Label  string `json:"label"`
-	Ref    uint64 `json:"ref,omitempty"`
+	TimelineSeq int    `json:"timeline_seq"`
+	TSMono      int64  `json:"ts_mono_ns"`
+	Kind        string `json:"kind"` // intercepted | syscall
+	Label       string `json:"label"`
+	Ref         uint64 `json:"ref,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

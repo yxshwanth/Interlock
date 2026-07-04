@@ -358,8 +358,8 @@ type SessionStore interface {
 ## 12. Security of Interlock itself
 
 - **Runs privileged** (loading eBPF, managing child processes). Drop capabilities aggressively once probes are attached; hold the minimum.
-- **Never leaks the secrets it's protecting.** Tainted values are stored **hashed + masked** (`sk-...a9f2`), never raw. The value-overlap check compares hashes/normalized forms, and evidence stores only the masked preview. Interlock writing the token in plaintext to a log would make the tool *itself* an exfil path — forbidden.
-- **Fail-open vs. fail-closed.** If the engine errors mid-session in enforce mode, does Interlock block or allow? **v0.1 default: fail-open with a loud warning**, to keep the dev/demo loop unblocked. A production posture would prefer **fail-closed**. This is a conscious tradeoff, revisited in Week 4 and flagged in the task list.
+- **Never leaks the secrets it's protecting.** Tainted values are stored **hashed + masked** (`sk-...a9f2`), never raw. The value-overlap check compares raw values in memory only; evidence stores only the masked preview. All output files (`evidence.jsonl`, `evidence.json`, `events.jsonl`) are scrubbed by `RedactJSON` before writing — any known tainted value is replaced with its masked preview. Interlock writing the token in plaintext to a log would make the tool *itself* an exfil path — forbidden.
+- **Fail-open vs. fail-closed.** v0.1 is **fail-open with loud `[SECURITY]` warnings** on stderr. This is a conscious tradeoff to keep the dev/demo loop unblocked; a production posture would prefer fail-closed. The `[SECURITY]` prefix fires in four scenarios: (1) engine not configured (nil engine, all calls forwarded), (2) engine panics mid-evaluation (recover guard, call forwarded), (3) evidence sink write failure (enforcement continues, forensic record incomplete), (4) no `sensitive_source` or `external_sink` tools configured (trifecta can never fire — silent degradation prevented). Deployers should monitor for `[SECURITY]` in stderr output.
 
 ---
 
