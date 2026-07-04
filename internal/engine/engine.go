@@ -63,8 +63,15 @@ func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 	defer e.mu.Unlock()
 
 	state := e.store.GetOrCreate(ev.SessionID)
+	if state.TimelineLabels == nil {
+		state.TimelineLabels = make(map[uint64]string)
+	}
 	state.LastActivity = time.Now().UnixNano()
 	state.Timeline = append(state.Timeline, ev.Seq)
+
+	if ev.ToolName != "" {
+		state.TimelineLabels[ev.Seq] = fmt.Sprintf("%s result returned", ev.ToolName)
+	}
 
 	if e.tagger.IsSensitiveSource(ev.ToolName, ev.ServerID) {
 		e.setSensitiveSourceTouched(state, ev)
@@ -91,8 +98,15 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 	defer e.mu.Unlock()
 
 	state := e.store.GetOrCreate(ev.SessionID)
+	if state.TimelineLabels == nil {
+		state.TimelineLabels = make(map[uint64]string)
+	}
 	state.LastActivity = time.Now().UnixNano()
 	state.Timeline = append(state.Timeline, ev.Seq)
+
+	if ev.ToolName != "" {
+		state.TimelineLabels[ev.Seq] = fmt.Sprintf("%s called", ev.ToolName)
+	}
 
 	if !e.tagger.IsExternalSink(ev.ToolName, ev.ServerID) {
 		return model.Decision{Allow: true}
@@ -232,7 +246,11 @@ func (e *Engine) buildEvidence(
 		case seq == state.Legs.ExternalSinkInvoked.TriggerSeq:
 			item.Label = fmt.Sprintf("external_sink_invoked: %s", state.Legs.ExternalSinkInvoked.Detail)
 		default:
-			item.Label = fmt.Sprintf("event #%d", seq)
+			if label, ok := state.TimelineLabels[seq]; ok {
+				item.Label = label
+			} else {
+				item.Label = fmt.Sprintf("event #%d", seq)
+			}
 		}
 
 		timeline = append(timeline, item)
@@ -347,7 +365,11 @@ func (e *Engine) buildEvidenceVariantB(
 		case seq == state.Legs.UntrustedContentPresent.TriggerSeq:
 			item.Label = fmt.Sprintf("untrusted_content_present: %s", state.Legs.UntrustedContentPresent.Detail)
 		default:
-			item.Label = fmt.Sprintf("event #%d", seq)
+			if label, ok := state.TimelineLabels[seq]; ok {
+				item.Label = label
+			} else {
+				item.Label = fmt.Sprintf("event #%d", seq)
+			}
 		}
 
 		timeline = append(timeline, item)
