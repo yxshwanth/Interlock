@@ -135,7 +135,10 @@
   }
   .tl-item.tl-trigger::before { background: #3fb950; border-color: #3fb950; }
   .tl-item.tl-sink::before { background: #da3633; border-color: #da3633; }
+  .tl-item.tl-syscall::before { background: #f0883e; border-color: #f0883e; }
   .tl-label { color: #c9d1d9; }
+  .tl-kind { font-size: 0.7rem; color: #8b949e; margin-left: 0.5rem; text-transform: uppercase; }
+  .tl-kind.tl-kind-syscall { color: #f0883e; font-weight: 600; }
   .tl-ref { color: #484f58; font-size: 0.75rem; margin-left: 0.5rem; }
 
   .no-overlap { color: #8b949e; font-style: italic; margin-top: 0.75rem; }
@@ -278,11 +281,19 @@
 
     // Sink call
     if (ev.sink_call) {
-      html += '<h2>Blocked Sink Call</h2>';
+      var sinkTitle = ev.sink_call.syscall ? 'Detected Syscall' : 'Blocked Sink Call';
+      html += '<h2>' + esc(sinkTitle) + '</h2>';
       html += '<div class="meta">';
-      if (ev.sink_call.tool_name) html += metaItem('Tool', ev.sink_call.tool_name);
-      if (ev.sink_call.server_id) html += metaItem('Server', ev.sink_call.server_id);
-      if (ev.sink_call.seq) html += metaItem('Seq', '#' + ev.sink_call.seq);
+      if (ev.sink_call.syscall) {
+        html += metaItem('Syscall', ev.sink_call.syscall);
+        if (ev.sink_call.dest_ip) html += metaItem('Destination', ev.sink_call.dest_ip + ':' + ev.sink_call.dest_port);
+        if (ev.sink_call.pid) html += metaItem('PID', ev.sink_call.pid);
+        if (ev.sink_call.comm) html += metaItem('Process', ev.sink_call.comm);
+      } else {
+        if (ev.sink_call.tool_name) html += metaItem('Tool', ev.sink_call.tool_name);
+        if (ev.sink_call.server_id) html += metaItem('Server', ev.sink_call.server_id);
+        if (ev.sink_call.seq) html += metaItem('Seq', '#' + ev.sink_call.seq);
+      }
       html += '</div>';
     }
 
@@ -293,11 +304,22 @@
       for (var i = 0; i < ev.timeline.length; i++) {
         var item = ev.timeline[i];
         var cls = 'tl-item';
-        if (item.label && item.label.indexOf('external_sink') >= 0) cls += ' tl-sink';
-        else if (item.label && (item.label.indexOf('sensitive_source') >= 0 || item.label.indexOf('untrusted_content') >= 0)) cls += ' tl-trigger';
+        var isSyscall = item.kind === 'syscall';
+
+        if (isSyscall) {
+          cls += ' tl-syscall';
+        } else if (item.label && item.label.indexOf('external_sink') >= 0) {
+          cls += ' tl-sink';
+        } else if (item.label && (item.label.indexOf('sensitive_source') >= 0 || item.label.indexOf('untrusted_content') >= 0)) {
+          cls += ' tl-trigger';
+        }
 
         html += '<div class="' + cls + '">';
         html += '<span class="tl-label">' + esc(item.label || 'event') + '</span>';
+        if (item.kind) {
+          var kindCls = 'tl-kind' + (isSyscall ? ' tl-kind-syscall' : '');
+          html += '<span class="' + kindCls + '">[' + esc(item.kind) + ']</span>';
+        }
         if (item.ref) html += '<span class="tl-ref">#' + item.ref + '</span>';
         html += '</div>';
       }
