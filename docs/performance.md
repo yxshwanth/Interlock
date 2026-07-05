@@ -1,13 +1,23 @@
 # Performance
 
-Interlock v0.2 Phase 4 publishes **userspace engine hot-path** numbers. These measure the trifecta evaluation and encoding-overlap cost (post-Phase 3), not end-to-end HTTP latency or eBPF throughput.
+Interlock v0.2 Phase 4 publishes **engine-component microbenchmarks** — not user-visible proxy overhead.
+
+## What these numbers are and are not
+
+**These are engine-component benchmarks.** They measure isolated work inside `internal/engine`: overlap scanning, taint registration, and the worst-case `EvaluateRequest` block path (including evidence emit to the configured sink).
+
+**They are not Interlock's end-to-end overhead.** The number that answers "how much latency does Interlock add to a real tool call?" is **per-request proxy overhead on the HTTP path** — and that is **not yet measured** (see `TestBenchmark_FullHTTPLoad_KnownGap` in `internal/engine/bench_test.go`).
+
+Do **not** quote `BenchmarkEngine_EvaluateRequest_Exfil` (~0.56 ms on the snapshot machine) as "Interlock's overhead." It is one engine function's worst case in isolation, excluding HTTP transport, JSON-RPC framing, MCP server I/O, session management, and concurrent load.
+
+When we publish end-to-end numbers, they will live here with a separate methodology section.
 
 ## Methodology
 
 - **Command:** `make bench` (runs `go test -bench=. -benchmem ./internal/engine/...`)
 - **Environment:** Linux amd64, Go 1.25, `-benchtime=50ms` unless noted
 - **Scope:** engine package only — `CheckOverlap`, taint registration, full `EvaluateRequest` exfil block path
-- **Not measured here:** HTTP transport overhead, MCP server I/O, eBPF event loop throughput (requires root + kernel load generator)
+- **Not measured here:** End-to-end per-request proxy latency (HTTP p99), HTTP transport overhead, MCP server I/O, eBPF event loop throughput
 
 Numbers drift across hardware. Treat this table as a **snapshot**, not an SLA.
 
@@ -20,7 +30,7 @@ Numbers drift across hardware. Treat this table as a **snapshot**, not an SLA.
 | `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values |
 | `BenchmarkCheckOverlap_50Tainted` | 2146 | 80 | 1 | 50 tainted values |
 | `BenchmarkEngine_IngestResult_TaintExtract` | 14860 | 2808 | 39 | Sensitive source result ingest + taint |
-| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Full trifecta block + evidence emit (worst case) |
+| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Engine worst-case block + evidence emit — **not** end-to-end proxy latency |
 
 ### Reading the numbers
 
