@@ -1,8 +1,12 @@
 package engine
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"testing"
 
 	"github.com/yxshwanth/Interlock/internal/model"
@@ -26,6 +30,9 @@ func TestCheckOverlap_Match(t *testing.T) {
 	}
 	if hit.WhereFound != "sink args" {
 		t.Fatalf("expected 'sink args', got %q", hit.WhereFound)
+	}
+	if hit.MatchForm != string(FormLiteral) {
+		t.Fatalf("expected match_form literal, got %q", hit.MatchForm)
 	}
 }
 
@@ -104,20 +111,136 @@ func TestCheckOverlap_EmptyValueSkipped(t *testing.T) {
 }
 
 func TestCheckOverlap_EncodedExfil_KnownGap(t *testing.T) {
-	t.Skip("known v0.1 gap: raw-substring overlap misses encoded/obfuscated exfil " +
-		"(base64, reversed, hex, etc.) — see docs/architecture.md §13 and " +
-		"project_overview §Non-goals; dataflow taint tracking is the v0.3 answer")
-
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 
 	tainted := []model.TaintedValue{
-		{Value: secret, Hash: HashValue(secret), Preview: MaskValue(secret)},
+		{
+			Value:    secret,
+			Variants: taintedVariants(secret),
+			Hash:     HashValue(secret),
+			Preview:  MaskValue(secret),
+		},
 	}
 	args := json.RawMessage(`{"body": "` + encoded + `"}`)
 
 	hit := CheckOverlap(tainted, args)
 	if hit == nil {
-		t.Fatal("expected overlap hit on base64-encoded secret (currently missed)")
+		t.Fatal("expected overlap hit on base64-encoded secret")
+	}
+	if hit.MatchForm != string(FormBase64) {
+		t.Fatalf("expected match_form base64, got %q", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_HexEncoded(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	encoded := hex.EncodeToString([]byte(secret))
+
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + encoded + `"}`)
+
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap hit on hex-encoded secret")
+	}
+	if hit.MatchForm != string(FormHex) {
+		t.Fatalf("expected match_form hex, got %q", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_URLEncoded(t *testing.T) {
+	secret := "sk-live+token/special=value"
+	encoded := url.QueryEscape(secret)
+	if encoded == secret {
+		t.Fatal("test secret must require URL encoding")
+	}
+
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + encoded + `"}`)
+
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap hit on URL-encoded secret")
+	}
+	if hit.MatchForm != string(FormURLEncoded) {
+		t.Fatalf("expected match_form url_encoded, got %q", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_Reversed(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	reversed := reverseString(secret)
+
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + reversed + `"}`)
+
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap hit on reversed secret")
+	}
+	if hit.MatchForm != string(FormReversed) {
+		t.Fatalf("expected match_form reversed, got %q", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_SplitAcrossCalls_KnownGap(t *testing.T) {
+	t.Skip("known v0.2 gap: secret split across JSON fields or tool calls is not tracked")
+
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	half := len(secret) / 2
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"part_a": "` + secret[:half] + `", "part_b": "` + secret[half:] + `"}`)
+
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap when split parts rejoin in sink args (not implemented)")
+	}
+}
+
+func TestCheckOverlap_Compressed_KnownGap(t *testing.T) {
+	t.Skip("known v0.2 gap: gzip/compressed exfil is not detected")
+
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write([]byte(secret))
+	gz.Close()
+	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + encoded + `"}`)
+
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap on gzip+base64 payload (not implemented)")
+	}
+}
+
+func TestCheckOverlap_DoubleEncoded_KnownGap(t *testing.T) {
+	t.Skip("known v0.2 gap: nested/double encoding (e.g. base64(hex(secret))) is not detected")
+
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	hexed := hex.EncodeToString([]byte(secret))
+	double := base64.StdEncoding.EncodeToString([]byte(hexed))
+
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + double + `"}`)
+
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap on double-encoded secret (not implemented)")
 	}
 }

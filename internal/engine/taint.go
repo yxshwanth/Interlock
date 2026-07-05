@@ -44,6 +44,7 @@ func ExtractTaintedValues(resultText, source string, seq uint64) []model.Tainted
 
 			values = append(values, model.TaintedValue{
 				Value:        val,
+				Variants:     taintedVariants(val),
 				Hash:         HashValue(val),
 				Preview:      MaskValue(val),
 				Source:       source,
@@ -54,6 +55,15 @@ func ExtractTaintedValues(resultText, source string, seq uint64) []model.Tainted
 	}
 
 	return values
+}
+
+func taintedVariants(value string) []model.TaintedVariant {
+	forms := CanonicalEncodings(value)
+	out := make([]model.TaintedVariant, len(forms))
+	for i, f := range forms {
+		out[i] = model.TaintedVariant{Form: string(f.Form), Value: f.Value}
+	}
+	return out
 }
 
 // HashValue returns the hex-encoded SHA-256 hash of the value.
@@ -90,6 +100,11 @@ func RedactJSON(raw json.RawMessage, tainted []model.TaintedValue) json.RawMessa
 			continue
 		}
 		s = strings.ReplaceAll(s, tv.Value, tv.Preview)
+		for _, v := range tv.Variants {
+			if v.Value != "" && v.Value != tv.Value {
+				s = strings.ReplaceAll(s, v.Value, tv.Preview)
+			}
+		}
 	}
 	return json.RawMessage(s)
 }
