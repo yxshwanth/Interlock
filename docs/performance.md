@@ -1,27 +1,71 @@
 # Performance
 
-Interlock v0.2 Phase 4 publishes **engine-component microbenchmarks** — not user-visible proxy overhead.
+Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+).
 
 ## What these numbers are and are not
 
-**These are engine-component benchmarks.** They measure isolated work inside `internal/engine`: overlap scanning, taint registration, and the worst-case `EvaluateRequest` block path (including evidence emit to the configured sink).
+**Engine benchmarks** measure isolated work inside `internal/engine`: overlap scanning, taint registration, and the worst-case `EvaluateRequest` block path (including evidence emit).
 
-**They are not Interlock's end-to-end overhead.** The number that answers "how much latency does Interlock add to a real tool call?" is **per-request proxy overhead on the HTTP path** — and that is **not yet measured** (see `TestBenchmark_FullHTTPLoad_KnownGap` in `internal/engine/bench_test.go`).
+**HTTP benchmarks** measure client-perceived latency through the full Streamable HTTP stack (proxy + STDIO demo backends). The **quotable Interlock number is the engine delta (C)** — not absolute end-to-end latency (A), which is dominated by your backend's response time.
 
-Do **not** quote `BenchmarkEngine_EvaluateRequest_Exfil` (~0.56 ms on the snapshot machine) as "Interlock's overhead." It is one engine function's worst case in isolation, excluding HTTP transport, JSON-RPC framing, MCP server I/O, session management, and concurrent load.
+Do **not** quote `BenchmarkEngine_EvaluateRequest_Exfil` (~0.56 ms) as steady-state overhead. Do **not** quote absolute `read_ticket` p99 (~12 ms) as "Interlock's cost" — that is mostly the demo tickets server's I/O.
 
-When we publish end-to-end numbers, they will live here with a separate methodology section.
+**Headline (engine delta, snapshot machine):** Interlock adds **sub-millisecond engine overhead** — **~0.5 ms on sensitive reads (typical agent traffic)** and **~0.1 ms on sink checks**. Agents read sensitive data constantly; the common path is the higher number, not the lower.
 
-## Methodology
+## End-to-end HTTP overhead
 
-- **Command:** `make bench` (runs `go test -bench=. -benchmem ./internal/engine/...`)
-- **Environment:** Linux amd64, Go 1.25, `-benchtime=50ms` unless noted
-- **Scope:** engine package only — `CheckOverlap`, taint registration, full `EvaluateRequest` exfil block path
-- **Not measured here:** End-to-end per-request proxy latency (HTTP p99), HTTP transport overhead, MCP server I/O, eBPF event loop throughput
+**Methodology:**
 
-Numbers drift across hardware. Treat this table as a **snapshot**, not an SLA.
+- **Command:** `make bench-http` (requires `make build` for demo server binaries)
+- **Harness:** `internal/proxy/http/` — `httptest` + real ticket/messenger STDIO backends; SSE responses; `initialize` outside timer
+- **A (absolute):** `TestHTTP_OverheadReport_*` — 10,000 client-side samples (`OVERHEAD_SAMPLES` env to override); p50/p95/p99/p999 — **fixture context only**, not Interlock isolation
+- **C (engine delta):** `BenchmarkHTTP_EngineDelta_*` — same stack, engine on vs passthrough (`engine == nil`); mean ns/op and allocs/op — **the deployer-facing Interlock cost**
+- **Environment:** Linux amd64, Go 1.25 — snapshot machine; numbers drift across hardware
 
-## Results (representative snapshot)
+### Engine delta (C) — snapshot (`-benchtime=500ms`)
+
+| Benchmark | EngineOn ns/op | Passthrough ns/op | Delta | allocs/op delta |
+|---|---:|---:|---:|---:|
+| `BenchmarkHTTP_EngineDelta_ReadTicket` | 936,000 | 400,000 | **~536 µs** | +63 | 2 secrets in fixture ticket; see scaling note below |
+| `BenchmarkHTTP_EngineDelta_MonitorSinkBenign` | 492,000 | 374,000 | **~118 µs** | +32 |
+
+Passthrough uses `proxy.New(..., nil)` — same HTTP path, no `EvaluateRequest` / `IngestResult`.
+
+### Absolute latency (A) — snapshot (includes backend I/O)
+
+| Scenario | p50 | p99 | p999 | Notes |
+|---|---:|---:|---:|---|
+| `read_ticket` (block config, benign — no trip) | 5.27 ms | 12.64 ms | 14.80 ms | Dominated by demo **tickets** STDIO backend payload work, not Interlock |
+| `send_message` benign (monitor, full eval) | 0.89 ms | 1.85 ms | 2.16 ms | Lighter messenger backend + Interlock; full trifecta + `CheckOverlap`, allow forward |
+
+Absolute rows differ because the **backends differ** (heavy read vs cheap send), not because Interlock treats them differently. Use **C** for Interlock overhead; use **A** only with the backend caveat above.
+
+### Reading the HTTP numbers
+
+**Why absolute A is not the headline:** `read_ticket` p99 (~12.6 ms) and `send_message` p99 (~1.9 ms) share the same proxy stack but hit different STDIO children. The tickets server returns a real payload; the messenger path is lighter. The gap is fixture I/O, not a 7× Interlock penalty.
+
+**Why C looks backwards at first glance:** `ReadTicket` delta (~536 µs) is **larger** than `MonitorSinkBenign` delta (~118 µs) even though the sink path runs the full trifecta + `CheckOverlap`. That is correct, not a measurement bug:
+
+- **`read_ticket`** is a sensitive source. On the **response path**, the engine runs `IngestResult` — taint extraction and canonical-encoding precompute for every secret in the ticket (~15 µs in isolation; +63 allocs/op in the HTTP delta). `EvaluateRequest` early-returns on non-sink calls, but ingestion still runs.
+- **`send_message` (monitor, benign)** does not ingest a sensitive result on that call. It evaluates an already-registered taint set via `CheckOverlap` (~70 ns in isolation; +32 allocs/op). Full trifecta logic, but no new taint registration.
+
+**Insight:** per-call engine overhead is dominated by **taint ingestion on sensitive-source reads** (~0.5 ms on the snapshot fixture), not **overlap checking on sink writes** (~0.1 ms). The naive assumption that "the sink-checking path is expensive" is wrong for benign steady state.
+
+**Read-path scaling:** the ~536 µs / +63 allocs delta is for a demo ticket with **2 tainted values**. `IngestResult` registers each secret plus five canonical encodings — cost scales **linearly with secrets-per-result**. A payload returning 50 secrets would be roughly 25× that ingestion work; "~0.5 ms" means "~0.5 ms for a 2-secret read," not a universal ceiling. Same caveat class as the absolute-latency backend-I/O note: measured on a toy fixture; scaling behavior is documented so you can extrapolate.
+
+**Two optimization levers (different hot spots):**
+
+1. **Block path:** evidence construction + sink write (~563 µs / 6.3K allocs on trip) — async evidence emit (ROADMAP).
+2. **Read path:** taint ingestion + canonical encodings on sensitive results — the bigger **per-benign-call** contributor (~536 µs delta).
+
+## Engine microbenchmarks
+
+### Methodology
+
+- **Command:** `make bench`
+- **Scope:** `internal/engine` only
+
+### Results (representative snapshot)
 
 | Benchmark | ns/op | B/op | allocs/op | Notes |
 |-----------|------:|-----:|----------:|-------|
@@ -29,30 +73,38 @@ Numbers drift across hardware. Treat this table as a **snapshot**, not an SLA.
 | `BenchmarkCheckOverlap_1Tainted` | 70 | 80 | 1 | Sink scan, 1 tainted value (5 forms) |
 | `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values |
 | `BenchmarkCheckOverlap_50Tainted` | 2146 | 80 | 1 | 50 tainted values |
-| `BenchmarkEngine_IngestResult_TaintExtract` | 14860 | 2808 | 39 | Sensitive source result ingest + taint |
-| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Engine worst-case block + evidence emit — **not** end-to-end proxy latency |
+| `BenchmarkEngine_IngestResult_TaintExtract` | 14860 | 2808 | 39 | Sensitive source result ingest + taint — explains ReadTicket HTTP delta |
+| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence emit — rare trip only |
 
-### Reading the numbers
+### Reading the engine numbers
 
-- **Overlap check** scales linearly with tainted-value count × 5 canonical forms — acceptable for typical session sizes (single-digit secrets).
-- **EvaluateRequest exfil path** includes evidence record construction and sink write; this is the blocking firewall worst case, not steady-state `tools/list` traffic.
-- Phase 4 follow-up (if benchmarks regress in production): async evidence emit or sampled overlap — not implemented in v0.2.
+- **Overlap check** scales linearly with tainted count; constant 80 B/op — no per-value allocation in the scan.
+- **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks.
+- **EvaluateRequest exfil path** is dominated by evidence emit on trip — see async evidence emit (ROADMAP).
 
 ## Known gaps
 
-See skip tests in the codebase:
+Each skip test names a **distinct** gap:
 
-- `TestBenchmark_FullHTTPLoad_KnownGap` — no automated p99 HTTP load benchmark
-- eBPF ring-buffer saturation under load — not benchmarked in CI
+| Test | Package | Gap |
+|---|---|---|
+| `TestHTTP_ConcurrentLoad_KnownGap` | `internal/proxy/http` | Concurrent multi-session HTTP load p99 (single-session A+C is covered) |
+| `TestEBPF_RingbufSaturation_KnownGap` | `internal/ebpf` | Kernel ring-buffer saturation under load |
+| `TestEventLogger_DiskFull_KnownGap` | `internal/proxy` | Disk-full logging behavior |
+| `TestEvidenceStore_CrossSessionQuery_KnownGap` | `internal/engine` | SQLite query API / viewer DB integration |
+
+There is **one** HTTP load gap test — `TestHTTP_ConcurrentLoad_KnownGap`. The former `TestBenchmark_FullHTTPLoad_KnownGap` in `engine/` was removed to avoid documenting the same hole twice.
 
 ## Reproduce
 
 ```bash
+make build
+make bench-http
 make bench
 ```
 
-For a longer run:
+Quick HTTP smoke (100 samples):
 
 ```bash
-go test -bench=. -benchmem -benchtime=1s ./internal/engine/...
+OVERHEAD_SAMPLES=100 go test -run=TestHTTP_OverheadReport ./internal/proxy/http/...
 ```

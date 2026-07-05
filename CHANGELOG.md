@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-05
+
+### Added
+
+- End-to-end HTTP overhead benchmarks (A + C): `TestHTTP_OverheadReport_*` (p50/p95/p99/p999 histogram), `BenchmarkHTTP_EngineDelta_*` (engine on vs passthrough), `make bench-http`
+- `mcphttp.Client.CallDuration` for client-perceived latency measurement
+- `TestHTTP_ConcurrentLoad_KnownGap` — concurrent multi-session HTTP load deferred (replaces former `TestBenchmark_FullHTTPLoad_KnownGap`; single gap, one skip test)
+- CI HTTP overhead smoke (`OVERHEAD_SAMPLES=100`)
+
+### Changed
+
+- [`docs/performance.md`](docs/performance.md) — engine delta headline (~0.5 ms sensitive reads typical, ~0.1 ms sink checks); explains taint-ingestion vs overlap delta inversion; secret-count scaling caveat
+
+### Removed
+
+- `TestBenchmark_FullHTTPLoad_KnownGap` — duplicate of `TestHTTP_ConcurrentLoad_KnownGap` (one HTTP load gap, one skip test)
+
 ## [0.2.0] - 2026-07-05
 
 ### Added
@@ -78,6 +95,7 @@ First release — a working proof that runtime trifecta detection works across t
 - Redaction is pattern-matched — treat runtime event/evidence logs as sensitive artifacts
 - eBPF integration tested locally (root + BTF kernel), not in CI
 
-[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/yxshwanth/Interlock/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yxshwanth/Interlock/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yxshwanth/Interlock/releases/tag/v0.1.0

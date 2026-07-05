@@ -28,6 +28,12 @@ jobs:
       - name: Benchmark smoke
         run: go test -run=^$ -bench=BenchmarkCheckOverlap_1Tainted -benchtime=10ms ./internal/engine/...
 
+      - name: Build server binaries
+        run: make build
+
+      - name: HTTP overhead bench smoke
+        run: OVERHEAD_SAMPLES=100 go test -run=TestHTTP_OverheadReport_ReadTicket -bench=BenchmarkHTTP_EngineDelta_ReadTicket/EngineOn -benchmem -benchtime=50ms ./internal/proxy/http/...
+
   race:
     runs-on: ubuntu-latest
     steps:

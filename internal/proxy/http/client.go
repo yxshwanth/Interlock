@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Client is a minimal Streamable HTTP MCP client (2025-11-25).
@@ -32,8 +33,20 @@ func (c *Client) SessionID() string {
 	return c.sessionID
 }
 
+// CallResult is the outcome of a timed MCP call.
+type CallResult struct {
+	Body     json.RawMessage
+	Duration time.Duration
+}
+
 // Call sends a JSON-RPC request and returns the response body (JSON or parsed from SSE).
 func (c *Client) Call(method string, params any, mcpName string) (json.RawMessage, error) {
+	res, err := c.CallDuration(method, params, mcpName)
+	return res.Body, err
+}
+
+// CallDuration sends a JSON-RPC request and returns the response body and wall-clock latency.
+func (c *Client) CallDuration(method string, params any, mcpName string) (CallResult, error) {
 	c.nextID++
 	id := c.nextID
 	body := map[string]any{
@@ -46,9 +59,9 @@ func (c *Client) Call(method string, params any, mcpName string) (json.RawMessag
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return CallResult{}, err
 	}
-	return c.post(data, method, mcpName)
+	return c.postDuration(data, method, mcpName)
 }
 
 // Notify sends a JSON-RPC notification (202 Accepted, no body).
@@ -61,14 +74,15 @@ func (c *Client) Notify(method string) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.post(data, method, "")
+	_, err = c.postDuration(data, method, "")
 	return err
 }
 
-func (c *Client) post(data []byte, method, mcpName string) (json.RawMessage, error) {
+func (c *Client) postDuration(data []byte, method, mcpName string) (CallResult, error) {
+	start := time.Now()
 	req, err := http.NewRequest(http.MethodPost, c.BaseURL, bytes.NewReader(data))
 	if err != nil {
-		return nil, err
+		return CallResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -85,16 +99,16 @@ func (c *Client) post(data []byte, method, mcpName string) (json.RawMessage, err
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return CallResult{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusAccepted {
-		return nil, nil
+		return CallResult{Duration: time.Since(start)}, nil
 	}
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+		return CallResult{Duration: time.Since(start)}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
 	}
 
 	if sid := resp.Header.Get(HeaderSessionID); sid != "" {
@@ -103,16 +117,17 @@ func (c *Client) post(data []byte, method, mcpName string) (json.RawMessage, err
 
 	ct := resp.Header.Get("Content-Type")
 	body, err := io.ReadAll(resp.Body)
+	dur := time.Since(start)
 	if err != nil {
-		return nil, err
+		return CallResult{Duration: dur}, err
 	}
 
 	if strings.Contains(ct, "text/event-stream") {
 		parsed, err := ParseSSEResponse(bytes.NewReader(body))
 		if err != nil {
-			return nil, err
+			return CallResult{Duration: dur}, err
 		}
-		return json.RawMessage(parsed), nil
+		return CallResult{Body: json.RawMessage(parsed), Duration: dur}, nil
 	}
-	return json.RawMessage(body), nil
+	return CallResult{Body: json.RawMessage(body), Duration: dur}, nil
 }
