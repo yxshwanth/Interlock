@@ -79,4 +79,16 @@ git tag -v v0.2.0
 
 **Signing key (SSH):** `SHA256:j0vZxZexFyPA8Hj8ys2NbdMEtyqmZ+kT60eWRdfjlq8` — `ssh-ed25519`, GitHub identity `yxshwanth@github`
 
+**Tagger identities:** `v0.2.0` was signed as `Yash <yash@L5iPro.lan>` — git's auto-generated fallback when `user.email` is unset (`<username>@<hostname>.<domain>`), not a reachable address. Future tags use `85288090+yxshwanth@users.noreply.github.com`. Both map to the same key in [`allowed_signers`](allowed_signers).
+
+**Maintainer setup (future tags only — do not retag v0.2.0):**
+
+```bash
+git config user.name "Yash"
+git config user.email "85288090+yxshwanth@users.noreply.github.com"
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+git tag -s v0.2.1 -m "..."
+```
+
 Release artifacts and reproducible builds are not yet published; binary provenance is on the v0.3 roadmap.
