@@ -4,6 +4,21 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- End-to-end HTTP overhead benchmarks (A + C): `TestHTTP_OverheadReport_*` (p50/p95/p99/p999 histogram), `BenchmarkHTTP_EngineDelta_*` (engine on vs passthrough), `make bench-http`
+- `mcphttp.Client.CallDuration` for client-perceived latency measurement
+- `TestHTTP_ConcurrentLoad_KnownGap` — concurrent multi-session HTTP load deferred (replaces former `TestBenchmark_FullHTTPLoad_KnownGap`; single gap, one skip test)
+- CI HTTP overhead smoke (`OVERHEAD_SAMPLES=100`)
+
+### Changed
+
+- [`docs/performance.md`](docs/performance.md) — end-to-end HTTP snapshot table + engine delta; engine microbenchmarks moved to subsection; "Reading the HTTP numbers" explains taint-ingestion vs overlap delta inversion
+
+### Removed
+
+- `TestBenchmark_FullHTTPLoad_KnownGap` — duplicate of `TestHTTP_ConcurrentLoad_KnownGap` (one HTTP load gap, one skip test)
+
 ## [0.2.0] - 2026-07-05
 
 ### Added
