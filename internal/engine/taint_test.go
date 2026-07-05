@@ -172,3 +172,30 @@ Account: acct_user_admin_99`
 		t.Fatalf("expected at least 3 tainted values from different patterns, got %d", len(values))
 	}
 }
+
+func TestRedactJSON_EncodedVariants(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	tainted := ExtractTaintedValues(secret, "src", 1)
+	if len(tainted) == 0 {
+		t.Fatal("expected tainted value")
+	}
+
+	var b64 string
+	for _, v := range tainted[0].Variants {
+		if v.Form == string(FormBase64) {
+			b64 = v.Value
+		}
+	}
+	if b64 == "" {
+		t.Fatal("expected base64 variant")
+	}
+
+	raw := json.RawMessage(`{"body":"` + b64 + `"}`)
+	redacted := RedactJSON(raw, tainted)
+	if strings.Contains(string(redacted), b64) {
+		t.Fatalf("base64 variant should be redacted, got %s", redacted)
+	}
+	if !strings.Contains(string(redacted), tainted[0].Preview) {
+		t.Fatalf("expected masked preview in output, got %s", redacted)
+	}
+}
