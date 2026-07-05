@@ -66,20 +66,18 @@ Closes the detection-credibility gap for Variant A: encoded exfil in sink args i
 
 ### Phase 4 — Performance, Benchmarks, and Persistent Evidence
 
-The "is this operable" gate. A security tool with no performance numbers and file-based JSONL storage is a non-starter for anyone serious — and there are currently zero numbers.
+The "is this operable" gate — **shipped**.
 
-- Benchmark suite: proxy-path overhead per request, eBPF event throughput, the event rate at which it drops or degrades, memory under sustained load.
-- Publish the numbers honestly. "Adds X ms p99 per tool call" is a real, quotable stat.
-- Replace JSONL evidence with a persistent store — embedded first (SQLite), not a server database. Don't over-build.
-- Backpressure: define what happens when events arrive faster than they're processed. Today this is unknown, and unbounded growth or silent drops are both plausible.
+- **Benchmarks:** engine hot-path suite + [`docs/performance.md`](docs/performance.md) with published snapshot (`make bench`)
+- **SQLite evidence (opt-in):** `evidence.backend: sqlite` with `max_records` retention; JSONL remains default
+- **Backpressure:** `logging.backpressure: block | drop` with runtime stats at shutdown
+- **eBPF drops:** kernel `drop_count` map when ring buffer reserve fails; surfaced via `Sensor.DropCount()`
 
-**Done when:** there's a published overhead number, and evidence survives restart without growing unbounded.
+**Done when:** published overhead numbers + evidence survives restart without unbounded growth — **met** (SQLite opt-in; JSONL still append-only).
 
-**Watch out:**
-- The eBPF ring buffer may **drop events under load** — invisible in a 4-event demo, critical in production, because a dropped `connect()` is a missed exfil. Instrument drop counts explicitly and surface them.
-- The Phase 3 taint work is the likely bottleneck. If benchmarks are bad, deep taint-checking may need to be async or sampled rather than inline-blocking.
+**Deferred:** full HTTP p99 load benchmarks, Prometheus metrics (v0.3), SQLite for `events.jsonl`
 
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence. A usable tool — someone can point it at a real agent.
+**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). Tag **`v0.2.0`** when ready.
 
 ---
 

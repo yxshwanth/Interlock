@@ -1,4 +1,4 @@
-.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent clean
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent clean bench race
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
@@ -15,6 +15,9 @@ test:
 
 race:
 	CGO_ENABLED=1 $(GO) test -race -short ./internal/proxy/... ./internal/engine/...
+
+bench:
+	$(GO) test -bench=. -benchmem -benchtime=50ms ./internal/engine/...
 
 demo: clean-evidence build
 	$(GO) run ./cmd/demo
