@@ -665,9 +665,9 @@ func TestEngine_IngestSyscall_TimelineFused(t *testing.T) {
 	}
 }
 
-func TestEngine_IngestSyscall_AutoResolvesSession(t *testing.T) {
+func TestEngine_IngestSyscall_RequiresSessionID(t *testing.T) {
 	eng, sink := newTestEngine("block")
-	sid := "auto-resolve"
+	sid := "explicit-session"
 
 	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
 		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
@@ -680,9 +680,17 @@ func TestEngine_IngestSyscall_AutoResolvesSession(t *testing.T) {
 		DestPort: 9999,
 	}
 	dec := eng.IngestSyscall(ev)
+	if !dec.Allow {
+		t.Fatal("should no-op when SessionID is missing")
+	}
+	if len(sink.records) != 0 {
+		t.Fatalf("expected no evidence without session attribution, got %d", len(sink.records))
+	}
 
+	ev.SessionID = sid
+	dec = eng.IngestSyscall(ev)
 	if dec.Allow {
-		t.Fatal("should trip (auto-resolved to the only session)")
+		t.Fatal("should trip when SessionID is set")
 	}
 	if len(sink.records) != 1 {
 		t.Fatalf("expected 1 evidence record, got %d", len(sink.records))

@@ -41,6 +41,11 @@ STDIO single-session was a demo simplification. Real deployment means many concu
 
 **Done when:** two poisoned sessions run concurrently, each correctly attributed, neither leaking state into the other.
 
+**Status (Phase 2 — in PR, Issue #5):**
+
+- **Shipped:** Per-session backend server pools (spawn on HTTP `initialize`); `SessionManager` with idle expiry; `PIDRegistry` (PID + `/proc` start time); eBPF `RemovePID` + dynamic watch/unwatch; `IngestSyscall` requires explicit `SessionID` (no `FirstSessionID` guess); `TestConcurrentDualSession_VariantA_Block`; `make demo-http-concurrent`
+- **STDIO unchanged:** single session on stdin/stdout as before
+
 **Watch out:**
 - The PID→session map is a shared, concurrently-mutated structure — written by the proxy on spawn/exit, read by the eBPF event loop on every syscall. Classic race surface. A syscall can arrive for a PID *after* the process died but *before* cleanup, and the OS can recycle a PID to a different session. **PID reuse is a real correctness bug here** — the key may need to be PID + process-start-time, not PID alone.
 - This is where concurrency bugs hide. Run `go test -race` continuously; the demo never surfaces these, only load does.
