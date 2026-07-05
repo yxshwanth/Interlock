@@ -146,7 +146,9 @@ One state machine **per session**.
 - `untrusted_content_present` — set when content enters context from an attacker-controllable origin. **v0.1: all tool results and web fetches are treated as untrusted**, so in practice this lights alongside the first result.
 - `external_sink_invoked` — set when a tool tagged `external_sink` is called, **or** an eBPF `connect()`/egress to a non-allowlisted destination fires.
 
-**Tainted values.** When a `sensitive_source` returns data, the engine extracts candidate secrets and stores them as `TaintedValue`s — **hashed + masked, never raw** (§12).
+**Tainted values.** When a `sensitive_source` returns data, the engine extracts candidate secrets and stores them as `TaintedValue`s — **hashed + masked, never raw** (§12). At registration, each value gets a fixed set of **canonical encodings** (literal, base64, hex, URL-encoding, reversal) held in memory only.
+
+**Value overlap.** At sink time, `CheckOverlap` scans sink args for any tainted value in any canonical form. Evidence records `match_form` (`literal`, `base64`, `hex`, `url_encoded`, `reversed`). Explicitly out of scope: split-across-calls, compression, nested encoding — each has a skip test in `overlap_test.go`. `RedactJSON` scrubs all variant strings from logged JSON, not just the raw secret.
 
 **Evaluation — verdict and action are separate dimensions.** The machine evaluates the moment a sink fires. **Verdict** describes what was concluded (the detection result); **Action** describes what was done about it (the enforcement response). This separation is load-bearing: Variant A can *prevent* (hold-before-forward), Variant B can only *contain* (kill after the first packet), and monitor mode *allows* — all three are valid actions for the same verdict.
 

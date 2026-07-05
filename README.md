@@ -86,7 +86,7 @@ make demo                             # proxy-only, verbose
 
 These are design boundaries, not bugs. Naming them first is the point.
 
-1. **Value-overlap is a raw-substring heuristic, not sound dataflow analysis.** It catches the obvious case (a secret literal appearing in sink arguments) but misses encoded or obfuscated exfil and can false-positive on legitimate echoes. *v0.2: real dataflow taint through common encodings (base64, hex, URL-encoding) — see [`TestCheckOverlap_EncodedExfil_KnownGap`](internal/engine/overlap_test.go).*
+1. **Value-overlap checks canonical encodings, not full dataflow analysis.** At taint registration, each secret gets a fixed transform set (literal, base64, hex, URL-encoding, reversal). Sink args are matched against all forms — encoded Variant A exfil is caught at `EXFIL` (0.95). Still misses split-across-calls, compression, nested encoding, and custom ciphers — see [`TestCheckOverlap_SplitAcrossCalls_KnownGap`](internal/engine/overlap_test.go), [`TestCheckOverlap_Compressed_KnownGap`](internal/engine/overlap_test.go), [`TestCheckOverlap_DoubleEncoded_KnownGap`](internal/engine/overlap_test.go). Can false-positive on legitimate echoes of encoded forms.
 
 2. **Variant B is `SUSPICIOUS` / legs-only — not proven exfiltration.** Without payload inspection, the receipt shows an unauthorized outbound `connect()` during a sensitive session, not that data actually left. Confidence: 0.60. *v0.2: `sendto`/`write` payload capture on the eBPF side upgrades this to `EXFIL` at 0.95.*
 

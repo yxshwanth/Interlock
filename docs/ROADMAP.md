@@ -52,17 +52,17 @@ STDIO single-session was a demo simplification. Real deployment means many concu
 
 ### Phase 3 — Real Dataflow Taint
 
-Closes the detection-credibility gap. The `TestCheckOverlap_EncodedExfil_KnownGap` skip test documents exactly what's broken today; this makes it pass.
+Closes the detection-credibility gap for Variant A: encoded exfil in sink args is now caught.
 
-- Track tainted values through transformations, not just literal presence: base64, hex, URL-encoding, reversal, common obfuscations.
-- Taint propagation where feasible: a tainted value that is concatenated, embedded, or transformed stays tainted.
-- Pull in `sendto`/`write` payload capture on the eBPF side, so a confirmed secret in an outbound payload upgrades Variant B from `SUSPICIOUS` to `EXFIL`.
+- **Shipped (encoding overlap):** canonical transforms at taint registration — base64, hex, URL-encoding, reversal; `CheckOverlap` tests sink args against all forms; evidence records `match_form`; `RedactJSON` scrubs encoded variants from logs
+- **Known gaps (skip tests):** split-across-calls, compression, double/nested encoding
+- **Deferred:** eBPF `sendto`/`write` payload capture (Variant B `EXFIL` upgrade — follow-up PR)
 
-**Done when:** the encoded-exfil test that currently skips now *passes* — a base64'd token in the sink is caught.
+**Done when:** `TestCheckOverlap_EncodedExfil_KnownGap` passes — **met**.
 
 **Watch out:**
-- Full dataflow taint is a research-grade problem with no natural finish line. Scope it hard: cover the common encodings, declare the exotic ones (custom ciphers, split-across-calls, steganographic) still out of scope, and **keep a known-gap test for them.** "I do taint tracking now" invites a skeptic to find the encoding you missed — bound the claim to what you actually cover.
-- Performance. Checking every sink payload against every tainted value through N transformations is expensive, and it collides directly with Phase 4. Sequencing taint *before* the benchmark phase is deliberate, so the numbers reflect the real system.
+- Full dataflow taint is a research-grade problem with no natural finish line. Scope it hard: cover the common encodings, declare the exotic ones still out of scope, and **keep a known-gap test for them.**
+- Performance. Checking every sink payload against every tainted value through N transformations is expensive — Phase 4 benchmarks will quantify this.
 
 ### Phase 4 — Performance, Benchmarks, and Persistent Evidence
 
