@@ -56,7 +56,7 @@ flowchart TB
     eBPF -->|SyscallEvent| Engine
     eBPF -. watches PID subtree .-> Proxy
     eBPF -. connect() from monitored PID .-> E
-    E -.->|TCP side channel\n(bypasses proxy JSON-RPC)| Attacker
+    E -.->|"TCP side channel — bypasses proxy JSON-RPC"| Attacker
     Engine -->|Decision| Proxy
     Engine -->|EvidenceRecord| Sink
 ```
