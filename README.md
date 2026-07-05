@@ -92,7 +92,7 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 3. **eBPF containment is kill-after-connect, not first-packet prevention.** The `connect()` syscall completes before `SIGKILL` fires. Variant A truly prevents; Variant B severs the channel and stops further exfiltration. *v0.3: LSM/KRSI for in-kernel blocking before the packet leaves.*
 
-4. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens). Secrets shaped differently — JWTs, private URLs with embedded tokens, customer PII — pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files. *v0.2: extended redaction as HTTP/TLS transport lands.*
+4. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens). Secrets shaped differently — JWTs, private URLs with embedded tokens, customer PII — pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files. HTTP auth headers are redacted in metadata helpers; full result-body redaction remains v0.2 work.
 
 ---
 
@@ -133,22 +133,25 @@ Full architecture spec: [`docs/architecture.md`](docs/architecture.md)
 
 ---
 
-## Project status — v0.1
+## Project status — v0.1 → v0.2 in progress
 
-This is a **working proof**, deliberately scoped: STDIO transport, `connect()`-only eBPF, single session, heuristic value-overlap. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
+This is a **working proof** evolving toward a usable tool. v0.1 shipped STDIO transport, `connect()`-only eBPF, single session, and heuristic value-overlap. **v0.2 Phase 1 (HTTP/SSE agent transport) is implemented** on branch `feat/http-transport` ([PR #8](https://github.com/yxshwanth/Interlock/pull/8)); STDIO remains the default. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
 
-**In scope:**
+**In scope (v0.1 + Phase 1):**
 
-- MCP over STDIO transport
+- MCP over STDIO **or Streamable HTTP** (2025-11-25) agent transport
 - Trifecta state machine + tool tagging
 - Proxy-side blocking (Variant A — true prevention)
 - eBPF `connect()` sensor (Variant B — detection + containment)
 - Value-overlap confidence heuristic
-- Both demo attack variants; local HTML evidence viewer
+- Both demo attack variants (`make demo`, `make demo-http`); local HTML evidence viewer
 
-**Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
+**Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)) — phases are the source of truth for sequencing:
 
-- **v0.2 — Usable tool:** HTTP/SSE transport, multi-session concurrency, real dataflow taint + egress payload capture, published performance benchmarks, persistent evidence store
+- **v0.2 Phase 1 ✓** — HTTP/SSE transport interception
+- **v0.2 Phase 2** — multi-session concurrency and PID attribution *(next)*
+- **v0.2 Phase 3** — real dataflow taint + egress payload capture
+- **v0.2 Phase 4** — performance benchmarks + persistent evidence
 - **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
