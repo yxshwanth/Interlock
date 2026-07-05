@@ -106,7 +106,8 @@ This doc is the **source of truth for progress**. Check items as they land.
 - `[x]` Multi-session correlation hardening (real PID→session mapping under concurrency, v0.2 Phase 2)
 
 **v0.3**
-- `[ ]` Replace the value-overlap heuristic with **real dataflow taint tracking**
+- `[x]` **Bounded encoding overlap (v0.2 Phase 3):** canonical transforms (base64, hex, URL-encoding, reversal) at taint registration; `match_form` in evidence; known-gap tests for split/compressed/double-encoded
+- `[ ]` eBPF `sendto`/`write` payload capture — Variant B overlap upgrade (Phase 3 follow-up)
 - `[ ]` Cross-server **tool-shadowing** detection
 - `[ ]` Multi-agent sessions
 
@@ -116,7 +117,7 @@ This doc is the **source of truth for progress**. Check items as they land.
 
 - `[ ]` **eBPF portability** across kernels — mitigate: target BTF Ubuntu 6.x; bpftrace-first; CO-RE.
 - `[x]` **JSON-RPC framing variants** — **resolved in Week 1**: verified against the MCP stdio transport spec. Newline-delimited only; no `Content-Length` headers (unlike LSP). No alternate framing path needed.
-- `[ ]` **Value-overlap false pos/neg** — it's a heuristic (misses obfuscated/encoded exfil, can false-positive on legit echoes); document plainly; dataflow taint is the v0.3 answer.
+- `[ ]` **Value-overlap false pos/neg** — bounded encoding overlap catches common transforms; split/compressed/nested still missed (known-gap tests); can false-positive on legit echoes
 - `[x]` **Fail-open vs fail-closed** default — **decided:** v0.1 is fail-open with `[SECURITY]` warnings. Documented in architecture.md §12. Four warning scenarios wired: nil engine, engine panic, evidence sink failure, missing tool tags.
 - `[x]` **Multi-session PID→session mapping** — v0.2 Phase 2: per-session server pools, PIDRegistry, explicit session attribution for eBPF.
 - `[ ]` **Overhead** of interposition + eBPF — not measured in v0.1; not optimized.
