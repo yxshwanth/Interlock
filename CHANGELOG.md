@@ -6,6 +6,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- Performance benchmarks (v0.2 Phase 4): engine hot-path suite, `make bench`, [`docs/performance.md`](docs/performance.md)
+- Opt-in SQLite evidence store with `max_records` retention (`evidence.backend: sqlite`; JSONL default)
+- Event log backpressure policy (`logging.backpressure: block | drop`) and runtime stats at shutdown
+- eBPF ring-buffer drop counter (`drop_count` BPF map, `Sensor.DropCount()`)
 - Bounded encoding overlap (v0.2 Phase 3): canonical transforms at taint registration (base64, hex, URL-encoding, reversal)
 - `OverlapHit.match_form` in evidence records how overlap was detected
 - Known-gap skip tests: split-across-calls, compressed, double-encoded exfil
@@ -33,6 +37,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Known limitations (v0.2)
 
+- Engine benchmarks cover userspace hot path only — not HTTP p99 or eBPF saturation (see known-gap tests)
 - Value-overlap catches literal + canonical encodings only — not split/compressed/nested (see overlap known-gap tests)
 - HTTP multi-session: each `initialize` spawns a full backend pool — bounded by `sessions.max_concurrent` and `sessions.idle_timeout`, but a session-flood can exhaust host process slots (see README)
 - Unattributed eBPF events during PID teardown are audit-logged, not tripped — inspect `events.jsonl` for `unattributed_syscall` records

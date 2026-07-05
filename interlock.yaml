@@ -35,3 +35,12 @@ tool_tags:
 untrusted_origins:
   tool_results: true
   web_fetches:  true
+
+# evidence:
+#   backend: jsonl          # jsonl (default) | sqlite
+#   path: evidence.jsonl    # or evidence.db for sqlite
+#   max_records: 1000       # sqlite retention cap (0 = unlimited)
+
+# logging:
+#   backpressure: block     # block (default) | drop
+#   queue_size: 256         # drop mode bounded queue
