@@ -5,7 +5,9 @@
 *.so
 *.dylib
 /interlock
+/demo
 /cmd/interlock/interlock
+/cmd/demo/demo
 /servers/tickets/tickets
 /servers/messenger/messenger
 /servers/exfil/exfil
@@ -35,8 +37,11 @@ vendor/
 .DS_Store
 Thumbs.db
 
-# Interlock runtime output
+# Interlock runtime output (never commit — may contain tool bodies / PII)
 *.log
 evidence/
 *.jsonl
 evidence.json
+evidence-*.jsonl
+events.jsonl
+events-*.jsonl

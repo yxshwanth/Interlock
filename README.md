@@ -178,13 +178,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Pick up work from [`docs/ROADMAP.md`](do
 
 ## Security
 
-Interlock runs privileged and loads kernel probes. Do not report vulnerabilities in public issues — use [GitHub private security advisories](https://github.com/yxshwanth/Interlock/security/advisories/new) (a `SECURITY.md` with full disclosure policy is planned).
+Interlock runs privileged and loads kernel probes. Do not report vulnerabilities in public issues — see [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
 - [Project overview & threat model](docs/project_overview.md)
 - [Architecture spec](docs/architecture.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Changelog](CHANGELOG.md)
 
 ## Credits
 
