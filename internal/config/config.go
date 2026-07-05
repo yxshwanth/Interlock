@@ -31,6 +31,19 @@ type SessionsConfig struct {
 	IdleTimeout   string `yaml:"idle_timeout"` // Go duration string, e.g. "30m"
 }
 
+// EvidenceConfig controls forensic evidence persistence.
+type EvidenceConfig struct {
+	Backend    string `yaml:"backend"`     // jsonl | sqlite (default jsonl)
+	Path       string `yaml:"path"`        // evidence.jsonl or evidence.db
+	MaxRecords int    `yaml:"max_records"` // sqlite retention cap; 0 = unlimited
+}
+
+// LoggingConfig controls event log behavior.
+type LoggingConfig struct {
+	Backpressure string `yaml:"backpressure"` // block | drop (default block)
+	QueueSize    int    `yaml:"queue_size"`   // drop mode bounded queue
+}
+
 // IdleTimeoutDuration parses IdleTimeout with a default of 30 minutes.
 func (s SessionsConfig) IdleTimeoutDuration() time.Duration {
 	if s.IdleTimeout == "" {
@@ -47,6 +60,8 @@ func (s SessionsConfig) IdleTimeoutDuration() time.Duration {
 type Config struct {
 	Transport        TransportConfig     `yaml:"transport"`
 	Sessions         SessionsConfig      `yaml:"sessions"`
+	Evidence         EvidenceConfig      `yaml:"evidence"`
+	Logging          LoggingConfig       `yaml:"logging"`
 	Enforcement      string              `yaml:"enforcement"`
 	EgressAllowlist  []string            `yaml:"egress_allowlist"`
 	Servers          []ServerConfig      `yaml:"servers"`
@@ -105,6 +120,35 @@ func (c *Config) validate() error {
 	}
 	if c.Sessions.MaxConcurrent == 0 {
 		c.Sessions.MaxConcurrent = 32
+	}
+
+	switch c.Evidence.Backend {
+	case "", "jsonl":
+		c.Evidence.Backend = "jsonl"
+	case "sqlite":
+	default:
+		return fmt.Errorf("evidence.backend must be \"jsonl\" or \"sqlite\", got %q", c.Evidence.Backend)
+	}
+	if c.Evidence.Path == "" {
+		if c.Evidence.Backend == "sqlite" {
+			c.Evidence.Path = "evidence.db"
+		} else {
+			c.Evidence.Path = "evidence.jsonl"
+		}
+	}
+	if c.Evidence.MaxRecords == 0 {
+		c.Evidence.MaxRecords = 1000
+	}
+
+	switch c.Logging.Backpressure {
+	case "", "block":
+		c.Logging.Backpressure = "block"
+	case "drop":
+	default:
+		return fmt.Errorf("logging.backpressure must be \"block\" or \"drop\", got %q", c.Logging.Backpressure)
+	}
+	if c.Logging.QueueSize == 0 {
+		c.Logging.QueueSize = 256
 	}
 
 	if len(c.Servers) == 0 {

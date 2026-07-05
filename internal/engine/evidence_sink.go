@@ -47,18 +47,7 @@ func (s *JSONLEvidenceSink) Emit(rec model.EvidenceRecord) error {
 		return fmt.Errorf("writing evidence JSONL: %w", err)
 	}
 
-	data, err := json.MarshalIndent(rec, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling evidence JSON: %w", err)
-	}
-
-	// Write standalone JSON for the viewer (last record wins).
-	standalone := filepath.Join(s.dir, "evidence.json")
-	if err := os.WriteFile(standalone, data, 0644); err != nil {
-		return fmt.Errorf("writing evidence.json: %w", err)
-	}
-
-	return nil
+	return writeStandaloneEvidence(s.dir, rec)
 }
 
 // Close flushes and closes the JSONL file.
