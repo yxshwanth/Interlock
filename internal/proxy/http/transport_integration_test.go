@@ -55,7 +55,7 @@ func TestDemoHTTP_VariantA_Block(t *testing.T) {
 		}{ToolResults: true},
 	}
 
-	evLogger, err := proxy.NewEventLogger("")
+	evLogger, err := proxy.NewEventLogger("", config.LoggingConfig{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
