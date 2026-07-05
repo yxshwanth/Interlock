@@ -66,7 +66,7 @@ Closes the detection-credibility gap for Variant A: encoded exfil in sink args i
 
 The "is this operable" gate — **shipped**.
 
-- **Benchmarks:** engine hot-path suite + [`docs/performance.md`](docs/performance.md) with published snapshot (`make bench`)
+- **Benchmarks:** engine hot-path suite + [`performance.md`](performance.md) with published snapshot (`make bench`)
 - **SQLite evidence (opt-in):** `evidence.backend: sqlite` with `max_records` retention; JSONL remains default
 - **Backpressure:** `logging.backpressure: block | drop` with runtime stats at shutdown
 - **eBPF drops:** kernel `drop_count` map when ring buffer reserve fails; surfaced via `Sensor.DropCount()`
@@ -77,11 +77,11 @@ The "is this operable" gate — **shipped**.
 
 **Post-v0.2 performance (prioritized):**
 
-1. **End-to-end HTTP overhead (A + C)** — **met** (v0.2.1): `TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`, `make bench-http`, [`docs/performance.md`](performance.md) snapshot. Passthrough via `proxy.New(..., nil)`; concurrent load deferred to `TestHTTP_ConcurrentLoad_KnownGap`.
+1. **End-to-end HTTP overhead (A + C)** — **met** (v0.2.1): `TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`, `make bench-http`, [`performance.md`](performance.md) snapshot. Passthrough via `proxy.New(..., nil)`; concurrent load deferred to `TestHTTP_ConcurrentLoad_KnownGap`.
 2. **Async evidence emit** — block path ~563 µs / 432 KB / 6,296 allocs on trip; dominated by evidence construction and sink write. Decouple block decision from receipt write.
 3. **Taint ingestion on sensitive reads** — HTTP delta shows ~536 µs / +63 allocs on `read_ticket` vs ~118 µs on sink overlap checks. Per-benign-call engine cost is ingestion + canonical encodings on `IngestResult`, not `CheckOverlap`. Optimize registration path if sub-ms overhead must shrink further.
 
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`**.
+**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`** (milestone) and **`v0.2.1`** (HTTP overhead A+C).
 
 ---
 
