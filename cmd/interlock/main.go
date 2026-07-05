@@ -52,6 +52,9 @@ func main() {
 	}
 
 	eng := engine.NewEngine(store, tagger, cfg.Enforcement, evidenceSink)
+	if evLogger != nil {
+		eng.SetSecurityAuditSink(evLogger)
+	}
 
 	p := proxy.New(cfg, evLogger, eng)
 

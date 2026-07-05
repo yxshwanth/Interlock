@@ -117,24 +117,31 @@ func TestSessionStore_All(t *testing.T) {
 }
 
 func TestSessionStore_ConcurrentAccess(t *testing.T) {
-	s := NewSessionStore()
+	// SessionState mutation must go through Engine (which holds e.mu), not raw store access.
+	eng, _ := newTestEngine("monitor")
+
+	const n = 50
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func(id string) {
+		go func(seq int) {
 			defer wg.Done()
-			st := s.GetOrCreate(id)
-			st.Legs.SensitiveSourceTouched.Lit = true
-			s.Upsert(st)
-			_ = s.Get(id)
-			_ = s.All()
-		}("sess-concurrent")
+			<-start
+			eng.IngestResult(makeResultEvent("sess-concurrent", "read_ticket", "tickets", uint64(seq),
+				`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+		}(i)
 	}
+
+	close(start)
 	wg.Wait()
 
-	st := s.Get("sess-concurrent")
+	st := eng.store.Get("sess-concurrent")
 	if st == nil {
 		t.Fatal("expected session to exist after concurrent access")
+	}
+	if !st.Legs.SensitiveSourceTouched.Lit {
+		t.Fatal("expected sensitive_source_touched after concurrent ingest")
 	}
 }
