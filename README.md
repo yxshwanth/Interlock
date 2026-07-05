@@ -94,6 +94,8 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 4. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens). Secrets shaped differently — JWTs, private URLs with embedded tokens, customer PII — pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files. *v0.2: extended redaction as HTTP/TLS transport lands.*
 
+5. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
+
 ---
 
 ## How it works

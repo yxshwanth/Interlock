@@ -51,6 +51,21 @@ func (l *EventLogger) Close() error {
 	return nil
 }
 
+// EmitSecurityAudit appends a security audit record to events.jsonl and stderr.
+func (l *EventLogger) EmitSecurityAudit(rec model.SecurityAuditEvent) error {
+	fmt.Fprintf(os.Stderr,
+		"[interlock] [SECURITY] audit %s: %s syscall=%s pid=%d comm=%q dest=%s:%d\n",
+		rec.Kind, rec.Reason, rec.Syscall.Syscall, rec.Syscall.PID, rec.Syscall.Comm,
+		rec.Syscall.DestIP, rec.Syscall.DestPort)
+
+	if l.enc != nil {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.enc.Encode(rec)
+	}
+	return nil
+}
+
 // logEventStderr writes a human-readable one-line summary to stderr.
 func logEventStderr(ev model.InterceptedEvent) {
 	arrow := "agent→server"
