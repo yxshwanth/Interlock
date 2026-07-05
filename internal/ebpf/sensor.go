@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -82,7 +83,7 @@ func (s *Sensor) readLoop() {
 
 		raw, err := s.loader.ReadEvent()
 		if err != nil {
-			if err == ringbuf.ErrClosed {
+			if err == ringbuf.ErrClosed || s.stopping() || errors.Is(err, os.ErrClosed) {
 				return
 			}
 			s.log.Printf("read event error: %v", err)
@@ -115,6 +116,15 @@ func (s *Sensor) readLoop() {
 				KillProcess(ev.PID)
 			}
 		}
+	}
+}
+
+func (s *Sensor) stopping() bool {
+	select {
+	case <-s.stopCh:
+		return true
+	default:
+		return false
 	}
 }
 

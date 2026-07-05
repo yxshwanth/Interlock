@@ -1,4 +1,4 @@
-.PHONY: build test demo demo-ebpf clean
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf clean
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
@@ -25,6 +25,19 @@ demo-ebpf: clean-evidence build
 		exit 1; \
 	fi
 	$(GO) run ./cmd/demo
+
+demo-quiet: clean-evidence build
+	INTERLOCK_DEMO_QUIET=1 $(GO) run ./cmd/demo
+
+demo-quiet-ebpf: clean-evidence build
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo ""; \
+		echo "  eBPF demo (quiet) requires root. Run:"; \
+		echo "    sudo make demo-quiet-ebpf GO=$(GO)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	INTERLOCK_DEMO_QUIET=1 $(GO) run ./cmd/demo
 
 clean-evidence:
 	rm -f evidence.jsonl evidence.json events.jsonl
