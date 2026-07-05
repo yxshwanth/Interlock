@@ -5,6 +5,10 @@
 transport:
   mode: stdio
 
+sessions:
+  max_concurrent: 32
+  idle_timeout: 30m
+
 enforcement: block          # block | monitor
 
 egress_allowlist:

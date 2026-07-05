@@ -13,47 +13,51 @@ import (
 type DispatchResult struct {
 	Response       []byte
 	IsNotification bool
-	UseSSE         bool // caller may encode Response as SSE (inspect-then-forward already applied)
-	Blocked        bool // blocked tools/call — must use JSON, not SSE
+	UseSSE         bool
+	Blocked        bool
 }
 
-// HandleAgentRequest processes one JSON-RPC frame from the agent synchronously.
-// For tools/call it waits for the backend response (inspect-then-forward).
-func (p *Proxy) HandleAgentRequest(ctx context.Context, frame []byte) (*DispatchResult, error) {
-	if p.session == nil {
-		return nil, fmt.Errorf("proxy not started")
+// HandleAgentRequest processes one JSON-RPC frame for session rt.
+func (p *Proxy) HandleAgentRequest(ctx context.Context, rt *SessionRuntime, frame []byte) (*DispatchResult, error) {
+	if rt == nil {
+		return nil, fmt.Errorf("session runtime required")
 	}
+	rt.touch()
+	p.sessions.Touch(rt.Session.ID)
 
 	var msg model.JSONRPCMessage
 	if err := json.Unmarshal(frame, &msg); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
+	sess := rt.Session
+
 	if msg.IsNotification() {
-		ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+		ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
 		p.logEvent(ev)
 		return &DispatchResult{IsNotification: true}, nil
 	}
 
 	switch msg.Method {
 	case "initialize":
-		return p.dispatchInitialize(frame, msg), nil
+		return p.dispatchInitialize(rt, frame, msg), nil
 	case "tools/list":
-		return p.dispatchToolsList(frame, msg), nil
+		return p.dispatchToolsList(rt, frame, msg), nil
 	case "tools/call":
-		return p.dispatchToolsCall(ctx, frame, msg)
+		return p.dispatchToolsCall(ctx, rt, frame, msg)
 	case "ping":
-		return p.dispatchPing(frame, msg), nil
+		return p.dispatchPing(rt, frame, msg), nil
 	default:
-		ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+		ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
 		p.logEvent(ev)
 		data := p.buildErrorResponse(msg.ID, -32601, fmt.Sprintf("method not found: %s", msg.Method))
 		return &DispatchResult{Response: data}, nil
 	}
 }
 
-func (p *Proxy) dispatchInitialize(frame []byte, msg model.JSONRPCMessage) *DispatchResult {
-	ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+func (p *Proxy) dispatchInitialize(rt *SessionRuntime, frame []byte, msg model.JSONRPCMessage) *DispatchResult {
+	sess := rt.Session
+	ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
 	p.logEvent(ev)
 
 	resp := map[string]any{
@@ -71,30 +75,32 @@ func (p *Proxy) dispatchInitialize(frame []byte, msg model.JSONRPCMessage) *Disp
 		},
 	}
 	data, _ := json.Marshal(resp)
-	respEv := p.session.CreateEvent(data, model.ServerToAgent, "proxy", 0)
+	respEv := sess.CreateEvent(data, model.ServerToAgent, "proxy", 0)
 	p.logEvent(respEv)
 	return &DispatchResult{Response: data}
 }
 
-func (p *Proxy) dispatchToolsList(frame []byte, msg model.JSONRPCMessage) *DispatchResult {
-	ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+func (p *Proxy) dispatchToolsList(rt *SessionRuntime, frame []byte, msg model.JSONRPCMessage) *DispatchResult {
+	sess := rt.Session
+	ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
 	p.logEvent(ev)
 
 	resp := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      json.RawMessage(msg.ID),
 		"result": map[string]any{
-			"tools": p.allToolsAsAny(),
+			"tools": rt.allToolsAsAny(),
 		},
 	}
 	data, _ := json.Marshal(resp)
-	respEv := p.session.CreateEvent(data, model.ServerToAgent, "proxy", 0)
+	respEv := sess.CreateEvent(data, model.ServerToAgent, "proxy", 0)
 	p.logEvent(respEv)
 	return &DispatchResult{Response: data}
 }
 
-func (p *Proxy) dispatchPing(frame []byte, msg model.JSONRPCMessage) *DispatchResult {
-	ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+func (p *Proxy) dispatchPing(rt *SessionRuntime, frame []byte, msg model.JSONRPCMessage) *DispatchResult {
+	sess := rt.Session
+	ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
 	p.logEvent(ev)
 
 	resp := map[string]any{
@@ -103,26 +109,27 @@ func (p *Proxy) dispatchPing(frame []byte, msg model.JSONRPCMessage) *DispatchRe
 		"result":  map[string]any{},
 	}
 	data, _ := json.Marshal(resp)
-	respEv := p.session.CreateEvent(data, model.ServerToAgent, "proxy", 0)
+	respEv := sess.CreateEvent(data, model.ServerToAgent, "proxy", 0)
 	p.logEvent(respEv)
 	return &DispatchResult{Response: data}
 }
 
-func (p *Proxy) dispatchToolsCall(ctx context.Context, frame []byte, msg model.JSONRPCMessage) (*DispatchResult, error) {
+func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame []byte, msg model.JSONRPCMessage) (*DispatchResult, error) {
+	sess := rt.Session
 	var tc model.ToolCallParams
 	if len(msg.Params) > 0 {
 		tc, _ = model.ParseToolCallParams(msg.Params)
 	}
 
-	sc, ok := p.toolRoute[tc.Name]
+	sc, ok := rt.toolRoute[tc.Name]
 	if !ok {
-		ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+		ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
 		p.logEvent(ev)
 		data := p.buildErrorResponse(msg.ID, -32602, fmt.Sprintf("unknown tool: %s", tc.Name))
 		return &DispatchResult{Response: data, Blocked: true}, nil
 	}
 
-	ev := p.session.CreateEvent(frame, model.AgentToServer, sc.proc.ID, sc.proc.PID)
+	ev := sess.CreateEvent(frame, model.AgentToServer, sc.proc.ID, sc.proc.PID)
 
 	if p.engine != nil {
 		var decision model.Decision
@@ -149,16 +156,16 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, frame []byte, msg model.J
 
 	idKey := string(msg.ID)
 	ch := make(chan []byte, 1)
-	p.mu.Lock()
-	p.pending[idKey] = &pendingCall{sc: sc, toolName: tc.Name}
-	p.syncWait[idKey] = ch
-	p.mu.Unlock()
+	rt.mu.Lock()
+	rt.pending[idKey] = &pendingCall{sc: sc, toolName: tc.Name}
+	rt.syncWait[idKey] = ch
+	rt.mu.Unlock()
 
 	defer func() {
-		p.mu.Lock()
-		delete(p.syncWait, idKey)
-		delete(p.pending, idKey)
-		p.mu.Unlock()
+		rt.mu.Lock()
+		delete(rt.syncWait, idKey)
+		delete(rt.pending, idKey)
+		rt.mu.Unlock()
 	}()
 
 	if err := sc.writer.WriteFrame(frame); err != nil {
@@ -190,18 +197,19 @@ func (p *Proxy) buildErrorResponse(id json.RawMessage, code int, message string)
 	return data
 }
 
-func (p *Proxy) deliverServerFrame(sc *serverConn, frame []byte) {
-	ev := p.session.CreateEvent(frame, model.ServerToAgent, sc.proc.ID, sc.proc.PID)
+func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []byte) {
+	sess := rt.Session
+	ev := sess.CreateEvent(frame, model.ServerToAgent, sc.proc.ID, sc.proc.PID)
 
 	var msg model.JSONRPCMessage
 	var idKey string
 	if json.Unmarshal(frame, &msg) == nil && msg.IsResponse() {
 		idKey = string(msg.ID)
-		p.mu.Lock()
-		if pc, ok := p.pending[idKey]; ok {
+		rt.mu.Lock()
+		if pc, ok := rt.pending[idKey]; ok {
 			ev.ToolName = pc.toolName
 		}
-		p.mu.Unlock()
+		rt.mu.Unlock()
 	}
 
 	if p.engine != nil && ev.ToolName != "" {
@@ -210,9 +218,9 @@ func (p *Proxy) deliverServerFrame(sc *serverConn, frame []byte) {
 	p.logEvent(ev)
 
 	if idKey != "" {
-		p.mu.Lock()
-		ch := p.syncWait[idKey]
-		p.mu.Unlock()
+		rt.mu.Lock()
+		ch := rt.syncWait[idKey]
+		rt.mu.Unlock()
 		if ch != nil {
 			select {
 			case ch <- frame:

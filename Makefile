@@ -1,4 +1,4 @@
-.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf clean
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent clean
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
@@ -54,6 +54,9 @@ demo-http-ebpf: clean-evidence build
 
 demo-quiet-http: clean-evidence build
 	INTERLOCK_DEMO_QUIET=1 INTERLOCK_DEMO_HTTP=1 $(GO) run ./cmd/demo
+
+demo-http-concurrent: clean-evidence build
+	INTERLOCK_DEMO_HTTP=1 $(GO) run ./cmd/demo --concurrent
 
 demo-quiet-http-ebpf: clean-evidence build
 	@if [ "$$(id -u)" -ne 0 ]; then \

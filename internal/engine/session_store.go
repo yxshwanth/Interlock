@@ -55,20 +55,14 @@ func (s *SessionStore) Upsert(st *model.SessionState) {
 	s.sessions[st.SessionID] = st
 }
 
-// FirstSessionID returns the ID of any session in the store, or "" if empty.
-// Used by the eBPF sensor path where v0.1 has only one session active.
-func (s *SessionStore) FirstSessionID() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for id := range s.sessions {
-		return id
-	}
-	return ""
+// Delete removes a session from the store.
+func (s *SessionStore) Delete(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, sessionID)
 }
 
-// All returns a snapshot of every session in the store. The returned slice
-// contains the same pointers held internally — callers must not mutate
-// them without the store's lock (fine for read-only evidence dumps).
+// All returns a snapshot of every session in the store.
 func (s *SessionStore) All() []*model.SessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeTemp(t *testing.T, content string) string {
@@ -210,6 +211,27 @@ servers:
 	_, err := Load(writeTemp(t, yaml))
 	if err == nil {
 		t.Fatal("expected error for invalid transport mode")
+	}
+}
+
+func TestLoadSessionsConfig(t *testing.T) {
+	yaml := `
+sessions:
+  max_concurrent: 16
+  idle_timeout: 5m
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sessions.MaxConcurrent != 16 {
+		t.Errorf("max_concurrent = %d, want 16", cfg.Sessions.MaxConcurrent)
+	}
+	if cfg.Sessions.IdleTimeoutDuration() != 5*time.Minute {
+		t.Errorf("idle_timeout = %v", cfg.Sessions.IdleTimeoutDuration())
 	}
 }
 

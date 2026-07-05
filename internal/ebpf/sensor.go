@@ -65,6 +65,17 @@ func (s *Sensor) AddPIDs(pids ...int) error {
 	return nil
 }
 
+// RemovePIDs removes PIDs from the BPF filter map.
+func (s *Sensor) RemovePIDs(pids ...int) error {
+	for _, pid := range pids {
+		if err := s.loader.RemovePID(pid); err != nil {
+			return err
+		}
+		s.log.Printf("stopped watching PID %d", pid)
+	}
+	return nil
+}
+
 // Start begins the event-reading goroutine. Call Stop() to shut down.
 func (s *Sensor) Start() {
 	s.wg.Add(1)
