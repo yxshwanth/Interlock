@@ -110,7 +110,15 @@ func (l *Loader) RemovePID(pid int) error {
 	return l.objs.PidFilter.Delete(k)
 }
 
-// ReadEvent blocks until a connect event is available from the ring buffer.
+// DropCount returns kernel-side ring buffer reserve failures.
+func (l *Loader) DropCount() (uint64, error) {
+	var key uint32
+	var val uint64
+	if err := l.objs.DropCount.Lookup(&key, &val); err != nil {
+		return 0, err
+	}
+	return val, nil
+}
 // Returns the decoded event or an error. Callers should check for
 // ringbuf.ErrClosed when the reader has been shut down.
 func (l *Loader) ReadEvent() (*ConnectEvent, error) {
