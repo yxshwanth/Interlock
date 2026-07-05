@@ -29,7 +29,7 @@ flowchart TB
       M["messenger/http MCP server\n(external sink)"]
     end
 
-    Agent <-->|JSON-RPC over STDIO| Proxy
+    Agent <-->|JSON-RPC over STDIO or HTTP| Proxy
     Proxy <-->|spawns + pipes| T
     Proxy <-->|spawns + pipes| M
     Proxy -->|InterceptedEvent| Engine
@@ -75,6 +75,27 @@ The proxy is **protocol-aware**, not a transparent byte pipe. It terminates `ini
 **Response synthesis.** The proxy handles `initialize`, `tools/list`, and `ping` internally — it assembles responses from the child servers' capabilities and tool definitions without forwarding these protocol-level messages. `tools/list` returns a merged tool list aggregated from all servers. This is the same response-synthesis mechanism that Week 2's enforcement uses to return block errors.
 
 **JSON-RPC framing.** The MCP stdio transport uses newline-delimited JSON-RPC messages (one compact JSON object per line, no embedded newlines). This was verified against the [MCP stdio transport spec](https://modelcontextprotocol.io/specification/draft/basic/transports/stdio) in Week 1: there are **no Content-Length headers** (unlike LSP) — the newline is the sole message delimiter. The frame reader uses `bufio.Scanner` with a 1MB buffer, handles partial reads across `read()` boundaries, tolerates `\r\n` line endings, and skips blank lines.
+
+### 4.1 Transport — Streamable HTTP (v0.2 Phase 1)
+
+Agents can connect via [Streamable HTTP `2025-11-25`](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http) instead of STDIO. **Backend MCP servers remain STDIO child processes** — eBPF PID watching and Variant B containment are unchanged.
+
+**Inspect-then-forward, always.** A blocking firewall cannot stream bytes to the agent before policy runs:
+
+| Direction | Rule |
+|---|---|
+| Agent → Interlock (POST body) | Full JSON-RPC body parsed before dispatch |
+| Interlock → STDIO child | Unchanged — hold-before-forward on `tools/call` before `WriteFrame` |
+| STDIO child → Interlock | Full result frame received before `IngestResult` |
+| Interlock → Agent (SSE) | Buffer complete JSON-RPC response before writing first SSE `data:` line |
+
+Blocked `tools/call` responses use `Content-Type: application/json` with a synthesized error immediately (no SSE).
+
+**HTTP surface:** `POST /mcp` with `Accept: application/json, text/event-stream`, `MCP-Protocol-Version: 2025-11-25`, and `Mcp-Session-Id` after `initialize`. Optional `Mcp-Method` / `Mcp-Name` headers are validated against the JSON-RPC body (SEP-2243 baseline). `Authorization`, `Cookie`, and similar headers are redacted before any log metadata is emitted.
+
+**TLS posture (Phase 1):** bind `127.0.0.1` only — Interlock sits inside the trust boundary. TLS termination and MITM mode are deferred to a later v0.2 slice.
+
+**Deferred:** HTTP upstream backends (remote MCP server URLs), multi-session concurrent HTTP clients (Phase 2, #5), GET `/mcp` listen streams, and the [2026-07-28 stateless protocol](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http) migration.
 
 **Process lifecycle.** Deterministic startup ordering (spawn all children, initialize each, confirm tools registered, then accept agent traffic); graceful shutdown that drains in-flight frames; crash handling that surfaces a clean error to the agent rather than hanging; process-group isolation (`Setpgid`) so children can be killed cleanly; and **kill-on-detect** — the containment primitive Plane 2 uses for Variant B.
 
@@ -365,4 +386,4 @@ type SessionStore interface {
 
 ## 13. Deliberately absent in v0.1
 
-HTTP/SSE transport, real dataflow taint (the value-overlap check is a heuristic — see project_overview §Non-goals), kernel-level blocking, multi-session correlation logic, and any UI beyond the read-only viewer. All tracked in `task_list.md` under Backlog.
+Real dataflow taint (the value-overlap check is a heuristic — see project_overview §Non-goals), kernel-level blocking, multi-session correlation logic, and any UI beyond the read-only viewer. HTTP/SSE agent transport shipped in v0.2 Phase 1 (#4). Remaining transport work (HTTP backends, multi-session HTTP, TLS) tracked in `task_list.md` and `ROADMAP.md`.

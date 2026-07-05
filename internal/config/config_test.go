@@ -150,6 +150,69 @@ servers:
 	}
 }
 
+func TestLoadHTTPTransport(t *testing.T) {
+	yaml := `
+transport:
+  mode: http
+  listen: 127.0.0.1:9090
+  endpoint: /mcp
+  protocol_version: "2025-11-25"
+  prefer_sse_responses: true
+enforcement: block
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Transport.Mode != "http" {
+		t.Errorf("transport.mode = %q, want http", cfg.Transport.Mode)
+	}
+	if cfg.Transport.Listen != "127.0.0.1:9090" {
+		t.Errorf("transport.listen = %q", cfg.Transport.Listen)
+	}
+	if cfg.Transport.Endpoint != "/mcp" {
+		t.Errorf("transport.endpoint = %q", cfg.Transport.Endpoint)
+	}
+	if cfg.Transport.ProtocolVersion != "2025-11-25" {
+		t.Errorf("transport.protocol_version = %q", cfg.Transport.ProtocolVersion)
+	}
+	if !cfg.Transport.PreferSSEResponses {
+		t.Error("prefer_sse_responses should be true")
+	}
+}
+
+func TestLoadDefaultTransport(t *testing.T) {
+	yaml := `
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Transport.Mode != "stdio" {
+		t.Errorf("default transport.mode = %q, want stdio", cfg.Transport.Mode)
+	}
+}
+
+func TestLoadInvalidTransport(t *testing.T) {
+	yaml := `
+transport:
+  mode: websocket
+servers:
+  - id: s1
+    command: echo
+`
+	_, err := Load(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid transport mode")
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path/interlock.yaml")
 	if err == nil {
