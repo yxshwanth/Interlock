@@ -100,7 +100,7 @@ This doc is the **source of truth for progress**. Check items as they land.
 
 **v0.2**
 - `[ ]` Additional eBPF probes: `sendto`/payload excerpt, `openat()` (sensitive paths), DNS resolution
-- `[ ]` HTTP/SSE transport interception
+- `[x]` HTTP/SSE transport interception (v0.2 Phase 1 — Streamable HTTP 2025-11-25, STDIO backends preserved)
 - `[ ]` **Kernel-level blocking** via LSM / KRSI (upgrade Variant B from contain to prevent)
 - `[ ]` Policy config UX + allowlist management
 - `[ ]` Multi-session correlation hardening (real PID→session mapping under concurrency)

@@ -1,11 +1,13 @@
-# Interlock configuration (v0.1)
-# See docs/architecture.md §9 for the full specification.
+# Interlock HTTP monitor config (demo pass 1 over HTTP)
 
-# transport defaults to stdio when omitted; see interlock-http.yaml for HTTP mode
 transport:
-  mode: stdio
+  mode: http
+  listen: 127.0.0.1:8080
+  endpoint: /mcp
+  protocol_version: "2025-11-25"
+  prefer_sse_responses: true
 
-enforcement: block          # block | monitor
+enforcement: monitor
 
 egress_allowlist:
   - 127.0.0.1

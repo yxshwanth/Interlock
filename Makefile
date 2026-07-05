@@ -1,4 +1,4 @@
-.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf clean
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf clean
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
@@ -38,6 +38,32 @@ demo-quiet-ebpf: clean-evidence build
 		exit 1; \
 	fi
 	INTERLOCK_DEMO_QUIET=1 $(GO) run ./cmd/demo
+
+demo-http: clean-evidence build
+	INTERLOCK_DEMO_HTTP=1 $(GO) run ./cmd/demo
+
+demo-http-ebpf: clean-evidence build
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo ""; \
+		echo "  eBPF HTTP demo requires root. Run:"; \
+		echo "    sudo make demo-http-ebpf GO=$(GO)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	INTERLOCK_DEMO_HTTP=1 $(GO) run ./cmd/demo
+
+demo-quiet-http: clean-evidence build
+	INTERLOCK_DEMO_QUIET=1 INTERLOCK_DEMO_HTTP=1 $(GO) run ./cmd/demo
+
+demo-quiet-http-ebpf: clean-evidence build
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo ""; \
+		echo "  eBPF HTTP demo (quiet) requires root. Run:"; \
+		echo "    sudo make demo-quiet-http-ebpf GO=$(GO)"; \
+		echo ""; \
+		exit 1; \
+	fi
+	INTERLOCK_DEMO_QUIET=1 INTERLOCK_DEMO_HTTP=1 $(GO) run ./cmd/demo
 
 clean-evidence:
 	rm -f evidence.jsonl evidence.json events.jsonl
