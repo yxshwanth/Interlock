@@ -27,6 +27,12 @@ The biggest coverage gap. STDIO was the demo; production MCP is HTTP/SSE. Everyt
 
 **Done when:** the full trifecta demo runs against an HTTP MCP server, not just STDIO.
 
+**Status (Phase 1 landed — PR #8, Issue #4):**
+
+- **Shipped:** Streamable HTTP [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http) agent transport (`POST /mcp`, `Mcp-Session-Id`, JSON + SSE); inspect-then-forward documented in `docs/architecture.md` §4.1; shared `HandleAgentRequest` dispatch for STDIO and HTTP; `make demo-http`; auth-header redaction helpers; localhost bind (`127.0.0.1` only, no TLS termination in Phase 1).
+- **Backend servers stay STDIO** — eBPF PID watching unchanged. HTTP is the *agent-facing* transport only.
+- **Still deferred within v0.2 transport work:** HTTP upstream backends (remote MCP server URLs), TLS termination / MITM mode, multi-session concurrent HTTP clients (→ Phase 2), GET `/mcp` listen streams, [2026-07-28 stateless protocol](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http) migration.
+
 **Watch out:**
 - SSE plus a proxy creates a buffering hazard. Inspect-then-forward is safe but adds latency; forward-then-inspect is fast but may forward bytes before they're judged — a correctness problem for a *blocking* firewall. This trade-off is the phase's real design decision, not the plumbing. Decide it deliberately and document it.
 - HTTP means auth headers, TLS, and connection reuse. Credentials now transit the proxy — the redaction discipline extends here, and TLS termination raises a trust-boundary question (MITM, or sit inside the boundary?).
@@ -74,7 +80,7 @@ The "is this operable" gate. A security tool with no performance numbers and fil
 - The eBPF ring buffer may **drop events under load** — invisible in a 4-event demo, critical in production, because a dropped `connect()` is a missed exfil. Instrument drop counts explicitly and surface them.
 - The Phase 3 taint work is the likely bottleneck. If benchmarks are bad, deep taint-checking may need to be async or sampled rather than inline-blocking.
 
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence. A usable tool — someone can point it at a real agent.
+**v0.2 exit state:** works on HTTP/SSE *(Phase 1 ✓)*, handles concurrent sessions *(Phase 2 — next)*, catches encoded exfil, has published overhead numbers, persists evidence. A usable tool — someone can point it at a real agent.
 
 ---
 

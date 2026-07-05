@@ -111,11 +111,12 @@ PR checklist:
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for v0.2 and v0.3 plans. Open an issue before starting significant work so we can coordinate.
 
-High-value areas:
+High-value areas (see [docs/ROADMAP.md](docs/ROADMAP.md) for full phase sequencing):
 
-- HTTP/SSE MCP transport (v0.2 Phase 1)
+- ~~HTTP/SSE MCP transport (v0.2 Phase 1)~~ — landed in PR #8; Phase 2 is next
 - Multi-session PID attribution (v0.2 Phase 2)
 - Encoded-exfil taint tracking (v0.2 Phase 3)
+- Performance benchmarks + persistent evidence (v0.2 Phase 4)
 - Additional eBPF probes (`sendto` payload excerpt)
 
 ## Security
