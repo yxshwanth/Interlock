@@ -83,7 +83,3 @@ func BenchmarkEngine_EvaluateRequest_Exfil(b *testing.B) {
 		eng.EvaluateRequest(sinkCall)
 	}
 }
-
-func TestBenchmark_FullHTTPLoad_KnownGap(t *testing.T) {
-	t.Skip("known v0.2 gap: no automated end-to-end HTTP p99 load benchmark under concurrent sessions")
-}

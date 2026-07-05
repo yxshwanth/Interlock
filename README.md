@@ -106,7 +106,7 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 5. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
 
-6. **Performance numbers are engine-component benchmarks, not proxy overhead.** [`docs/performance.md`](docs/performance.md) publishes isolated engine ns/op — not end-to-end per-request latency on the HTTP path (`TestBenchmark_FullHTTPLoad_KnownGap`). Do not quote engine worst-case (~0.56 ms) as "Interlock's overhead."
+6. **Performance numbers include HTTP overhead (v0.2.1+).** [`docs/performance.md`](docs/performance.md) publishes engine-on vs passthrough delta: **~0.5 ms on sensitive reads (typical)** and **~0.1 ms on sink checks** — sub-millisecond. Read-path cost scales with secrets-per-result (snapshot uses a 2-secret fixture). Absolute end-to-end p99 is backend-dominated — do not quote ~12 ms `read_ticket` as Interlock's cost. Concurrent multi-session load p99 deferred (`TestHTTP_ConcurrentLoad_KnownGap`).
 
 ---
 
