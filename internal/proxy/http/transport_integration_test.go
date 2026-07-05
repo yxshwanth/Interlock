@@ -138,11 +138,11 @@ func TestDemoHTTP_VariantA_Block(t *testing.T) {
 	}
 }
 
-func findProjectRoot(t *testing.T) string {
-	t.Helper()
+func findProjectRoot(tb testing.TB) string {
+	tb.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
@@ -150,7 +150,7 @@ func findProjectRoot(t *testing.T) string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatal("go.mod not found")
+			tb.Fatal("go.mod not found")
 		}
 		dir = parent
 	}
