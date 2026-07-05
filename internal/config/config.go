@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,16 +18,35 @@ type ServerConfig struct {
 
 // TransportConfig controls how agents connect to Interlock.
 type TransportConfig struct {
-	Mode                 string `yaml:"mode"` // stdio | http
-	Listen               string `yaml:"listen"`
-	Endpoint             string `yaml:"endpoint"`
-	ProtocolVersion      string `yaml:"protocol_version"`
-	PreferSSEResponses   bool   `yaml:"prefer_sse_responses"`
+	Mode               string `yaml:"mode"` // stdio | http
+	Listen             string `yaml:"listen"`
+	Endpoint           string `yaml:"endpoint"`
+	ProtocolVersion    string `yaml:"protocol_version"`
+	PreferSSEResponses bool   `yaml:"prefer_sse_responses"`
+}
+
+// SessionsConfig controls multi-session lifecycle.
+type SessionsConfig struct {
+	MaxConcurrent int    `yaml:"max_concurrent"`
+	IdleTimeout   string `yaml:"idle_timeout"` // Go duration string, e.g. "30m"
+}
+
+// IdleTimeoutDuration parses IdleTimeout with a default of 30 minutes.
+func (s SessionsConfig) IdleTimeoutDuration() time.Duration {
+	if s.IdleTimeout == "" {
+		return 30 * time.Minute
+	}
+	d, err := time.ParseDuration(s.IdleTimeout)
+	if err != nil {
+		return 30 * time.Minute
+	}
+	return d
 }
 
 // Config is the top-level Interlock configuration, loaded from interlock.yaml.
 type Config struct {
 	Transport        TransportConfig     `yaml:"transport"`
+	Sessions         SessionsConfig      `yaml:"sessions"`
 	Enforcement      string              `yaml:"enforcement"`
 	EgressAllowlist  []string            `yaml:"egress_allowlist"`
 	Servers          []ServerConfig      `yaml:"servers"`
@@ -82,6 +102,9 @@ func (c *Config) validate() error {
 		if c.Transport.ProtocolVersion == "" {
 			c.Transport.ProtocolVersion = "2025-11-25"
 		}
+	}
+	if c.Sessions.MaxConcurrent == 0 {
+		c.Sessions.MaxConcurrent = 32
 	}
 
 	if len(c.Servers) == 0 {

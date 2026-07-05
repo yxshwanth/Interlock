@@ -104,6 +104,12 @@ func (l *Loader) AddPID(pid int) error {
 	return l.objs.PidFilter.Put(k, val)
 }
 
+// RemovePID removes a PID from the filter map.
+func (l *Loader) RemovePID(pid int) error {
+	k := uint32(pid)
+	return l.objs.PidFilter.Delete(k)
+}
+
 // ReadEvent blocks until a connect event is available from the ring buffer.
 // Returns the decoded event or an error. Callers should check for
 // ringbuf.ErrClosed when the reader has been shut down.

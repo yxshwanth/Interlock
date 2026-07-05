@@ -283,9 +283,7 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 
 	sessionID := ev.SessionID
 	if sessionID == "" {
-		sessionID = e.store.FirstSessionID()
-	}
-	if sessionID == "" {
+		e.log.Printf("[SECURITY] eBPF connect() from pid %d with no session attribution — ignoring", ev.PID)
 		return model.Decision{Allow: true}
 	}
 

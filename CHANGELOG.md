@@ -6,6 +6,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- Multi-session concurrency (v0.2 Phase 2): per-session backend server pools, `SessionManager`, `PIDRegistry` (PID + start time)
+- Sessions config: `sessions.max_concurrent`, `sessions.idle_timeout`
+- eBPF dynamic PID watch/unwatch on session spawn and cleanup
+- Concurrent HTTP integration test and `make demo-http-concurrent`
 - Streamable HTTP transport ([MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http)): `POST /mcp`, `Mcp-Session-Id`, JSON and SSE responses
 - Transport config: `transport.mode` (`stdio` | `http`), `listen`, `endpoint`, `protocol_version`, `prefer_sse_responses`
 - Inspect-then-forward for HTTP: full JSON-RPC body before dispatch; SSE only after complete backend response; blocked calls return JSON
@@ -15,6 +19,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Changed
 
+- `IngestSyscall` requires explicit `SessionID` — removed `FirstSessionID` fallback
+- HTTP `initialize` spawns dedicated backend children per MCP session (no shared server pool)
 - Extracted transport-agnostic dispatch from `internal/proxy/proxy.go` into `internal/proxy/dispatch.go`
 - STDIO mode unchanged and still the default
 

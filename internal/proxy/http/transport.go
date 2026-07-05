@@ -2,6 +2,8 @@ package mcphttp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -16,20 +18,25 @@ import (
 
 // Server serves Streamable HTTP MCP (2025-11-25) for the proxy.
 type Server struct {
-	proxy   *proxy.Proxy
-	cfg     *config.Config
-	log     *log.Logger
-	sessions *SessionStore
+	proxy *proxy.Proxy
+	cfg   *config.Config
+	log   *log.Logger
 }
 
 // NewServer creates an HTTP MCP front-end for p.
 func NewServer(p *proxy.Proxy, cfg *config.Config, logger *log.Logger) *Server {
 	return &Server{
-		proxy:    p,
-		cfg:      cfg,
-		log:      logger,
-		sessions: NewSessionStore(),
+		proxy: p,
+		cfg:   cfg,
+		log:   logger,
 	}
+}
+
+// NewMCPSessionID generates a random MCP session header value.
+func NewMCPSessionID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // Handler returns the HTTP handler for MCP POST requests (for tests and embedding).
@@ -111,24 +118,32 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bind session
+	reqCtx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	var rt *proxy.SessionRuntime
 	if msg.Method == "initialize" {
-		mcpID, sess := s.sessions.Create()
-		s.proxy.SetSession(sess)
+		mcpID := NewMCPSessionID()
+		rt, err = s.proxy.Sessions().CreateMCP(mcpID)
+		if err != nil {
+			s.log.Printf("HTTP session create error: %v", err)
+			WriteJSONRPCError(w, http.StatusServiceUnavailable, -32603, err.Error())
+			return
+		}
 		w.Header().Set(HeaderSessionID, mcpID)
 	} else if meta.SessionID != "" {
-		sess, ok := s.sessions.Get(meta.SessionID)
+		var ok bool
+		rt, ok = s.proxy.Sessions().GetByMCP(meta.SessionID)
 		if !ok {
 			WriteJSONRPCError(w, http.StatusBadRequest, -32600, "unknown session")
 			return
 		}
-		s.proxy.SetSession(sess)
+	} else {
+		WriteJSONRPCError(w, http.StatusBadRequest, -32600, "unknown session")
+		return
 	}
 
-	reqCtx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-
-	result, err := s.proxy.HandleAgentRequest(reqCtx, body)
+	result, err := s.proxy.HandleAgentRequest(reqCtx, rt, body)
 	if err != nil {
 		s.log.Printf("HTTP dispatch error: %v", err)
 		WriteJSONRPCError(w, http.StatusInternalServerError, -32603, err.Error())
