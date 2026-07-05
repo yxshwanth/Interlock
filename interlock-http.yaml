@@ -1,11 +1,14 @@
-# Interlock configuration (v0.1)
-# See docs/architecture.md §9 for the full specification.
+# Interlock HTTP transport config (v0.2 Phase 1)
+# Agent connects via Streamable HTTP; backend servers remain STDIO children.
 
-# transport defaults to stdio when omitted; see interlock-http.yaml for HTTP mode
 transport:
-  mode: stdio
+  mode: http
+  listen: 127.0.0.1:8080
+  endpoint: /mcp
+  protocol_version: "2025-11-25"
+  prefer_sse_responses: true
 
-enforcement: block          # block | monitor
+enforcement: block
 
 egress_allowlist:
   - 127.0.0.1

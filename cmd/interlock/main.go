@@ -14,6 +14,7 @@ import (
 	"github.com/yxshwanth/Interlock/internal/engine"
 	"github.com/yxshwanth/Interlock/internal/model"
 	"github.com/yxshwanth/Interlock/internal/proxy"
+	mcphttp "github.com/yxshwanth/Interlock/internal/proxy/http"
 )
 
 func main() {
@@ -29,7 +30,8 @@ func main() {
 	if err != nil {
 		logger.Fatalf("config: %v", err)
 	}
-	logger.Printf("loaded config: %d server(s), enforcement=%s", len(cfg.Servers), cfg.Enforcement)
+	logger.Printf("loaded config: %d server(s), enforcement=%s, transport=%s",
+		len(cfg.Servers), cfg.Enforcement, cfg.Transport.Mode)
 
 	evLogger, err := proxy.NewEventLogger(*logPath)
 	if err != nil {
@@ -83,7 +85,18 @@ func main() {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := p.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Fatalf("proxy: %v", err)
+	var runErr error
+	if cfg.Transport.Mode == "http" {
+		if err := p.Start(ctx); err != nil {
+			logger.Fatalf("proxy start: %v", err)
+		}
+		httpSrv := mcphttp.NewServer(p, cfg, logger)
+		runErr = httpSrv.ListenAndServe(ctx)
+	} else {
+		runErr = p.Run(ctx)
+	}
+
+	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		logger.Fatalf("proxy: %v", runErr)
 	}
 }
