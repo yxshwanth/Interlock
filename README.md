@@ -96,6 +96,8 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 5. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
 
+6. **Performance numbers cover the userspace engine path only.** Published benchmarks ([`docs/performance.md`](docs/performance.md)) measure overlap check and trifecta evaluation — not end-to-end HTTP p99 or eBPF throughput under load (`TestBenchmark_FullHTTPLoad_KnownGap`). eBPF ring-buffer drops are counted when reserve fails; saturation behavior is not CI-tested (`TestEBPF_RingbufSaturation_KnownGap`).
+
 ---
 
 ## How it works
