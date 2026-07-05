@@ -84,7 +84,8 @@ func TestConcurrentDualSession_VariantA_Block(t *testing.T) {
 	ts := httptest.NewServer(mcphttp.NewServer(p, cfg, logger).Handler())
 	defer ts.Close()
 
-	runSession := func(label string) error {
+	runSession := func(label string, release <-chan struct{}) error {
+		<-release
 		client := mcphttp.NewClient(ts.URL+cfg.Transport.Endpoint, "2025-11-25")
 		if _, err := client.Call("initialize", map[string]any{
 			"protocolVersion": "2025-11-25",
@@ -115,17 +116,27 @@ func TestConcurrentDualSession_VariantA_Block(t *testing.T) {
 		return nil
 	}
 
+	// Release both sessions together so initialize hits SessionManager concurrently.
+	release := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(2)
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	for _, label := range []string{"client-a", "client-b"} {
 		wg.Add(1)
 		go func(l string) {
 			defer wg.Done()
-			errCh <- runSession(l)
+			ready.Done()
+			errCh <- runSession(l, release)
 		}(label)
 	}
+
+	ready.Wait()
+	close(release)
 	wg.Wait()
 	close(errCh)
+
 	for err := range errCh {
 		if err != nil {
 			t.Fatal(err)

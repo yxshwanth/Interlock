@@ -13,6 +13,9 @@ test:
 	$(GO) test ./...
 	$(GO) vet ./...
 
+race:
+	CGO_ENABLED=1 $(GO) test -race -short ./internal/proxy/... ./internal/engine/...
+
 demo: clean-evidence build
 	$(GO) run ./cmd/demo
 

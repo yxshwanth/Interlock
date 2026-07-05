@@ -96,6 +96,15 @@ type SyscallEvent struct {
 	SessionID      string `json:"session_id,omitempty"`
 }
 
+// SecurityAuditEvent records a security-relevant observation outside normal
+// JSON-RPC intercept flow (e.g. unattributed eBPF events during PID teardown).
+type SecurityAuditEvent struct {
+	Kind    string       `json:"kind"`
+	Reason  string       `json:"reason"`
+	TSWall  time.Time    `json:"ts_wall"`
+	Syscall SyscallEvent `json:"syscall,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Engine state: trifecta state machine
 // ---------------------------------------------------------------------------

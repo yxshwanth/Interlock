@@ -18,12 +18,18 @@ type EvidenceSink interface {
 	Emit(rec model.EvidenceRecord) error
 }
 
+// SecurityAuditSink receives security audit records (e.g. unattributed syscalls).
+type SecurityAuditSink interface {
+	EmitSecurityAudit(rec model.SecurityAuditEvent) error
+}
+
 // Engine is the core trifecta policy engine. It evaluates tool calls against
 // the three-leg state machine and emits verdicts + evidence.
 type Engine struct {
 	store  *SessionStore
 	tagger *Tagger
 	sink   EvidenceSink
+	audit  SecurityAuditSink
 	mode   string // "block" or "monitor"
 	log    *log.Logger
 	mu     sync.Mutex
@@ -53,6 +59,11 @@ func NewEngine(store *SessionStore, tagger *Tagger, mode string, sink EvidenceSi
 		mode:   mode,
 		log:    l,
 	}
+}
+
+// SetSecurityAuditSink wires optional JSONL audit logging for security events.
+func (e *Engine) SetSecurityAuditSink(s SecurityAuditSink) {
+	e.audit = s
 }
 
 // IngestResult is called when a server→agent result arrives. It updates
@@ -283,7 +294,7 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 
 	sessionID := ev.SessionID
 	if sessionID == "" {
-		e.log.Printf("[SECURITY] eBPF connect() from pid %d with no session attribution — ignoring", ev.PID)
+		e.recordUnattributedSyscall(ev, "no session attribution for monitored PID")
 		return model.Decision{Allow: true}
 	}
 
@@ -330,6 +341,24 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 		Action:   action,
 		Reason:   fmt.Sprintf("trifecta %s: connect() to %s:%d by pid %d", verdict, ev.DestIP, ev.DestPort, ev.PID),
 		Evidence: &evidence,
+	}
+}
+
+func (e *Engine) recordUnattributedSyscall(ev model.SyscallEvent, reason string) {
+	e.log.Printf("[SECURITY] unattributed %s: pid=%d comm=%q dest=%s:%d — %s (fail-safe: not guessing session)",
+		ev.Syscall, ev.PID, ev.Comm, ev.DestIP, ev.DestPort, reason)
+
+	if e.audit == nil {
+		return
+	}
+	rec := model.SecurityAuditEvent{
+		Kind:    "unattributed_syscall",
+		Reason:  reason,
+		TSWall:  time.Now(),
+		Syscall: ev,
+	}
+	if err := e.audit.EmitSecurityAudit(rec); err != nil {
+		e.log.Printf("[SECURITY] security audit write failed: %v", err)
 	}
 }
 
