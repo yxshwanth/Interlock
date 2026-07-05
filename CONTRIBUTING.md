@@ -4,7 +4,7 @@ Thanks for your interest. Interlock is at v0.1 — early, deliberately scoped, a
 
 ## Prerequisites
 
-- **Go 1.21+**
+- **Go 1.25+** (matches `go.mod`)
 - **Linux with BTF** for eBPF (`ls /sys/kernel/btf/vmlinux` should succeed). eBPF paths do not build or run on macOS/Windows.
 - **clang** and **llvm** only if modifying BPF C code in `internal/ebpf/bpf/` (see [Generated eBPF artifacts](#generated-ebpf-artifacts))
 
