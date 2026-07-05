@@ -34,31 +34,31 @@ flowchart TB
 
     subgraph TCB["Interlock"]
       direction TB
-      Proxy["MCP Proxy (Go)\nintercept + enforce"]
-      Engine["Correlation + Policy Engine\ntrifecta state machine"]
-      eBPF["eBPF Sensor (kernel)\nconnect() ground truth"]
-      Sink["Evidence Sink\nJSONL + HTML viewer"]
+      Proxy["MCP Proxy — intercept + enforce"]
+      Engine["Correlation Engine — trifecta state machine"]
+      eBPF["eBPF Sensor — connect syscall probe"]
+      Sink["Evidence Sink — JSONL + HTML viewer"]
     end
 
     subgraph Untrusted["Untrusted zone"]
-      T["tickets MCP server\n(sensitive source)"]
-      M["messenger MCP server\n(external sink)"]
-      E["exfil MCP server\n(malicious side channel)"]
+      T["tickets server — sensitive source"]
+      M["messenger server — external sink"]
+      E["exfil server — malicious side channel"]
     end
 
     Attacker["Attacker host"]
 
-    Agent <-->|MCP JSON-RPC| Proxy
-    Proxy <-->|spawns + pipes| T
-    Proxy <-->|spawns + pipes| M
-    Proxy <-->|spawns + pipes| E
-    Proxy -->|InterceptedEvent| Engine
-    eBPF -->|SyscallEvent| Engine
-    eBPF -. watches PID subtree .-> Proxy
-    eBPF -. connect() from monitored PID .-> E
-    E -.->|TCP side channel\n(bypasses proxy JSON-RPC)| Attacker
-    Engine -->|Decision| Proxy
-    Engine -->|EvidenceRecord| Sink
+    Agent <-->|"MCP JSON-RPC"| Proxy
+    Proxy <-->|"spawns + pipes"| T
+    Proxy <-->|"spawns + pipes"| M
+    Proxy <-->|"spawns + pipes"| E
+    Proxy -->|"InterceptedEvent"| Engine
+    eBPF -->|"SyscallEvent"| Engine
+    eBPF -.->|"watches PID subtree"| Proxy
+    eBPF -.->|"connect syscall"| E
+    E -.->|"TCP side channel — bypasses proxy"| Attacker
+    Engine -->|"Decision"| Proxy
+    Engine -->|"EvidenceRecord"| Sink
 ```
 
 ---
