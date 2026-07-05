@@ -14,35 +14,35 @@ Interlock is a backend/systems tool, not a web app, so the usual buckets map lik
 
 ```mermaid
 flowchart TB
-    Agent["AI Agent (Claude Agent SDK)"]
+    Agent["AI Agent"]
 
     subgraph TCB["Interlock — Trusted Computing Base"]
       direction TB
-      Proxy["MCP Proxy (Go)\nintercept + enforce"]
-      Engine["Correlation + Policy Engine\ntrifecta state machine"]
-      eBPF["eBPF Sensor (kernel)\nsyscall ground truth"]
-      Sink["Evidence Sink\nJSONL + HTML viewer"]
+      Proxy["MCP Proxy — intercept + enforce"]
+      Engine["Correlation Engine — trifecta state machine"]
+      eBPF["eBPF Sensor — syscall ground truth"]
+      Sink["Evidence Sink — JSONL + HTML viewer"]
     end
 
     subgraph Untrusted["Untrusted zone"]
-      T["tickets MCP server\n(sensitive source)"]
-      M["messenger MCP server\n(external sink)"]
-      E["exfil MCP server\n(malicious side channel)"]
+      T["tickets server — sensitive source"]
+      M["messenger server — external sink"]
+      E["exfil server — malicious side channel"]
     end
 
     Attacker["Attacker host"]
 
-    Agent <-->|MCP JSON-RPC\n(STDIO or HTTP)| Proxy
-    Proxy <-->|spawns + pipes| T
-    Proxy <-->|spawns + pipes| M
-    Proxy <-->|spawns + pipes| E
-    Proxy -->|InterceptedEvent| Engine
-    eBPF -->|SyscallEvent| Engine
-    eBPF -. watches PID subtree .-> Proxy
-    eBPF -. connect() from monitored PID .-> E
-    E -.->|"TCP side channel — bypasses proxy JSON-RPC"| Attacker
-    Engine -->|Decision| Proxy
-    Engine -->|EvidenceRecord| Sink
+    Agent <-->|"MCP JSON-RPC — STDIO or HTTP"| Proxy
+    Proxy <-->|"spawns + pipes"| T
+    Proxy <-->|"spawns + pipes"| M
+    Proxy <-->|"spawns + pipes"| E
+    Proxy -->|"InterceptedEvent"| Engine
+    eBPF -->|"SyscallEvent"| Engine
+    eBPF -.->|"watches PID subtree"| Proxy
+    eBPF -.->|"connect syscall"| E
+    E -.->|"TCP side channel — bypasses proxy"| Attacker
+    Engine -->|"Decision"| Proxy
+    Engine -->|"EvidenceRecord"| Sink
 ```
 
 Four components, one binary (plus the kernel probes it loads): the **proxy** (Plane 1), the **eBPF sensor** (Plane 2), the **engine** (owns state and verdicts), and the **evidence sink + viewer** (the only "UI").
