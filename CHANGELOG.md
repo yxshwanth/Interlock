@@ -42,7 +42,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 - `SQLiteEvidenceSink.Count()` now holds the same mutex as `Emit` for safe concurrent use
 
-### Known limitations (v0.2)
+### Known limitations
 
 - Performance numbers are **engine-component benchmarks** — not end-to-end per-request proxy latency (`TestBenchmark_FullHTTPLoad_KnownGap`)
 - Value-overlap catches literal + canonical encodings only — not split/compressed/nested (see overlap known-gap tests)
