@@ -61,9 +61,19 @@ The only kernel code Interlock loads in v0.1 is [`internal/ebpf/bpf/connect.c`](
 
 ## Signed releases
 
-Release tags are **signed** starting with **v0.2.0** (`git tag -s`). Verify with:
+Release tags are **signed** starting with **v0.2.0** (`git tag -s`, SSH key). Verify with the repo's [`allowed_signers`](allowed_signers) file:
 
 ```bash
+git fetch --tags
+git -c gpg.ssh.allowedSignersFile=allowed_signers tag -v v0.2.0
+```
+
+Success looks like `Good "git" signature for yash@L5iPro.lan with ED25519 key SHA256:j0vZxZexFyPA8Hj8ys2NbdMEtyqmZ+kT60eWRdfjlq8`. If you see `gpg.ssh.allowedSignersFile needs to be configured`, you ran `git tag -v` without pointing Git at `allowed_signers` — the tag is signed; verification just needs the trust file.
+
+Optional one-time setup (any clone of this repo):
+
+```bash
+git config gpg.ssh.allowedSignersFile "$(git rev-parse --show-toplevel)/allowed_signers"
 git tag -v v0.2.0
 ```
 
