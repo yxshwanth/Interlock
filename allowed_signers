@@ -1,0 +1,5 @@
+# Trusted SSH keys for verifying signed git tags (see SECURITY.md).
+# Format: <email> namespaces="git" <key-type> <base64-key> [comment]
+#
+# v0.2.0 tagger identity: Yash <yash@L5iPro.lan>
+yash@L5iPro.lan namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFy4PrCbR+pq5D84IMHSn7M/rMcfA0wf7USD1MpzoXZa yxshwanth@github
