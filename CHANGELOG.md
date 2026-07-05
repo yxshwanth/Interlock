@@ -4,10 +4,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-05
+
 ### Added
 
 - Performance benchmarks (v0.2 Phase 4): engine hot-path suite, `make bench`, [`docs/performance.md`](docs/performance.md)
 - Opt-in SQLite evidence store with `max_records` retention (`evidence.backend: sqlite`; JSONL default)
+- Concurrent SQLite retention test (`TestSQLiteEvidenceSink_ConcurrentRetention`; covered by race CI)
 - Event log backpressure policy (`logging.backpressure: block | drop`) and runtime stats at shutdown
 - eBPF ring-buffer drop counter (`drop_count` BPF map, `Sensor.DropCount()`)
 - Bounded encoding overlap (v0.2 Phase 3): canonical transforms at taint registration (base64, hex, URL-encoding, reversal)
@@ -25,6 +28,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - HTTP demo path: `make demo-http`, `make demo-http-ebpf`, `make demo-quiet-http`, `make demo-quiet-http-ebpf`
 - Example configs: `interlock-http.yaml`, `interlock-http-monitor.yaml`
 - Auth header redaction helpers for HTTP request metadata
+- v0.2 milestone summary: [`docs/v0.2_summary.md`](docs/v0.2_summary.md)
 
 ### Changed
 
@@ -32,16 +36,19 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - HTTP `initialize` spawns dedicated backend children per MCP session (no shared server pool)
 - Extracted transport-agnostic dispatch from `internal/proxy/proxy.go` into `internal/proxy/dispatch.go`
 - STDIO mode unchanged and still the default
+- README two-plane framing: Variant A = dataflow analysis; Variant B = connect() tripwire (not payload detection)
 
 ### Fixed
 
-### Known limitations (v0.2)
+- `SQLiteEvidenceSink.Count()` now holds the same mutex as `Emit` for safe concurrent use
 
-- Engine benchmarks cover userspace hot path only — not HTTP p99 or eBPF saturation (see known-gap tests)
+### Known limitations
+
+- Performance numbers are **engine-component benchmarks** — not end-to-end per-request proxy latency (`TestBenchmark_FullHTTPLoad_KnownGap`)
 - Value-overlap catches literal + canonical encodings only — not split/compressed/nested (see overlap known-gap tests)
 - HTTP multi-session: each `initialize` spawns a full backend pool — bounded by `sessions.max_concurrent` and `sessions.idle_timeout`, but a session-flood can exhaust host process slots (see README)
 - Unattributed eBPF events during PID teardown are audit-logged, not tripped — inspect `events.jsonl` for `unattributed_syscall` records
-- Variant B still legs-only `SUSPICIOUS` at 0.60 — no eBPF payload overlap yet
+- Variant B is a **connect() tripwire** — legs-only `SUSPICIOUS` at 0.60; no eBPF payload overlap yet (post-v0.2)
 
 ## [0.1.0] - 2026-07-04
 
@@ -71,5 +78,6 @@ First release — a working proof that runtime trifecta detection works across t
 - Redaction is pattern-matched — treat runtime event/evidence logs as sensitive artifacts
 - eBPF integration tested locally (root + BTF kernel), not in CI
 
-[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/yxshwanth/Interlock/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yxshwanth/Interlock/releases/tag/v0.1.0

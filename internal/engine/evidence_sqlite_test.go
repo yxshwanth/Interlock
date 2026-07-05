@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/yxshwanth/Interlock/internal/config"
@@ -62,6 +64,78 @@ func TestSQLiteEvidenceSink_Retention(t *testing.T) {
 	}
 	if n != 3 {
 		t.Fatalf("expected 3 records after retention, got %d", n)
+	}
+}
+
+func TestSQLiteEvidenceSink_ConcurrentRetention(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence.db")
+	const maxRecords = 8
+	const writers = 6
+	const emitsPerWriter = 5
+
+	sink, err := NewSQLiteEvidenceSink(path, maxRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+
+	start := make(chan struct{})
+	var done sync.WaitGroup
+	done.Add(writers)
+	errCh := make(chan error, 1)
+
+	for w := 0; w < writers; w++ {
+		go func(w int) {
+			defer done.Done()
+			<-start
+			for i := 0; i < emitsPerWriter; i++ {
+				rec := sampleEvidence("sess")
+				rec.SessionID = fmt.Sprintf("sess-%d", w)
+				rec.TripTS = int64(w*100 + i)
+				if err := sink.Emit(rec); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}(w)
+	}
+
+	close(start)
+	done.Wait()
+
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
+	}
+
+	n, err := sink.Count()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != maxRecords {
+		t.Fatalf("expected %d records after concurrent retention, got %d", maxRecords, n)
+	}
+
+	// Restart survival after concurrent writes + eviction.
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sink2, err := NewSQLiteEvidenceSink(path, maxRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink2.Close()
+	n, err = sink2.Count()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != maxRecords {
+		t.Fatalf("expected %d records after restart, got %d", maxRecords, n)
 	}
 }
 

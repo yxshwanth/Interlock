@@ -39,11 +39,9 @@ STDIO single-session was a demo simplification. Real deployment means many concu
 - Per-session state isolation in the engine and session store.
 - Session lifecycle: creation, expiry, cleanup, and processes that fork children.
 
-**Done when:** two poisoned sessions run concurrently, each correctly attributed, neither leaking state into the other.
+**Done when:** two poisoned sessions run concurrently, each correctly attributed, neither leaking state into the other. — **Met** (PR #9, review hardening #10).
 
-**Status (Phase 2 — in PR, Issue #5):**
-
-- **Shipped:** Per-session backend server pools (spawn on HTTP `initialize`); `SessionManager` with idle expiry; `PIDRegistry` (PID + `/proc` start time); eBPF `RemovePID` + dynamic watch/unwatch; `IngestSyscall` requires explicit `SessionID` (no `FirstSessionID` guess); `TestConcurrentDualSession_VariantA_Block`; `make demo-http-concurrent`
+- **Shipped:** Per-session backend server pools (spawn on HTTP `initialize`); `SessionManager` with idle expiry; `PIDRegistry` (PID + `/proc` start time); eBPF `RemovePID` + dynamic watch/unwatch; `IngestSyscall` requires explicit `SessionID` (no `FirstSessionID` guess); race CI; unattributed syscall audit trail; `TestConcurrentDualSession_VariantA_Block`; `make demo-http-concurrent`
 - **STDIO unchanged:** single session on stdin/stdout as before
 
 **Watch out:**
@@ -77,7 +75,7 @@ The "is this operable" gate — **shipped**.
 
 **Deferred:** full HTTP p99 load benchmarks, Prometheus metrics (v0.3), SQLite for `events.jsonl`
 
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). Tag **`v0.2.0`** when ready.
+**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`**.
 
 ---
 
