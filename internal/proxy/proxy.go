@@ -76,7 +76,8 @@ type serverConn struct {
 	reader *FrameReader
 	writer *FrameWriter
 	cfg    config.ServerConfig
-	tools  []json.RawMessage // raw tool definitions from tools/list
+	tools  []json.RawMessage
+	rt     *SessionRuntime
 }
 
 // pendingCall tracks an in-flight tools/call so the response can be
@@ -86,55 +87,46 @@ type pendingCall struct {
 	toolName string
 }
 
-// Proxy is the multi-server MCP proxy. It launches all configured servers,
-// initializes them, builds a tool routing table, and dispatches agent
-// requests to the correct server.
+// Proxy is the multi-server MCP proxy with per-session backend pools.
 type Proxy struct {
-	cfg             *config.Config
-	logger          *EventLogger
-	engine          *engine.Engine
-	log             *log.Logger
-	servers         map[string]*serverConn
-	toolRoute       map[string]*serverConn   // tool name -> server
-	allTools        []json.RawMessage        // merged tool list
-	session         *Session
-	agentWriter     *FrameWriter
-	pending         map[string]*pendingCall  // stringified request ID -> pending call info
-	syncWait        map[string]chan []byte   // synchronous HTTP (or in-flight) response waiters
-	mu              sync.Mutex
-	onServersReady  func(childPIDs []int)    // called after all servers are launched
+	cfg         *config.Config
+	logger      *EventLogger
+	engine      *engine.Engine
+	log         *log.Logger
+	sessions    *SessionManager
+	pidRegistry *PIDRegistry
+	agentWriter *FrameWriter
+	stdioRT     *SessionRuntime
+	mu          sync.Mutex
 }
 
 // New creates a Proxy from the given config.
-// Pass nil for logger to disable JSONL logging.
-// Pass nil for eng to disable enforcement (Week 1 passthrough mode).
 func New(cfg *config.Config, logger *EventLogger, eng *engine.Engine) *Proxy {
-	return &Proxy{
-		cfg:       cfg,
-		logger:    logger,
-		engine:    eng,
-		log:       log.New(os.Stderr, "[interlock] ", log.LstdFlags),
-		servers:   make(map[string]*serverConn),
-		toolRoute: make(map[string]*serverConn),
-		pending:   make(map[string]*pendingCall),
-		syncWait:  make(map[string]chan []byte),
+	log := log.New(os.Stderr, "[interlock] ", log.LstdFlags)
+	p := &Proxy{
+		cfg:         cfg,
+		logger:      logger,
+		engine:      eng,
+		log:         log,
+		pidRegistry: NewPIDRegistry(),
 	}
+	p.sessions = NewSessionManager(p, cfg, log, p.pidRegistry)
+	return p
 }
 
-// OnServersReady registers a callback that fires after all child servers
-// are launched and initialized but before the dispatch loop begins.
-// The callback receives the list of child PIDs.
-func (p *Proxy) OnServersReady(fn func(childPIDs []int)) {
-	p.onServersReady = fn
+// Sessions returns the session manager.
+func (p *Proxy) Sessions() *SessionManager {
+	return p.sessions
 }
 
-// ChildPIDs returns the PIDs of all launched child server processes.
-func (p *Proxy) ChildPIDs() []int {
-	pids := make([]int, 0, len(p.servers))
-	for _, sc := range p.servers {
-		pids = append(pids, sc.proc.PID)
-	}
-	return pids
+// PIDRegistry returns the PID→session registry.
+func (p *Proxy) PIDRegistry() *PIDRegistry {
+	return p.pidRegistry
+}
+
+// SetPIDHooks registers eBPF watch/unwatch callbacks on the session manager.
+func (p *Proxy) SetPIDHooks(hooks PIDHooks) {
+	p.sessions.SetPIDHooks(hooks)
 }
 
 func (p *Proxy) logEvent(ev model.InterceptedEvent) {
@@ -148,32 +140,34 @@ func (p *Proxy) logEvent(ev model.InterceptedEvent) {
 	}
 }
 
-// Run starts all servers and runs the STDIO agent transport loop.
+// Run starts a single STDIO session and runs the agent transport loop.
 func (p *Proxy) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	p.session = NewSession()
-	p.log.Printf("session %s started", p.session.ID)
 	if p.engine == nil {
 		p.log.Printf("[SECURITY] engine not configured — all calls forwarded without enforcement (FAIL-OPEN)")
 	}
-	p.agentWriter = NewFrameWriter(os.Stdout)
 
-	if err := p.startServers(ctx); err != nil {
+	rt, err := p.StartStdioSession(ctx)
+	if err != nil {
 		return err
 	}
+	p.stdioRT = rt
+	p.log.Printf("session %s started (stdio)", rt.Session.ID)
+
+	p.agentWriter = NewFrameWriter(os.Stdout)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		p.readAgentFrames(ctx)
+		p.readAgentFrames(ctx, rt)
 		cancel()
 	}()
 
-	serverDone := make(chan string, len(p.servers))
-	for _, sc := range p.servers {
+	serverDone := make(chan string, len(rt.servers))
+	for _, sc := range rt.servers {
 		go func(sc *serverConn) {
 			sc.proc.Wait()
 			serverDone <- sc.proc.ID
@@ -189,146 +183,24 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 
 	os.Stdin.Close()
-	p.stopServers()
+	p.sessions.Cleanup(rt.Session.ID)
 	wg.Wait()
 	return nil
 }
 
-// Start launches backend servers and background readers without binding agent I/O.
-// Used by HTTP transport mode.
-func (p *Proxy) Start(ctx context.Context) error {
-	if p.session == nil {
-		p.session = NewSession()
-		p.log.Printf("session %s started", p.session.ID)
-	}
+// StartHTTP prepares multi-session HTTP mode (idle sweeper, no global servers).
+func (p *Proxy) StartHTTP(ctx context.Context) error {
 	if p.engine == nil {
 		p.log.Printf("[SECURITY] engine not configured — all calls forwarded without enforcement (FAIL-OPEN)")
 	}
-	return p.startServers(ctx)
-}
-
-// Session returns the active Interlock session (for HTTP session binding).
-func (p *Proxy) Session() *Session {
-	return p.session
-}
-
-// SetSession binds an Interlock session (HTTP MCP session reuse).
-func (p *Proxy) SetSession(s *Session) {
-	p.session = s
-}
-
-func (p *Proxy) startServers(ctx context.Context) error {
-	for _, sc := range p.cfg.Servers {
-		if err := p.startAndInit(ctx, sc); err != nil {
-			return err
-		}
-	}
-
-	p.log.Printf("all servers initialized, %d tools available", len(p.allTools))
-
-	if p.onServersReady != nil {
-		p.onServersReady(p.ChildPIDs())
-	}
-
-	for _, sc := range p.servers {
-		go p.readServerFrames(ctx, sc)
-		go copyStderr(sc.proc.ID, sc.proc.Stderr)
-	}
+	p.sessions.StartIdleSweeper(ctx)
 	return nil
 }
 
-func (p *Proxy) stopServers() {
-	for _, sc := range p.servers {
-		sc.proc.Stop()
-	}
-}
-
-// startAndInit launches a server, sends initialize + notifications/initialized,
-// queries tools/list, and populates the routing table.
-func (p *Proxy) startAndInit(ctx context.Context, cfg config.ServerConfig) error {
-	p.log.Printf("starting server %q: %s %v", cfg.ID, cfg.Command, cfg.Args)
-
-	proc, err := StartServer(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("starting server %s: %w", cfg.ID, err)
-	}
-
-	sc := &serverConn{
-		proc:   proc,
-		reader: NewFrameReader(proc.Stdout),
-		writer: NewFrameWriter(proc.Stdin),
-		cfg:    cfg,
-	}
-	p.servers[cfg.ID] = sc
-	p.log.Printf("server %q started (pid=%d)", cfg.ID, proc.PID)
-
-	// Send initialize.
-	initReq := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      fmt.Sprintf("interlock-init-%s", cfg.ID),
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": "2025-06-18",
-			"capabilities":    map[string]any{},
-			"clientInfo": map[string]any{
-				"name":    "interlock",
-				"version": "0.1.0",
-			},
-		},
-	}
-	if err := p.sendJSON(sc.writer, initReq); err != nil {
-		return fmt.Errorf("server %s: initialize send: %w", cfg.ID, err)
-	}
-	if _, err := sc.reader.ReadFrame(); err != nil {
-		return fmt.Errorf("server %s: initialize response: %w", cfg.ID, err)
-	}
-
-	// Send notifications/initialized.
-	notif := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "notifications/initialized",
-	}
-	if err := p.sendJSON(sc.writer, notif); err != nil {
-		return fmt.Errorf("server %s: initialized notification: %w", cfg.ID, err)
-	}
-
-	// Send tools/list.
-	listReq := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      fmt.Sprintf("interlock-tools-%s", cfg.ID),
-		"method":  "tools/list",
-		"params":  map[string]any{},
-	}
-	if err := p.sendJSON(sc.writer, listReq); err != nil {
-		return fmt.Errorf("server %s: tools/list send: %w", cfg.ID, err)
-	}
-	toolsFrame, err := sc.reader.ReadFrame()
-	if err != nil {
-		return fmt.Errorf("server %s: tools/list response: %w", cfg.ID, err)
-	}
-
-	// Parse tools/list result.
-	var resp struct {
-		Result struct {
-			Tools []json.RawMessage `json:"tools"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(toolsFrame, &resp); err != nil {
-		return fmt.Errorf("server %s: parse tools/list: %w", cfg.ID, err)
-	}
-
-	for _, raw := range resp.Result.Tools {
-		var td struct {
-			Name string `json:"name"`
-		}
-		json.Unmarshal(raw, &td)
-		p.toolRoute[td.Name] = sc
-		sc.tools = append(sc.tools, raw)
-		p.allTools = append(p.allTools, raw)
-		p.log.Printf("  registered tool %q from server %q", td.Name, cfg.ID)
-	}
-
-	return nil
+// StartStdioSession creates the single STDIO session runtime.
+func (p *Proxy) StartStdioSession(ctx context.Context) (*SessionRuntime, error) {
+	p.sessions.StartIdleSweeper(ctx)
+	return p.sessions.Create(NewSession())
 }
 
 func (p *Proxy) sendJSON(fw *FrameWriter, msg any) error {
@@ -339,8 +211,7 @@ func (p *Proxy) sendJSON(fw *FrameWriter, msg any) error {
 	return fw.WriteFrame(data)
 }
 
-// readAgentFrames reads from the agent's stdin and dispatches to servers.
-func (p *Proxy) readAgentFrames(ctx context.Context) {
+func (p *Proxy) readAgentFrames(ctx context.Context, rt *SessionRuntime) {
 	agentReader := NewFrameReader(os.Stdin)
 
 	for {
@@ -358,7 +229,7 @@ func (p *Proxy) readAgentFrames(ctx context.Context) {
 			return
 		}
 
-		result, err := p.HandleAgentRequest(ctx, frame)
+		result, err := p.HandleAgentRequest(ctx, rt, frame)
 		if err != nil {
 			p.log.Printf("dispatch error: %v", err)
 			continue
@@ -372,8 +243,7 @@ func (p *Proxy) readAgentFrames(ctx context.Context) {
 	}
 }
 
-// readServerFrames reads responses from a server and forwards them to the agent.
-func (p *Proxy) readServerFrames(ctx context.Context, sc *serverConn) {
+func (p *Proxy) readServerFrames(ctx context.Context, rt *SessionRuntime, sc *serverConn) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -389,22 +259,10 @@ func (p *Proxy) readServerFrames(ctx context.Context, sc *serverConn) {
 			return
 		}
 
-		p.deliverServerFrame(sc, frame)
+		p.deliverServerFrame(rt, sc, frame)
 	}
 }
 
-func (p *Proxy) allToolsAsAny() []any {
-	out := make([]any, len(p.allTools))
-	for i, raw := range p.allTools {
-		var v any
-		json.Unmarshal(raw, &v)
-		out[i] = v
-	}
-	return out
-}
-
-// copyStderr prefixes each line from the server's stderr and writes it
-// to the proxy's stderr so the operator can see server-side logs.
 func copyStderr(serverID string, r io.Reader) {
 	fr := NewFrameReader(r)
 	for {

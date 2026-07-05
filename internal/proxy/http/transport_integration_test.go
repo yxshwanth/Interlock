@@ -75,7 +75,7 @@ func TestDemoHTTP_VariantA_Block(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := p.Start(ctx); err != nil {
+	if err := p.StartHTTP(ctx); err != nil {
 		t.Fatalf("proxy start: %v", err)
 	}
 

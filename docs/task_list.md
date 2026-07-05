@@ -103,7 +103,7 @@ This doc is the **source of truth for progress**. Check items as they land.
 - `[x]` HTTP/SSE transport interception (v0.2 Phase 1 — Streamable HTTP 2025-11-25, STDIO backends preserved)
 - `[ ]` **Kernel-level blocking** via LSM / KRSI (upgrade Variant B from contain to prevent)
 - `[ ]` Policy config UX + allowlist management
-- `[ ]` Multi-session correlation hardening (real PID→session mapping under concurrency)
+- `[x]` Multi-session correlation hardening (real PID→session mapping under concurrency, v0.2 Phase 2)
 
 **v0.3**
 - `[ ]` Replace the value-overlap heuristic with **real dataflow taint tracking**
@@ -118,7 +118,7 @@ This doc is the **source of truth for progress**. Check items as they land.
 - `[x]` **JSON-RPC framing variants** — **resolved in Week 1**: verified against the MCP stdio transport spec. Newline-delimited only; no `Content-Length` headers (unlike LSP). No alternate framing path needed.
 - `[ ]` **Value-overlap false pos/neg** — it's a heuristic (misses obfuscated/encoded exfil, can false-positive on legit echoes); document plainly; dataflow taint is the v0.3 answer.
 - `[x]` **Fail-open vs fail-closed** default — **decided:** v0.1 is fail-open with `[SECURITY]` warnings. Documented in architecture.md §12. Four warning scenarios wired: nil engine, engine panic, evidence sink failure, missing tool tags.
-- `[ ]` **Multi-session PID→session mapping** — schema is ready; logic deferred to v0.2.
+- `[x]` **Multi-session PID→session mapping** — v0.2 Phase 2: per-session server pools, PIDRegistry, explicit session attribution for eBPF.
 - `[ ]` **Overhead** of interposition + eBPF — not measured in v0.1; not optimized.
 - `[ ]` **"Sole provider" window** — AgentSight and others are circling; first working + documented tool wins ~6–12 months. Ship.
 - `[x]` **Cross-plane clock mismatch** — proxy uses Go `CLOCK_MONOTONIC`, eBPF uses `bpf_ktime_get_ns()` (boot-time). Fixed via engine-assigned `timeline_seq` for causal ordering. Clock-offset normalization for real cross-plane latency is v0.2.

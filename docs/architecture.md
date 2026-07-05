@@ -130,7 +130,7 @@ Blocked `tools/call` responses use `Content-Type: application/json` with a synth
 
 Consumes `InterceptedEvent` (Plane 1) and `SyscallEvent` (Plane 2); **owns `SessionState`**; emits `Decision`s (→ proxy) and `EvidenceRecord`s (→ sink).
 
-**Correlation (syscall → session).** eBPF events carry a PID. The engine maps PID → {proxy \| specific server} → session via the PID set the proxy maintains. **v0.1 runs a single active session**, so the mapping is trivial — but every schema below carries `session_id` so multi-session is a wiring change, not a rewrite.
+**Correlation (syscall → session).** eBPF events carry a PID. The proxy maintains a `PIDRegistry` mapping `(pid, start_time)` → `{session_id, server_id}` for each per-session backend child. The sensor resolves `SessionID` before calling `IngestSyscall`. HTTP mode spawns an isolated server pool per MCP session; STDIO mode runs a single session.
 
 **Time alignment.** All events carry a monotonic timestamp (`ts_mono_ns`) from a shared reference. Syscall events are joined to recent proxy events within a **recency window** so a `connect()` can be attributed to the sensitive read that preceded it.
 

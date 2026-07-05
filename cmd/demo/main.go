@@ -33,11 +33,16 @@ func main() {
 
 	quiet := os.Getenv("INTERLOCK_DEMO_QUIET") == "1"
 	useHTTP := os.Getenv("INTERLOCK_DEMO_HTTP") == "1"
+	useConcurrent := os.Getenv("INTERLOCK_DEMO_CONCURRENT") == "1"
 	for _, arg := range os.Args[1:] {
 		if arg == "--quiet" || arg == "-q" {
 			quiet = true
 		}
 		if arg == "--http" {
+			useHTTP = true
+		}
+		if arg == "--concurrent" {
+			useConcurrent = true
 			useHTTP = true
 		}
 	}
@@ -73,6 +78,15 @@ func main() {
 	isRoot := false
 	if u, err := user.Current(); err == nil && u.Uid == "0" {
 		isRoot = true
+	}
+
+	if useConcurrent {
+		banner("INTERLOCK DEMO — CONCURRENT HTTP SESSIONS")
+		fmt.Fprintln(os.Stderr, "  Two isolated HTTP sessions run the trifecta in parallel.")
+		fmt.Fprintln(os.Stderr, "  Each should block independently with distinct session_ids.")
+		fmt.Fprintln(os.Stderr, "")
+		runConcurrentHTTPDemo(logger, projectRoot, quiet)
+		return
 	}
 
 	banner("INTERLOCK DEMO — DUAL-VARIANT DETECTION")

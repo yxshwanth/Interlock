@@ -55,10 +55,16 @@ func main() {
 
 	p := proxy.New(cfg, evLogger, eng)
 
-	// If eBPF is requested, set up the sensor to start after servers launch.
 	var sensor *interlockebpf.Sensor
+	var sensorStarted bool
 	if *enableEBPF {
 		handler := func(ev model.SyscallEvent) model.Decision {
+			if ev.SessionID == "" {
+				sid, _, ok := p.PIDRegistry().Lookup(ev.PID)
+				if ok {
+					ev.SessionID = sid
+				}
+			}
 			return eng.IngestSyscall(ev)
 		}
 		s, sErr := interlockebpf.NewSensor(cfg.EgressAllowlist, handler)
@@ -69,14 +75,33 @@ func main() {
 			sensor = s
 			defer sensor.Stop()
 
-			p.OnServersReady(func(childPIDs []int) {
-				selfPID := os.Getpid()
-				allPIDs := append([]int{selfPID}, childPIDs...)
-				if addErr := sensor.AddPIDs(allPIDs...); addErr != nil {
-					logger.Printf("WARNING: failed to add PIDs to sensor: %v", addErr)
-				}
-				sensor.Start()
-				logger.Printf("eBPF sensor started, watching %d PIDs", len(allPIDs))
+			selfPID := os.Getpid()
+			if addErr := sensor.AddPIDs(selfPID); addErr != nil {
+				logger.Printf("WARNING: failed to add self PID to sensor: %v", addErr)
+			}
+
+			p.SetPIDHooks(proxy.PIDHooks{
+				OnWatch: func(pids []int) {
+					if len(pids) == 0 {
+						return
+					}
+					if addErr := sensor.AddPIDs(pids...); addErr != nil {
+						logger.Printf("WARNING: failed to add PIDs to sensor: %v", addErr)
+					}
+					if !sensorStarted {
+						sensor.Start()
+						sensorStarted = true
+						logger.Printf("eBPF sensor started (self pid=%d)", selfPID)
+					}
+				},
+				OnUnwatch: func(pids []int) {
+					if len(pids) == 0 {
+						return
+					}
+					if remErr := sensor.RemovePIDs(pids...); remErr != nil {
+						logger.Printf("WARNING: failed to remove PIDs from sensor: %v", remErr)
+					}
+				},
 			})
 		}
 	}
@@ -87,7 +112,7 @@ func main() {
 
 	var runErr error
 	if cfg.Transport.Mode == "http" {
-		if err := p.Start(ctx); err != nil {
+		if err := p.StartHTTP(ctx); err != nil {
 			logger.Fatalf("proxy start: %v", err)
 		}
 		httpSrv := mcphttp.NewServer(p, cfg, logger)
