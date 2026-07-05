@@ -131,15 +131,22 @@ func (t *TrifectaLegs) AllLit() bool {
 		t.ExternalSinkInvoked.Lit
 }
 
+// TaintedVariant is a precomputed canonical encoding of a tainted value.
+type TaintedVariant struct {
+	Form  string `json:"-"`
+	Value string `json:"-"`
+}
+
 // TaintedValue tracks a candidate secret extracted from a sensitive_source result.
 // The raw Value is held in memory only and is NEVER serialized to JSON.
 type TaintedValue struct {
-	Value        string `json:"-"`
-	Hash         string `json:"hash"`
-	Preview      string `json:"preview"`
-	Source       string `json:"source"`
-	Seq          uint64 `json:"seq"`
-	RegisteredAt int64  `json:"registered_at_ns"`
+	Value        string           `json:"-"`
+	Variants     []TaintedVariant `json:"-"` // precomputed canonical encodings for overlap checks
+	Hash         string           `json:"hash"`
+	Preview      string           `json:"preview"`
+	Source       string           `json:"source"`
+	Seq          uint64           `json:"seq"`
+	RegisteredAt int64            `json:"registered_at_ns"`
 }
 
 // Status describes the lifecycle state of a session.
@@ -216,6 +223,7 @@ type OverlapHit struct {
 	TaintedHash string `json:"tainted_hash"`
 	Preview     string `json:"preview"`
 	WhereFound  string `json:"where_found"` // "sink args" | "egress payload"
+	MatchForm   string `json:"match_form,omitempty"` // literal | base64 | hex | url_encoded | reversed
 }
 
 // TimelineItem is one entry in the evidence timeline.
