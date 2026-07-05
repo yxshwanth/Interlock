@@ -8,6 +8,8 @@ import (
 )
 
 // SessionStore is a thread-safe in-memory store for per-session trifecta state.
+// Map structure is protected internally; SessionState fields must only be mutated
+// while holding Engine.mu (via Ingest* methods), not via returned pointers alone.
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*model.SessionState

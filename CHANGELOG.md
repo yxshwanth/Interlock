@@ -9,7 +9,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Multi-session concurrency (v0.2 Phase 2): per-session backend server pools, `SessionManager`, `PIDRegistry` (PID + start time)
 - Sessions config: `sessions.max_concurrent`, `sessions.idle_timeout`
 - eBPF dynamic PID watch/unwatch on session spawn and cleanup
-- Concurrent HTTP integration test and `make demo-http-concurrent`
+- Unattributed eBPF syscalls audit-logged to stderr and `events.jsonl` (`SecurityAuditEvent`, kind `unattributed_syscall`)
+- CI race job: `go test -race` on `./internal/proxy/...` and `./internal/engine/...`
+- Concurrent overlap tests: `TestSessionManager_ConcurrentCreate`, `TestPIDRegistry_ConcurrentRegisterLookup`; dual-session HTTP test releases both sessions together
 - Streamable HTTP transport ([MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http)): `POST /mcp`, `Mcp-Session-Id`, JSON and SSE responses
 - Transport config: `transport.mode` (`stdio` | `http`), `listen`, `endpoint`, `protocol_version`, `prefer_sse_responses`
 - Inspect-then-forward for HTTP: full JSON-RPC body before dispatch; SSE only after complete backend response; blocked calls return JSON
@@ -25,6 +27,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - STDIO mode unchanged and still the default
 
 ### Fixed
+
+### Known limitations (v0.2 Phases 1–2)
+
+- HTTP multi-session: each `initialize` spawns a full backend pool — bounded by `sessions.max_concurrent` and `sessions.idle_timeout`, but a session-flood can exhaust host process slots (see README)
+- Unattributed eBPF events during PID teardown are audit-logged, not tripped — inspect `events.jsonl` for `unattributed_syscall` records
 
 ## [0.1.0] - 2026-07-04
 

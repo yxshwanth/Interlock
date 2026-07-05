@@ -667,6 +667,8 @@ func TestEngine_IngestSyscall_TimelineFused(t *testing.T) {
 
 func TestEngine_IngestSyscall_RequiresSessionID(t *testing.T) {
 	eng, sink := newTestEngine("block")
+	audit := &testAuditSink{}
+	eng.SetSecurityAuditSink(audit)
 	sid := "explicit-session"
 
 	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
@@ -686,6 +688,15 @@ func TestEngine_IngestSyscall_RequiresSessionID(t *testing.T) {
 	if len(sink.records) != 0 {
 		t.Fatalf("expected no evidence without session attribution, got %d", len(sink.records))
 	}
+	if len(audit.records) != 1 {
+		t.Fatalf("expected 1 security audit record, got %d", len(audit.records))
+	}
+	if audit.records[0].Kind != "unattributed_syscall" {
+		t.Fatalf("audit kind = %q", audit.records[0].Kind)
+	}
+	if audit.records[0].Syscall.DestIP != "10.0.0.1" {
+		t.Fatalf("audit syscall dest = %q", audit.records[0].Syscall.DestIP)
+	}
 
 	ev.SessionID = sid
 	dec = eng.IngestSyscall(ev)
@@ -698,4 +709,13 @@ func TestEngine_IngestSyscall_RequiresSessionID(t *testing.T) {
 	if sink.records[0].SessionID != sid {
 		t.Fatalf("evidence should reference session %q, got %q", sid, sink.records[0].SessionID)
 	}
+}
+
+type testAuditSink struct {
+	records []model.SecurityAuditEvent
+}
+
+func (s *testAuditSink) EmitSecurityAudit(rec model.SecurityAuditEvent) error {
+	s.records = append(s.records, rec)
+	return nil
 }
