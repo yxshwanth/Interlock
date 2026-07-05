@@ -106,6 +106,8 @@ func (s *SQLiteEvidenceSink) pruneLocked() error {
 
 // Count returns the number of stored evidence records.
 func (s *SQLiteEvidenceSink) Count() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var n int
 	err := s.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM evidence`).Scan(&n)
 	return n, err

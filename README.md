@@ -16,11 +16,21 @@ AI agents wired to MCP tools can read private data, ingest attacker-controlled i
 
 ## What it does
 
-Interlock sits between an agent and its MCP servers on **two observation planes**:
+Interlock sits between an agent and its MCP servers on **two observation planes** — with **asymmetric intelligence** in v0.2:
 
-- **Variant A — chained tools (proxy prevents).** A poisoned ticket tells the agent to read secrets and send them via a legitimate MCP tool. The proxy sees the sink call forming with the sensitive value in its arguments and **refuses to forward it**. The call never reaches the server. Verdict: `EXFIL`. Action: `prevented`.
+- **Plane 1 — proxy (Variant A): dataflow-aware prevention.** The proxy inspects tool-call chains, tracks tainted values through common encodings (base64, hex, URL-encoding, reversal), and **refuses to forward** sink calls that carry secrets. Verdict: `EXFIL` at 0.95 when overlap hits. This plane does real analysis.
 
-- **Variant B — server side channel (eBPF detects and contains).** A malicious MCP server subprocess opens its own TCP socket to the attacker — a path the proxy never observes. An eBPF probe on `connect()` fires from a monitored PID; the engine correlates it with the sensitive session and **kills the process**. Verdict: `SUSPICIOUS`. Action: `contained_by_kill`.
+- **Plane 2 — eBPF (Variant B): connect() tripwire, not payload detection.** A malicious server subprocess can open its own TCP socket — invisible to JSON-RPC inspection. The kernel probe fires on `connect()` from a monitored PID; the engine correlates destination + session legs and **kills the process**. Verdict: `SUSPICIOUS` at 0.60 — "an unauthorized outbound connection during a sensitive session," not proven exfiltration. **This plane is a tripwire until eBPF payload capture lands** (post-v0.2); it does not inspect what left the host.
+
+| | Variant A (proxy) | Variant B (eBPF) |
+|---|---|---|
+| v0.2 capability | Encoding-aware overlap on sink args | `connect()` during sensitive session |
+| Confidence when tripped | 0.95 (`EXFIL`) with overlap | 0.60 (`SUSPICIOUS`) — legs only |
+| Role | Detector + preventer | Tripwire + containment |
+
+- **Variant A — chained tools (proxy prevents).** A poisoned ticket tells the agent to read secrets and send them via a legitimate MCP tool. The proxy sees the sink call forming with the sensitive value (including encoded forms) in its arguments and **refuses to forward it**. The call never reaches the server. Verdict: `EXFIL`. Action: `prevented`.
+
+- **Variant B — server side channel (eBPF tripwire + containment).** A malicious MCP server subprocess opens its own TCP socket to the attacker — a path the proxy never observes. An eBPF probe on `connect()` fires from a monitored PID; the engine correlates it with the sensitive session and **kills the process**. Verdict: `SUSPICIOUS` (tripwire — connection observed, payload not inspected). Action: `contained_by_kill`.
 
 ```mermaid
 flowchart TB
@@ -88,7 +98,7 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 1. **Value-overlap checks canonical encodings, not full dataflow analysis.** At taint registration, each secret gets a fixed transform set (literal, base64, hex, URL-encoding, reversal). Sink args are matched against all forms — encoded Variant A exfil is caught at `EXFIL` (0.95). Still misses split-across-calls, compression, nested encoding, and custom ciphers — see [`TestCheckOverlap_SplitAcrossCalls_KnownGap`](internal/engine/overlap_test.go), [`TestCheckOverlap_Compressed_KnownGap`](internal/engine/overlap_test.go), [`TestCheckOverlap_DoubleEncoded_KnownGap`](internal/engine/overlap_test.go). Can false-positive on legitimate echoes of encoded forms.
 
-2. **Variant B is `SUSPICIOUS` / legs-only — not proven exfiltration.** Without payload inspection, the receipt shows an unauthorized outbound `connect()` during a sensitive session, not that data actually left. Confidence: 0.60. *v0.2: `sendto`/`write` payload capture on the eBPF side upgrades this to `EXFIL` at 0.95.*
+2. **Variant B is a tripwire, not a payload detector.** The eBPF plane observes `connect()` during a sensitive session — it does not inspect outbound bytes. Verdict: `SUSPICIOUS` at 0.60 ("unauthorized connection," not proven exfil). v0.2 made Variant A smarter (encoding overlap); Variant B unchanged. *Post-v0.2: `sendto`/`write` payload capture upgrades this to `EXFIL` at 0.95.*
 
 3. **eBPF containment is kill-after-connect, not first-packet prevention.** The `connect()` syscall completes before `SIGKILL` fires. Variant A truly prevents; Variant B severs the channel and stops further exfiltration. *v0.3: LSM/KRSI for in-kernel blocking before the packet leaves.*
 
@@ -96,7 +106,7 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 5. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
 
-6. **Performance numbers cover the userspace engine path only.** Published benchmarks ([`docs/performance.md`](docs/performance.md)) measure overlap check and trifecta evaluation — not end-to-end HTTP p99 or eBPF throughput under load (`TestBenchmark_FullHTTPLoad_KnownGap`). eBPF ring-buffer drops are counted when reserve fails; saturation behavior is not CI-tested (`TestEBPF_RingbufSaturation_KnownGap`).
+6. **Performance numbers are engine-component benchmarks, not proxy overhead.** [`docs/performance.md`](docs/performance.md) publishes isolated engine ns/op — not end-to-end per-request latency on the HTTP path (`TestBenchmark_FullHTTPLoad_KnownGap`). Do not quote engine worst-case (~0.56 ms) as "Interlock's overhead."
 
 ---
 
@@ -152,7 +162,7 @@ This is a **working proof**, deliberately scoped: STDIO transport, `connect()`-o
 
 **Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
-- **v0.2 — Usable tool:** HTTP/SSE transport, multi-session concurrency, real dataflow taint + egress payload capture, published performance benchmarks, persistent evidence store
+- **v0.2 — Usable tool (complete):** HTTP/SSE transport, multi-session concurrency, bounded encoding overlap, engine benchmarks ([`docs/v0.2_summary.md`](docs/v0.2_summary.md)), opt-in SQLite evidence. Variant B payload overlap deferred post-v0.2.
 - **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
@@ -163,7 +173,7 @@ Every detection feature ships with explicit known-gap tests naming what it does 
 
 ![CI](https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml/badge.svg)
 
-**73 tests** across 8 packages — engine, taint, overlap, tagger, session store, evidence sink, config, and proxy framing. CI runs `go build`, `go vet`, and `go test` on every push to `main`. eBPF integration requires root and a BTF-enabled kernel — tested locally, not in CI. Concurrency-sensitive paths should pass `go test -race ./...`.
+**107 tests passing**, 7 known-gap skips — engine, proxy, config, HTTP integration, benchmarks, evidence, backpressure. CI runs `test` + `race` jobs on every push to `main`. eBPF integration requires root and a BTF-enabled kernel — tested locally, not in CI.
 
 ```bash
 make test

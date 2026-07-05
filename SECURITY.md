@@ -61,4 +61,12 @@ The only kernel code Interlock loads in v0.1 is [`internal/ebpf/bpf/connect.c`](
 
 ## Signed releases
 
-Release tags and artifacts are not yet signed. Signed tags (`git tag -s`) and release provenance are on the v0.3 roadmap. When available, the signing key fingerprint will be listed here.
+Release tags are **signed** starting with **v0.2.0** (`git tag -s`). Verify with:
+
+```bash
+git tag -v v0.2.0
+```
+
+**Signing key (SSH):** `SHA256:j0vZxZexFyPA8Hj8ys2NbdMEtyqmZ+kT60eWRdfjlq8` — `ssh-ed25519`, GitHub identity `yxshwanth@github`
+
+Release artifacts and reproducible builds are not yet published; binary provenance is on the v0.3 roadmap.
