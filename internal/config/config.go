@@ -15,8 +15,18 @@ type ServerConfig struct {
 	ProvidesTags []string `yaml:"provides_tags,omitempty"`
 }
 
+// TransportConfig controls how agents connect to Interlock.
+type TransportConfig struct {
+	Mode                 string `yaml:"mode"` // stdio | http
+	Listen               string `yaml:"listen"`
+	Endpoint             string `yaml:"endpoint"`
+	ProtocolVersion      string `yaml:"protocol_version"`
+	PreferSSEResponses   bool   `yaml:"prefer_sse_responses"`
+}
+
 // Config is the top-level Interlock configuration, loaded from interlock.yaml.
 type Config struct {
+	Transport        TransportConfig     `yaml:"transport"`
 	Enforcement      string              `yaml:"enforcement"`
 	EgressAllowlist  []string            `yaml:"egress_allowlist"`
 	Servers          []ServerConfig      `yaml:"servers"`
@@ -53,6 +63,25 @@ func (c *Config) validate() error {
 		c.Enforcement = "block"
 	default:
 		return fmt.Errorf("enforcement must be \"block\" or \"monitor\", got %q", c.Enforcement)
+	}
+
+	switch c.Transport.Mode {
+	case "", "stdio":
+		c.Transport.Mode = "stdio"
+	case "http":
+	default:
+		return fmt.Errorf("transport.mode must be \"stdio\" or \"http\", got %q", c.Transport.Mode)
+	}
+	if c.Transport.Mode == "http" {
+		if c.Transport.Listen == "" {
+			c.Transport.Listen = "127.0.0.1:8080"
+		}
+		if c.Transport.Endpoint == "" {
+			c.Transport.Endpoint = "/mcp"
+		}
+		if c.Transport.ProtocolVersion == "" {
+			c.Transport.ProtocolVersion = "2025-11-25"
+		}
 	}
 
 	if len(c.Servers) == 0 {

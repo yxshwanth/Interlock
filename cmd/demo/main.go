@@ -32,9 +32,13 @@ func main() {
 	logger := log.New(os.Stderr, "[demo] ", log.LstdFlags)
 
 	quiet := os.Getenv("INTERLOCK_DEMO_QUIET") == "1"
+	useHTTP := os.Getenv("INTERLOCK_DEMO_HTTP") == "1"
 	for _, arg := range os.Args[1:] {
 		if arg == "--quiet" || arg == "-q" {
 			quiet = true
+		}
+		if arg == "--http" {
+			useHTTP = true
 		}
 	}
 
@@ -85,7 +89,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "  The exfil call should go through. This is the breach.")
 	fmt.Fprintln(os.Stderr, "")
 
-	pass1Results := runVariantAPass(logger, projectRoot, "interlock-monitor.yaml", "monitor", false, quiet)
+	pass1Results := runVariantAPass(logger, projectRoot, "interlock-monitor.yaml", "monitor", false, quiet, useHTTP)
 
 	// ─── Pass 2: Block mode (firewall ON) ───
 	banner("PASS 2: BLOCK MODE (firewall ON) — Variant A")
@@ -93,7 +97,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "  The exfil call should be stopped cold.")
 	fmt.Fprintln(os.Stderr, "")
 
-	pass2Results := runVariantAPass(logger, projectRoot, "interlock.yaml", "block", false, quiet)
+	pass2Results := runVariantAPass(logger, projectRoot, "interlock.yaml", "block", false, quiet, useHTTP)
 
 	// ─── Pass 3: eBPF Variant B ───
 	var pass3Results *variantBResults
@@ -105,7 +109,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "   session and killed the process before it could exfiltrate further.\"")
 		fmt.Fprintln(os.Stderr, "")
 
-		pass3Results = runVariantBPass(logger, projectRoot, quiet)
+		pass3Results = runVariantBPass(logger, projectRoot, quiet, useHTTP)
 	} else {
 		banner("PASS 3: eBPF VARIANT B — SKIPPED (requires root)")
 		fmt.Fprintln(os.Stderr, "  Run with: sudo go run ./cmd/demo")
@@ -176,7 +180,14 @@ type variantBResults struct {
 	evidenceLogged  string
 }
 
-func runVariantAPass(logger *log.Logger, projectRoot, cfgFile, mode string, ebpf bool, quiet bool) variantAResults {
+func runVariantAPass(logger *log.Logger, projectRoot, cfgFile, mode string, ebpf bool, quiet bool, useHTTP bool) variantAResults {
+	if useHTTP {
+		httpCfg := "interlock-http-monitor.yaml"
+		if mode == "block" {
+			httpCfg = "interlock-http.yaml"
+		}
+		return runVariantAPassHTTP(logger, projectRoot, httpCfg, mode, ebpf, quiet)
+	}
 	evLog := filepath.Join(projectRoot, fmt.Sprintf("events-%s.jsonl", mode))
 	evidenceLog := filepath.Join(projectRoot, fmt.Sprintf("evidence-%s.jsonl", mode))
 	evidenceJSON := filepath.Join(projectRoot, "evidence.json")
@@ -360,7 +371,10 @@ func runVariantAPass(logger *log.Logger, projectRoot, cfgFile, mode string, ebpf
 	return results
 }
 
-func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool) *variantBResults {
+func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool, useHTTP bool) *variantBResults {
+	if useHTTP {
+		return runVariantBPassHTTP(logger, projectRoot, quiet)
+	}
 	evLog := filepath.Join(projectRoot, "events-ebpf.jsonl")
 	evidenceLog := filepath.Join(projectRoot, "evidence-ebpf.jsonl")
 	evidenceJSON := filepath.Join(projectRoot, "evidence.json")

@@ -100,6 +100,7 @@ type Proxy struct {
 	session         *Session
 	agentWriter     *FrameWriter
 	pending         map[string]*pendingCall  // stringified request ID -> pending call info
+	syncWait        map[string]chan []byte   // synchronous HTTP (or in-flight) response waiters
 	mu              sync.Mutex
 	onServersReady  func(childPIDs []int)    // called after all servers are launched
 }
@@ -116,6 +117,7 @@ func New(cfg *config.Config, logger *EventLogger, eng *engine.Engine) *Proxy {
 		servers:   make(map[string]*serverConn),
 		toolRoute: make(map[string]*serverConn),
 		pending:   make(map[string]*pendingCall),
+		syncWait:  make(map[string]chan []byte),
 	}
 }
 
@@ -146,7 +148,7 @@ func (p *Proxy) logEvent(ev model.InterceptedEvent) {
 	}
 }
 
-// Run starts all servers, initializes them, and runs the proxy dispatch loop.
+// Run starts all servers and runs the STDIO agent transport loop.
 func (p *Proxy) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -158,38 +160,11 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 	p.agentWriter = NewFrameWriter(os.Stdout)
 
-	// Launch and initialize all servers.
-	for _, sc := range p.cfg.Servers {
-		if err := p.startAndInit(ctx, sc); err != nil {
-			return err
-		}
-	}
-
-	p.log.Printf("all servers initialized, %d tools available", len(p.allTools))
-
-	if p.onServersReady != nil {
-		p.onServersReady(p.ChildPIDs())
+	if err := p.startServers(ctx); err != nil {
+		return err
 	}
 
 	var wg sync.WaitGroup
-
-	// Per-server: read responses and forward to agent.
-	for _, sc := range p.servers {
-		wg.Add(1)
-		go func(sc *serverConn) {
-			defer wg.Done()
-			p.readServerFrames(ctx, sc)
-		}(sc)
-
-		// stderr passthrough
-		wg.Add(1)
-		go func(sc *serverConn) {
-			defer wg.Done()
-			copyStderr(sc.proc.ID, sc.proc.Stderr)
-		}(sc)
-	}
-
-	// Read agent frames and dispatch.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -197,7 +172,6 @@ func (p *Proxy) Run(ctx context.Context) error {
 		cancel()
 	}()
 
-	// Wait for any server to exit.
 	serverDone := make(chan string, len(p.servers))
 	for _, sc := range p.servers {
 		go func(sc *serverConn) {
@@ -214,16 +188,59 @@ func (p *Proxy) Run(ctx context.Context) error {
 		p.log.Printf("shutting down (context cancelled)")
 	}
 
-	// Unblock readAgentFrames which may be stuck in ReadFrame on os.Stdin.
 	os.Stdin.Close()
+	p.stopServers()
+	wg.Wait()
+	return nil
+}
 
-	// Stop all servers.
+// Start launches backend servers and background readers without binding agent I/O.
+// Used by HTTP transport mode.
+func (p *Proxy) Start(ctx context.Context) error {
+	if p.session == nil {
+		p.session = NewSession()
+		p.log.Printf("session %s started", p.session.ID)
+	}
+	if p.engine == nil {
+		p.log.Printf("[SECURITY] engine not configured — all calls forwarded without enforcement (FAIL-OPEN)")
+	}
+	return p.startServers(ctx)
+}
+
+// Session returns the active Interlock session (for HTTP session binding).
+func (p *Proxy) Session() *Session {
+	return p.session
+}
+
+// SetSession binds an Interlock session (HTTP MCP session reuse).
+func (p *Proxy) SetSession(s *Session) {
+	p.session = s
+}
+
+func (p *Proxy) startServers(ctx context.Context) error {
+	for _, sc := range p.cfg.Servers {
+		if err := p.startAndInit(ctx, sc); err != nil {
+			return err
+		}
+	}
+
+	p.log.Printf("all servers initialized, %d tools available", len(p.allTools))
+
+	if p.onServersReady != nil {
+		p.onServersReady(p.ChildPIDs())
+	}
+
+	for _, sc := range p.servers {
+		go p.readServerFrames(ctx, sc)
+		go copyStderr(sc.proc.ID, sc.proc.Stderr)
+	}
+	return nil
+}
+
+func (p *Proxy) stopServers() {
 	for _, sc := range p.servers {
 		sc.proc.Stop()
 	}
-
-	wg.Wait()
-	return nil
 }
 
 // startAndInit launches a server, sends initialize + notifications/initialized,
@@ -341,165 +358,18 @@ func (p *Proxy) readAgentFrames(ctx context.Context) {
 			return
 		}
 
-		var msg model.JSONRPCMessage
-		if err := json.Unmarshal(frame, &msg); err != nil {
-			p.log.Printf("invalid JSON from agent: %v", err)
+		result, err := p.HandleAgentRequest(ctx, frame)
+		if err != nil {
+			p.log.Printf("dispatch error: %v", err)
 			continue
 		}
-
-		// Notifications: no response expected.
-		if msg.IsNotification() {
-			ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
-			p.logEvent(ev)
+		if result.IsNotification {
 			continue
 		}
-
-		switch msg.Method {
-		case "initialize":
-			p.handleInitialize(frame, msg)
-		case "tools/list":
-			p.handleToolsList(frame, msg)
-		case "tools/call":
-			p.handleToolsCall(frame, msg)
-		case "ping":
-			p.handlePing(frame, msg)
-		default:
-			ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
-			p.logEvent(ev)
-			p.sendAgentError(msg.ID, -32601, fmt.Sprintf("method not found: %s", msg.Method))
+		if len(result.Response) > 0 {
+			p.agentWriter.WriteFrame(result.Response)
 		}
 	}
-}
-
-func (p *Proxy) handleInitialize(frame []byte, msg model.JSONRPCMessage) {
-	ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
-	p.logEvent(ev)
-
-	resp := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      json.RawMessage(msg.ID),
-		"result": map[string]any{
-			"protocolVersion": "2025-06-18",
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-			},
-			"serverInfo": map[string]any{
-				"name":    "interlock",
-				"version": "0.1.0",
-			},
-		},
-	}
-	data, _ := json.Marshal(resp)
-	respEv := p.session.CreateEvent(data, model.ServerToAgent, "proxy", 0)
-	p.logEvent(respEv)
-	p.agentWriter.WriteFrame(data)
-}
-
-func (p *Proxy) handleToolsList(frame []byte, msg model.JSONRPCMessage) {
-	ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
-	p.logEvent(ev)
-
-	resp := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      json.RawMessage(msg.ID),
-		"result": map[string]any{
-			"tools": p.allToolsAsAny(),
-		},
-	}
-	data, _ := json.Marshal(resp)
-	respEv := p.session.CreateEvent(data, model.ServerToAgent, "proxy", 0)
-	p.logEvent(respEv)
-	p.agentWriter.WriteFrame(data)
-}
-
-func (p *Proxy) allToolsAsAny() []any {
-	out := make([]any, len(p.allTools))
-	for i, raw := range p.allTools {
-		var v any
-		json.Unmarshal(raw, &v)
-		out[i] = v
-	}
-	return out
-}
-
-func (p *Proxy) handleToolsCall(frame []byte, msg model.JSONRPCMessage) {
-	var tc model.ToolCallParams
-	if len(msg.Params) > 0 {
-		tc, _ = model.ParseToolCallParams(msg.Params)
-	}
-
-	sc, ok := p.toolRoute[tc.Name]
-	if !ok {
-		ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
-		p.logEvent(ev)
-		p.sendAgentError(msg.ID, -32602, fmt.Sprintf("unknown tool: %s", tc.Name))
-		return
-	}
-
-	ev := p.session.CreateEvent(frame, model.AgentToServer, sc.proc.ID, sc.proc.PID)
-
-	// --- Hold-before-forward enforcement gate ---
-	if p.engine != nil {
-		var decision model.Decision
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — FAIL-OPEN, call forwarded: %v", r)
-					decision = model.Decision{Allow: true}
-				}
-			}()
-			decision = p.engine.EvaluateRequest(ev)
-		}()
-		if !decision.Allow {
-			ev.Decision = "blocked"
-			ev.BlockReason = decision.Reason
-			p.logEvent(ev)
-			p.sendAgentError(msg.ID, -32000,
-				fmt.Sprintf("call blocked by Interlock: %s", decision.Reason))
-			return
-		}
-	}
-
-	p.logEvent(ev)
-
-	// Track the pending request so we can attribute the response.
-	idKey := string(msg.ID)
-	p.mu.Lock()
-	p.pending[idKey] = &pendingCall{sc: sc, toolName: tc.Name}
-	p.mu.Unlock()
-
-	// Forward to the correct server.
-	if err := sc.writer.WriteFrame(frame); err != nil {
-		p.log.Printf("error forwarding to server %s: %v", sc.proc.ID, err)
-	}
-}
-
-func (p *Proxy) handlePing(frame []byte, msg model.JSONRPCMessage) {
-	ev := p.session.CreateEvent(frame, model.AgentToServer, "proxy", 0)
-	p.logEvent(ev)
-
-	resp := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      json.RawMessage(msg.ID),
-		"result":  map[string]any{},
-	}
-	data, _ := json.Marshal(resp)
-	respEv := p.session.CreateEvent(data, model.ServerToAgent, "proxy", 0)
-	p.logEvent(respEv)
-	p.agentWriter.WriteFrame(data)
-}
-
-func (p *Proxy) sendAgentError(id json.RawMessage, code int, message string) {
-	resp := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      json.RawMessage(id),
-		"error": map[string]any{
-			"code":    code,
-			"message": message,
-		},
-	}
-	data, _ := json.Marshal(resp)
-	p.agentWriter.WriteFrame(data)
 }
 
 // readServerFrames reads responses from a server and forwards them to the agent.
@@ -519,33 +389,18 @@ func (p *Proxy) readServerFrames(ctx context.Context, sc *serverConn) {
 			return
 		}
 
-		ev := p.session.CreateEvent(frame, model.ServerToAgent, sc.proc.ID, sc.proc.PID)
-
-		// Resolve the tool name from the pending request so the engine
-		// can attribute this result to the correct tool.
-		var msg model.JSONRPCMessage
-		if json.Unmarshal(frame, &msg) == nil && msg.IsResponse() {
-			idKey := string(msg.ID)
-			p.mu.Lock()
-			if pc, ok := p.pending[idKey]; ok {
-				ev.ToolName = pc.toolName
-				delete(p.pending, idKey)
-			}
-			p.mu.Unlock()
-		}
-
-		// Feed the engine BEFORE logging so tainted values are available for redaction.
-		if p.engine != nil && ev.ToolName != "" {
-			p.engine.IngestResult(ev)
-		}
-
-		p.logEvent(ev)
-
-		if err := p.agentWriter.WriteFrame(frame); err != nil {
-			p.log.Printf("error writing to agent: %v", err)
-			return
-		}
+		p.deliverServerFrame(sc, frame)
 	}
+}
+
+func (p *Proxy) allToolsAsAny() []any {
+	out := make([]any, len(p.allTools))
+	for i, raw := range p.allTools {
+		var v any
+		json.Unmarshal(raw, &v)
+		out[i] = v
+	}
+	return out
 }
 
 // copyStderr prefixes each line from the server's stderr and writes it

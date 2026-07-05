@@ -6,7 +6,17 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Added
 
+- Streamable HTTP transport ([MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http)): `POST /mcp`, `Mcp-Session-Id`, JSON and SSE responses
+- Transport config: `transport.mode` (`stdio` | `http`), `listen`, `endpoint`, `protocol_version`, `prefer_sse_responses`
+- Inspect-then-forward for HTTP: full JSON-RPC body before dispatch; SSE only after complete backend response; blocked calls return JSON
+- HTTP demo path: `make demo-http`, `make demo-http-ebpf`, `make demo-quiet-http`, `make demo-quiet-http-ebpf`
+- Example configs: `interlock-http.yaml`, `interlock-http-monitor.yaml`
+- Auth header redaction helpers for HTTP request metadata
+
 ### Changed
+
+- Extracted transport-agnostic dispatch from `internal/proxy/proxy.go` into `internal/proxy/dispatch.go`
+- STDIO mode unchanged and still the default
 
 ### Fixed
 
