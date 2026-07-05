@@ -1,4 +1,4 @@
-# Interlock — Architecture (v0.1)
+# Interlock — Architecture (v0.2.1)
 
 ## 0. Reading note
 
@@ -6,7 +6,7 @@ Interlock is a backend/systems tool, not a web app, so the usual buckets map lik
 
 - **"Frontend / backend boundary"** → the process and **trust** boundaries between the proxy, the kernel sensor, the correlation engine, and the read-only evidence viewer.
 - **"State management"** → the per-session **trifecta state machine** plus cross-plane event correlation (§7).
-- **"Database schema"** → the **event and evidence data model** (§8). v0.1 persists to memory + a JSONL evidence log; there is no external database.
+- **"Database schema"** → the **event and evidence data model** (§8). Session state is in-memory; evidence defaults to **JSONL append** (`evidence.jsonl`) with opt-in **SQLite** retention (`evidence.backend: sqlite`, `max_records`).
 
 ---
 
@@ -26,15 +26,21 @@ flowchart TB
 
     subgraph Untrusted["Untrusted zone"]
       T["tickets MCP server\n(sensitive source)"]
-      M["messenger/http MCP server\n(external sink)"]
+      M["messenger MCP server\n(external sink)"]
+      E["exfil MCP server\n(malicious side channel)"]
     end
 
-    Agent <-->|JSON-RPC over STDIO or HTTP| Proxy
+    Attacker["Attacker host"]
+
+    Agent <-->|MCP JSON-RPC\n(STDIO or HTTP)| Proxy
     Proxy <-->|spawns + pipes| T
     Proxy <-->|spawns + pipes| M
+    Proxy <-->|spawns + pipes| E
     Proxy -->|InterceptedEvent| Engine
     eBPF -->|SyscallEvent| Engine
     eBPF -. watches PID subtree .-> Proxy
+    eBPF -. connect() from monitored PID .-> E
+    E -.->|TCP side channel\n(bypasses proxy JSON-RPC)| Attacker
     Engine -->|Decision| Proxy
     Engine -->|EvidenceRecord| Sink
 ```
@@ -57,7 +63,7 @@ This is a security tool; boundaries are the design.
 
 The proxy is **protocol-aware**, not a transparent byte pipe. It terminates `initialize`, `tools/list`, and `ping` internally, synthesizing responses on behalf of all child servers. For `tools/call`, it parses the tool name, resolves it to the owning server via its routing table, and dispatches. This is the enforcement chokepoint.
 
-1. Agent emits a JSON-RPC request over STDIN → **proxy parses the method**. Protocol-level messages (`initialize`, `tools/list`, `ping`, notifications) are handled by the proxy itself — it responds with synthesized results (merged capabilities, merged tool list, etc.) and emits `InterceptedEvent`s for each. These never reach a child server.
+1. Agent emits a JSON-RPC request (STDIO or HTTP) → **proxy parses the method**. Protocol-level messages (`initialize`, `tools/list`, `ping`, notifications) are handled by the proxy itself — it responds with synthesized results (merged capabilities, merged tool list, etc.) and emits `InterceptedEvent`s for each. These never reach a child server.
 2. For `tools/call`: the proxy parses the tool name and arguments from `params`, resolves the tool name to its owning child server via the routing table, and creates an `InterceptedEvent` (direction = agent→server) attributed to that server.
 3. Engine runs a **pre-forward `EvaluateRequest`** at this parsed dispatch point — after the proxy knows the tool name, args, and target server. Is this call an `external_sink`, and are the other two legs already lit for this session? If a trip fires → **block** (Variant A): the proxy synthesizes a JSON-RPC error result back to the agent using the same response-synthesis mechanism it uses for `initialize` and `tools/list`. The call **never reaches the server**.
 4. Otherwise the proxy **forwards** the raw frame to the resolved child server over its STDIN.
@@ -70,7 +76,7 @@ The proxy is **protocol-aware**, not a transparent byte pipe. It terminates `ini
 
 ## 4. Plane 1 — the MCP proxy (Go)
 
-**Multi-server, protocol-aware.** The proxy launches **all** configured MCP servers as child processes at startup, wiring each server's stdin/stdout/stderr as pipes. During startup it initializes each server via the MCP handshake (`initialize` + `notifications/initialized`), queries `tools/list` from each, and builds a **tool name → server** routing table. The agent sees a single MCP endpoint; the proxy presents a merged view of all servers' capabilities.
+**Multi-server, protocol-aware.** In **STDIO mode**, the proxy launches all configured MCP servers as child processes at startup. In **HTTP mode**, each MCP session gets a dedicated backend pool spawned on `initialize` (see §4.1). In both modes the proxy wires stdin/stdout/stderr as pipes, runs the MCP handshake, queries `tools/list`, and builds a **tool name → server** routing table. The agent sees a single MCP endpoint; the proxy presents a merged view of all servers' capabilities.
 
 **Response synthesis.** The proxy handles `initialize`, `tools/list`, and `ping` internally — it assembles responses from the child servers' capabilities and tool definitions without forwarding these protocol-level messages. `tools/list` returns a merged tool list aggregated from all servers. This is the same response-synthesis mechanism that Week 2's enforcement uses to return block errors.
 
@@ -95,7 +101,11 @@ Blocked `tools/call` responses use `Content-Type: application/json` with a synth
 
 **TLS posture (Phase 1):** bind `127.0.0.1` only — Interlock sits inside the trust boundary. TLS termination and MITM mode are deferred to a later v0.2 slice.
 
-**Deferred:** HTTP upstream backends (remote MCP server URLs), multi-session concurrent HTTP clients (Phase 2, #5), GET `/mcp` listen streams, and the [2026-07-28 stateless protocol](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http) migration.
+**Deferred:** HTTP upstream backends (remote MCP server URLs), GET `/mcp` listen streams, TLS termination / MITM mode, and the [2026-07-28 stateless protocol](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http) migration.
+
+### 4.2 Multi-session concurrency (v0.2 Phase 2)
+
+HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an isolated tickets/messenger/exfil backend pool until idle expiry (`sessions.idle_timeout`, default 30m) or `sessions.max_concurrent` (default 32). A `SessionManager` tracks lifecycle; a `PIDRegistry` maps `(pid, start_time)` → `{session_id, server_id}` for eBPF attribution. `IngestSyscall` requires an explicit `SessionID` — no `FirstSessionID` fallback. Unattributed syscalls during PID teardown are audit-logged, not tripped. STDIO mode remains single-session.
 
 **Process lifecycle.** Deterministic startup ordering (spawn all children, initialize each, confirm tools registered, then accept agent traffic); graceful shutdown that drains in-flight frames; crash handling that surfaces a clean error to the agent rather than hanging; process-group isolation (`Setpgid`) so children can be killed cleanly; and **kill-on-detect** — the containment primitive Plane 2 uses for Variant B.
 
@@ -107,20 +117,20 @@ Blocked `tools/call` responses use `Content-Type: application/json` with a synth
 
 **Attachment.** Probes are scoped to the proxy's **process subtree** — the proxy PID plus every server child PID. Userspace maintains the live PID set and pushes it to a **BPF hash map** (`BPF_MAP_TYPE_HASH`) so the probe checks membership cheaply in-kernel before emitting events.
 
-**Probe (v0.1): `connect()` only.**
+**Probe: `connect()` only (Variant B tripwire).**
 - Tracepoint: `tracepoint/syscalls/sys_enter_connect`.
 - Extracts destination IP/port from `sockaddr_in`, PID, TID, and comm.
-- Events pushed to a **ring buffer** (`BPF_MAP_TYPE_RINGBUF`, 256KB).
+- Events pushed to a **ring buffer** (`BPF_MAP_TYPE_RINGBUF`, 256KB). Reserve failures increment a `drop_count` map surfaced via `Sensor.DropCount()`.
 - Compiled from BPF C via `bpf2go` (cilium/ebpf), loaded by Go at runtime. CO-RE via BTF at `/sys/kernel/btf/vmlinux`.
-- `sendto`/payload excerpt, `openat()`, and DNS are deferred to v0.2. Each is its own kernel struct; shipping `connect()` end-to-end is the right scoping for v0.1.
+- **`sendto`/`write` payload capture** — deferred post-v0.2 (would upgrade Variant B from legs-only `SUSPICIOUS` to payload-backed `EXFIL`). `openat()` and DNS are further backlog.
 
 **Transport to userspace.** Ring buffer → Go decoder in `internal/ebpf/loader.go` → `model.SyscallEvent` structs → engine's `IngestSyscall` method.
 
 **Allowlist check.** The sensor checks each `connect()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg.
 
-**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**: `SIGKILL` to the process group of the offending child. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.2. **Honest consequence:** for Variant B the `connect()` may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
+**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**: `SIGKILL` to the process group of the offending child. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.3. **Honest consequence:** for Variant B the `connect()` may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
 
-**False-positive surface (stated plainly).** Variant B fires on any non-allowlisted `connect()` from a monitored process once the first two legs are lit. That means a server with a legitimate non-allowlisted API call during a sensitive session gets killed — with no payload evidence that anything was actually exfiltrated. This is a **high-signal tripwire**, not proof of exfil: an unexpected outbound connection from a supervised process during a sensitive session is worth killing and investigating, even without payload proof. The credible claim is "detected an unauthorized outbound connection during a sensitive session," not "detected exfiltration." Payload inspection to distinguish exfil from benign egress is v0.2 (`sendto` excerpt + kernel-side value-overlap).
+**False-positive surface (stated plainly).** Variant B fires on any non-allowlisted `connect()` from a monitored process once the first two legs are lit. That means a server with a legitimate non-allowlisted API call during a sensitive session gets killed — with no payload evidence that anything was actually exfiltrated. This is a **high-signal tripwire**, not proof of exfil: an unexpected outbound connection from a supervised process during a sensitive session is worth killing and investigating, even without payload proof. The credible claim is "detected an unauthorized outbound connection during a sensitive session," not "detected exfiltration." eBPF payload inspection to distinguish exfil from benign egress is deferred post-v0.2.
 
 **Prototype-first.** The `connect()` probe was validated with a `bpftrace` one-liner before writing compiled eBPF. This de-risked the hardest part of the week.
 
@@ -167,7 +177,7 @@ One state machine **per session**.
 
 **Reset semantics.** Legs are **session-scoped and sticky** — once lit, they stay lit for the life of the session. This is deliberately conservative for v0.1 (favor catching the attack over minimizing false positives). A new session starts clean.
 
-**Concurrency.** Sessions are isolated; state is per-`session_id`. v0.1 exercises one at a time.
+**Concurrency.** Sessions are isolated; state is per-`session_id`. HTTP mode runs many concurrent sessions (§4.2); STDIO mode exercises one session. Race coverage: `go test -race` on `./internal/proxy/...` and `./internal/engine/...` in CI.
 
 **Monitor / dry-run mode.** `enforcement: monitor` runs the full machine and emits evidence **without** blocking or killing — for tuning and for the "before" half of the demo.
 
@@ -384,14 +394,23 @@ type SessionStore interface {
 - **Never leaks the secrets it's protecting.** Tainted values are stored **hashed + masked** (`sk-...a9f2`), never raw. The value-overlap check compares raw values in memory only; evidence stores only the masked preview. All output files (`evidence.jsonl`, `evidence.json`, `events.jsonl`) are scrubbed by `RedactJSON` before writing — any known tainted value is replaced with its masked preview. Interlock writing the token in plaintext to a log would make the tool *itself* an exfil path — forbidden.
 - **Fail-open vs. fail-closed.** v0.1 is **fail-open with loud `[SECURITY]` warnings** on stderr. This is a conscious tradeoff to keep the dev/demo loop unblocked; a production posture would prefer fail-closed. The `[SECURITY]` prefix fires in scenarios including: (1) engine not configured, (2) engine panics mid-evaluation, (3) evidence sink write failure, (4) missing tool tags, (5) **unattributed eBPF syscalls**, (6) **event log backpressure drops**, (7) **eBPF ring-buffer reserve failures**. Deployers should monitor for `[SECURITY]` in stderr output.
 
-**Evidence persistence (v0.2 Phase 4).** Default: JSONL append (`evidence.jsonl`) + standalone `evidence.json` for the viewer. Opt-in: SQLite (`evidence.backend: sqlite`) with `max_records` retention — survives restart, prunes oldest records. See [`docs/performance.md`](docs/performance.md) for engine hot-path benchmarks.
+**Evidence persistence (v0.2 Phase 4).** Default: JSONL append (`evidence.jsonl`) + standalone `evidence.json` for the viewer. Opt-in: SQLite (`evidence.backend: sqlite`) with `max_records` retention — survives restart, prunes oldest records. See [`performance.md`](performance.md) for engine microbenchmarks and end-to-end HTTP overhead (v0.2.1).
 
 **Event log backpressure.** `logging.backpressure: block` (default) — synchronous writes, caller blocks. `drop` — bounded queue; overflow increments `DroppedEvents` and logs `[SECURITY]` at shutdown.
 
-**eBPF ring-buffer drops.** When `bpf_ringbuf_reserve` fails in [`connect.c`](internal/ebpf/bpf/connect.c), the kernel increments `drop_count`. Userspace reads via `Sensor.DropCount()` at shutdown.
+**eBPF ring-buffer drops.** When `bpf_ringbuf_reserve` fails in [`connect.c`](../internal/ebpf/bpf/connect.c), the kernel increments `drop_count`. Userspace reads via `Sensor.DropCount()` at shutdown.
 
 ---
 
-## 13. Deliberately absent in v0.1
+## 13. Known gaps and deferred work
 
-Real dataflow taint (the value-overlap check is a heuristic — see project_overview §Non-goals), kernel-level blocking, multi-session correlation logic, and any UI beyond the read-only viewer. HTTP/SSE agent transport shipped in v0.2 Phase 1 (#4). Remaining transport work (HTTP backends, multi-session HTTP, TLS) tracked in `task_list.md` and `ROADMAP.md`.
+**Still deferred (see [`ROADMAP.md`](ROADMAP.md)):**
+
+- **eBPF payload capture** (`sendto`/`write`) — Variant B upgrade from tripwire to payload-backed `EXFIL`
+- **Kernel-level blocking** (LSM/KRSI) — prevent before first packet leaves (v0.3)
+- **Full dataflow taint** — value overlap covers canonical encodings only; split/compressed/nested encoding explicitly out of scope (skip tests in `overlap_test.go`)
+- **HTTP upstream backends**, TLS termination / MITM, GET `/mcp` listen streams
+- **Operability layer** — daemon mode, Prometheus metrics, SIEM export (v0.3)
+- **Dashboard / query API** — cross-session evidence search (`TestEvidenceStore_CrossSessionQuery_KnownGap`)
+
+**Shipped in v0.2:** Streamable HTTP transport, multi-session concurrency + PID attribution, bounded encoding overlap on Variant A, engine + HTTP overhead benchmarks, opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter. Milestone summary: [`v0.2_summary.md`](v0.2_summary.md).

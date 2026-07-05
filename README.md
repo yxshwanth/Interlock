@@ -10,7 +10,7 @@
 
 ## The problem
 
-AI agents wired to MCP tools can read private data, ingest attacker-controlled instructions, and reach the outside world — Simon Willison's **lethal trifecta** — and the first half of 2026 alone produced **40+ CVEs against MCP implementations**. Static scanners check what a tool *claims* before approval; they miss the attack that matters in production: a sequence of individually authorized calls that chains into exfiltration. [Read the full threat model →](docs/project_overview.md)
+AI agents wired to MCP tools can read private data, ingest attacker-controlled instructions, and reach the outside world — Simon Willison's **lethal trifecta** — while MCP implementations have faced a steady stream of high-severity CVEs through early 2026 ([OX Security](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/), [Cloud Security Alliance research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/)). Static scanners check what a tool *claims* before approval; they miss the attack that matters in production: a sequence of individually authorized calls that chains into exfiltration. [Read the full threat model →](docs/project_overview.md)
 
 ---
 
@@ -28,10 +28,6 @@ Interlock sits between an agent and its MCP servers on **two observation planes*
 | Confidence when tripped | 0.95 (`EXFIL`) with overlap | 0.60 (`SUSPICIOUS`) — legs only |
 | Role | Detector + preventer | Tripwire + containment |
 
-- **Variant A — chained tools (proxy prevents).** A poisoned ticket tells the agent to read secrets and send them via a legitimate MCP tool. The proxy sees the sink call forming with the sensitive value (including encoded forms) in its arguments and **refuses to forward it**. The call never reaches the server. Verdict: `EXFIL`. Action: `prevented`.
-
-- **Variant B — server side channel (eBPF tripwire + containment).** A malicious MCP server subprocess opens its own TCP socket to the attacker — a path the proxy never observes. An eBPF probe on `connect()` fires from a monitored PID; the engine correlates it with the sensitive session and **kills the process**. Verdict: `SUSPICIOUS` (tripwire — connection observed, payload not inspected). Action: `contained_by_kill`.
-
 ```mermaid
 flowchart TB
     Agent["AI Agent"]
@@ -47,14 +43,20 @@ flowchart TB
     subgraph Untrusted["Untrusted zone"]
       T["tickets MCP server\n(sensitive source)"]
       M["messenger MCP server\n(external sink)"]
+      E["exfil MCP server\n(malicious side channel)"]
     end
 
-    Agent <-->|JSON-RPC over STDIO| Proxy
+    Attacker["Attacker host"]
+
+    Agent <-->|MCP JSON-RPC| Proxy
     Proxy <-->|spawns + pipes| T
     Proxy <-->|spawns + pipes| M
+    Proxy <-->|spawns + pipes| E
     Proxy -->|InterceptedEvent| Engine
     eBPF -->|SyscallEvent| Engine
     eBPF -. watches PID subtree .-> Proxy
+    eBPF -. connect() from monitored PID .-> E
+    E -.->|TCP side channel\n(bypasses proxy JSON-RPC)| Attacker
     Engine -->|Decision| Proxy
     Engine -->|EvidenceRecord| Sink
 ```
@@ -102,7 +104,7 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 3. **eBPF containment is kill-after-connect, not first-packet prevention.** The `connect()` syscall completes before `SIGKILL` fires. Variant A truly prevents; Variant B severs the channel and stops further exfiltration. *v0.3: LSM/KRSI for in-kernel blocking before the packet leaves.*
 
-4. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens). Secrets shaped differently — JWTs, private URLs with embedded tokens, customer PII — pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files. *v0.2: extended redaction as HTTP/TLS transport lands.*
+4. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens) and encoded taint variants; HTTP `Authorization` / `Cookie` headers are redacted in request metadata. JWTs, private URLs with embedded tokens, and customer PII in tool bodies still pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files.
 
 5. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
 
@@ -147,22 +149,23 @@ Full architecture spec: [`docs/architecture.md`](docs/architecture.md)
 
 ---
 
-## Project status — v0.1
+## Project status — v0.2
 
-This is a **working proof**, deliberately scoped: STDIO transport, `connect()`-only eBPF, single session, heuristic value-overlap. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
+**Latest release:** [`v0.2.1`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.1) — usable-tool milestone complete. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
 
-**In scope:**
+v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operability. Variant B remains a `connect()` tripwire until eBPF payload capture lands (post-v0.2).
 
-- MCP over STDIO transport
-- Trifecta state machine + tool tagging
-- Proxy-side blocking (Variant A — true prevention)
-- eBPF `connect()` sensor (Variant B — detection + containment)
-- Value-overlap confidence heuristic
-- Both demo attack variants; local HTML evidence viewer
+**Shipped in v0.2:**
+
+- Streamable HTTP MCP transport (STDIO still default); multi-session concurrency with PID→session attribution
+- Encoding-aware value overlap on Variant A (base64, hex, URL-encoding, reversal)
+- Engine microbenchmarks + end-to-end HTTP overhead ([`docs/performance.md`](docs/performance.md), `make bench`, `make bench-http`)
+- Opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter
+- Trifecta state machine, proxy blocking, eBPF containment; both demo variants; HTML evidence viewer
 
 **Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
-- **v0.2 — Usable tool (complete):** HTTP/SSE transport, multi-session concurrency, bounded encoding overlap, engine benchmarks ([`docs/v0.2_summary.md`](docs/v0.2_summary.md)), opt-in SQLite evidence. Variant B payload overlap deferred post-v0.2.
+- **v0.2 — Usable tool (complete):** see [`docs/v0.2_summary.md`](docs/v0.2_summary.md). Variant B payload overlap deferred post-v0.2.
 - **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
@@ -173,7 +176,7 @@ Every detection feature ships with explicit known-gap tests naming what it does 
 
 ![CI](https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml/badge.svg)
 
-**107 tests passing**, 7 known-gap skips — engine, proxy, config, HTTP integration, benchmarks, evidence, backpressure. CI runs `test` + `race` jobs on every push to `main`. eBPF integration requires root and a BTF-enabled kernel — tested locally, not in CI.
+**110 tests passing**, 7 known-gap skips — engine, proxy, config, HTTP integration, overhead benchmarks, evidence, backpressure. CI runs `test` + `race` jobs on every push to `main`. eBPF integration requires root and a BTF-enabled kernel — tested locally, not in CI.
 
 ```bash
 make test
@@ -205,4 +208,4 @@ Interlock runs privileged and loads kernel probes. Do not report vulnerabilities
 
 - **Threat framing:** Simon Willison's ["lethal trifecta"](https://simonwillison.net/) — the three-capability model for agent danger.
 - **Prior art:** [AgentSight](https://arxiv.org/abs/2508.02736) (arXiv 2508.02736) — names the same semantic gap (intent vs. action) and uses eBPF; Interlock is the enforcement-capable product take.
-- **Threat data:** Endor Labs, OX Security, Practical DevSecOps, Cloud Security Alliance, Trend Micro, BlueRock Security.
+- **Threat data:** [OX Security MCP disclosure](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/), [Cloud Security Alliance research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/), [Endor Labs MCP AppSec research](https://www.endorlabs.com/learn/classic-vulnerabilities-meet-ai-infrastructure-why-mcp-needs-appsec).
