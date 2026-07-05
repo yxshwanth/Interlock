@@ -104,10 +104,14 @@ This doc is the **source of truth for progress**. Check items as they land.
 - `[ ]` **Kernel-level blocking** via LSM / KRSI (upgrade Variant B from contain to prevent)
 - `[ ]` Policy config UX + allowlist management
 - `[x]` Multi-session correlation hardening (real PID→session mapping under concurrency, v0.2 Phase 2)
+- `[x]` **Bounded encoding overlap (v0.2 Phase 3):** canonical transforms; known-gap tests
+- `[x]` **Performance benchmarks (v0.2 Phase 4):** engine hot-path suite; docs/performance.md; make bench
+- `[x]` **SQLite evidence store (opt-in):** evidence.backend sqlite, max_records retention
+- `[x]` **Event log backpressure:** logging.backpressure block | drop
+- `[x]` **eBPF ring-buffer drop counter**
 
 **v0.3**
-- `[x]` **Bounded encoding overlap (v0.2 Phase 3):** canonical transforms (base64, hex, URL-encoding, reversal) at taint registration; `match_form` in evidence; known-gap tests for split/compressed/double-encoded
-- `[ ]` eBPF `sendto`/`write` payload capture — Variant B overlap upgrade (Phase 3 follow-up)
+- `[ ]` eBPF `sendto`/`write` payload capture — Variant B overlap upgrade
 - `[ ]` Cross-server **tool-shadowing** detection
 - `[ ]` Multi-agent sessions
 
@@ -120,7 +124,7 @@ This doc is the **source of truth for progress**. Check items as they land.
 - `[ ]` **Value-overlap false pos/neg** — bounded encoding overlap catches common transforms; split/compressed/nested still missed (known-gap tests); can false-positive on legit echoes
 - `[x]` **Fail-open vs fail-closed** default — **decided:** v0.1 is fail-open with `[SECURITY]` warnings. Documented in architecture.md §12. Four warning scenarios wired: nil engine, engine panic, evidence sink failure, missing tool tags.
 - `[x]` **Multi-session PID→session mapping** — v0.2 Phase 2: per-session server pools, PIDRegistry, explicit session attribution for eBPF.
-- `[ ]` **Overhead** of interposition + eBPF — not measured in v0.1; not optimized.
+- `[ ]` **Overhead** of interposition + eBPF — engine hot-path benchmarks published (docs/performance.md); full HTTP/eBPF load not measured
 - `[ ]` **"Sole provider" window** — AgentSight and others are circling; first working + documented tool wins ~6–12 months. Ship.
 - `[x]` **Cross-plane clock mismatch** — proxy uses Go `CLOCK_MONOTONIC`, eBPF uses `bpf_ktime_get_ns()` (boot-time). Fixed via engine-assigned `timeline_seq` for causal ordering. Clock-offset normalization for real cross-plane latency is v0.2.
 - `[x]` **Redaction scope** — regex-matched patterns only (API keys, tokens, account IDs). JWTs, private URLs, PII pass through unredacted. Event logs are sensitive artifacts. Documented in README limitations. Full result-body redaction is v0.2.

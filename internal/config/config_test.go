@@ -235,6 +235,51 @@ servers:
 	}
 }
 
+func TestLoadEvidenceAndLoggingConfig(t *testing.T) {
+	yaml := `
+evidence:
+  backend: sqlite
+  path: /tmp/evidence.db
+  max_records: 500
+logging:
+  backpressure: drop
+  queue_size: 128
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Evidence.Backend != "sqlite" {
+		t.Errorf("evidence.backend = %q", cfg.Evidence.Backend)
+	}
+	if cfg.Evidence.MaxRecords != 500 {
+		t.Errorf("max_records = %d", cfg.Evidence.MaxRecords)
+	}
+	if cfg.Logging.Backpressure != "drop" {
+		t.Errorf("backpressure = %q", cfg.Logging.Backpressure)
+	}
+	if cfg.Logging.QueueSize != 128 {
+		t.Errorf("queue_size = %d", cfg.Logging.QueueSize)
+	}
+}
+
+func TestLoadInvalidEvidenceBackend(t *testing.T) {
+	yaml := `
+evidence:
+  backend: postgres
+servers:
+  - id: s1
+    command: echo
+`
+	_, err := Load(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid evidence backend")
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path/interlock.yaml")
 	if err == nil {

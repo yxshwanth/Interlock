@@ -32,6 +32,20 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } events SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} drop_count SEC(".maps");
+
+static __always_inline void inc_drop_count(void) {
+	__u32 key = 0;
+	__u64 *count = bpf_map_lookup_elem(&drop_count, &key);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+
 SEC("tracepoint/syscalls/sys_enter_connect")
 int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -53,8 +67,10 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 
 	struct connect_event *ev;
 	ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
-	if (!ev)
+	if (!ev) {
+		inc_drop_count();
 		return 0;
+	}
 
 	ev->ts_ns = bpf_ktime_get_ns();
 	ev->pid = pid;

@@ -158,6 +158,11 @@ func (s *Sensor) Stop() {
 	s.log.Println("sensor stopped")
 }
 
+// DropCount returns kernel-side ring buffer reserve failures.
+func (s *Sensor) DropCount() (uint64, error) {
+	return s.loader.DropCount()
+}
+
 func destIPNormalized(ip string) string {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {

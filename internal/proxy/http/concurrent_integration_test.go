@@ -60,7 +60,7 @@ func TestConcurrentDualSession_VariantA_Block(t *testing.T) {
 		}{ToolResults: true},
 	}
 
-	evLogger, _ := proxy.NewEventLogger("")
+	evLogger, _ := proxy.NewEventLogger("", config.LoggingConfig{}, nil)
 	defer evLogger.Close()
 
 	sink, err := engine.NewJSONLEvidenceSink(evidencePath)
