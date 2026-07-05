@@ -25,6 +25,9 @@ jobs:
       - name: Test
         run: go test -v ./...
 
+      - name: Benchmark smoke
+        run: go test -run=^$ -bench=BenchmarkCheckOverlap_1Tainted -benchtime=10ms ./internal/engine/...
+
   race:
     runs-on: ubuntu-latest
     steps:
