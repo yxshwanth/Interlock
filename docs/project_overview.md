@@ -8,7 +8,7 @@ Interlock is a **runtime behavioral firewall for AI agents**. It watches what an
 
 ## The problem
 
-MCP became the default way agents talk to tools in under 18 months, and security did not keep up. The first half of 2026 produced 40+ CVEs against MCP implementations (roughly one every four days, hitting tools with ~150M combined downloads), a May 2026 disclosure estimating up to ~200,000 vulnerable MCP instances, and 88% of organizations reporting a confirmed or suspected AI agent incident in the prior year. Only ~8.5% of MCP implementations use OAuth.
+MCP became the default way agents talk to tools in under 18 months, and security did not keep up. MCP implementations have faced a steady stream of high-severity CVEs through early 2026 — [OX Security's April 2026 disclosure](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/) alone produced 10+ Critical/High CVEs from one architectural flaw in the STDIO transport; [CSA](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/) and [Endor Labs](https://www.endorlabs.com/learn/classic-vulnerabilities-meet-ai-infrastructure-why-mcp-needs-appsec) catalogued the broader pattern across thousands of implementations.
 
 The entire defensive market is aimed at the wrong moment. **Static scanners check tool *definitions* before an agent is allowed to use them.** They cannot see the attack that matters most in production: a **sequence** of individually-authorized tool calls that chains into an exfiltration pipeline. The defenders themselves named this as the open gap — behavioral monitoring of what an agent does *after* approval.
 
@@ -53,23 +53,37 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 ---
 
-## Core tech stack
+## Core tech stack (v0.2.1)
 
 | Layer | Choice |
 |---|---|
 | Language (proxy, engine, control plane) | **Go** |
-| Kernel sensor | **eBPF** via `cilium/ebpf` (ebpf-go); probes prototyped in **bpftrace** first |
-| Transport intercepted (v0.1) | **MCP over STDIO** |
-| Demo agent | **Claude Agent SDK** |
+| Kernel sensor | **eBPF** via `cilium/ebpf` (ebpf-go); `connect()` probe only |
+| Transport intercepted | **MCP over STDIO** (default) or **Streamable HTTP** (`2025-11-25`); backend servers remain STDIO children |
+| Demo agent | **Claude Agent SDK** (scripted demo client) |
 | Evidence UI | Self-contained **local HTML** (read-only) |
 | Dev platform | **Ubuntu 6.x + BTF** (CO-RE-friendly) |
-| Data (v0.1) | In-memory session state + **JSONL evidence log**; no external DB |
+| Session state | In-memory per `session_id`; HTTP multi-session via `SessionManager` + `PIDRegistry` |
+| Evidence persistence | **JSONL** default; opt-in **SQLite** with `max_records` retention |
 
 ---
 
-## Non-goals (v0.1)
+## Shipped vs deferred (v0.2.1)
 
-Explicitly out of scope, on purpose: HTTP/SSE transport, byte-level dataflow taint tracking, kernel-level *blocking* (LSM/KRSI), any dashboard beyond the timeline, multi-agent orchestration, config UX, and anything resembling "a platform." These are tracked in the backlog for v0.2/v0.3.
+**Shipped in v0.2:**
+
+- Streamable HTTP MCP transport; multi-session concurrency with PID→session attribution
+- Bounded encoding overlap on Variant A (base64, hex, URL-encoding, reversal)
+- Engine microbenchmarks + end-to-end HTTP overhead story ([`performance.md`](performance.md))
+- Opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter
+
+**Still out of scope** (see [`ROADMAP.md`](ROADMAP.md)):
+
+- eBPF `sendto`/`write` payload capture (Variant B remains a `connect()` tripwire)
+- Full byte-level dataflow taint (split/compressed/nested encoding — known-gap tests)
+- Kernel-level blocking (LSM/KRSI), Kubernetes DaemonSet deployment
+- Dashboard beyond the read-only viewer, cross-session query API, SIEM/metrics layer
+- Multi-agent orchestration, policy config UX, managed platform
 
 ---
 
@@ -83,9 +97,10 @@ Explicitly out of scope, on purpose: HTTP/SSE transport, byte-level dataflow tai
 
 ---
 
-## Success criteria for v0.1
+## Success criteria
 
-- **The demo lands:** firewall-off breach vs. firewall-on block, on camera, with a syscall-level timeline as the receipt.
-- **Both variants work:** A (proxy-blocked) and B (eBPF-detected + contained).
-- **A clean OSS repo** anyone can clone and reproduce with one command, plus a launch post that credits Willison and AgentSight.
-- **Leading indicators of traction:** GitHub stars, a maintainer or two engaging, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.
+**v0.1 (met — tagged `v0.1.0`):** both attack variants demo on STDIO; one-command reproduce; syscall-level evidence receipt.
+
+**v0.2 (met — tagged `v0.2.0` + `v0.2.1`):** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil on Variant A, publishes scoped overhead numbers, persists evidence (SQLite opt-in). Full audit: [`v0.2_summary.md`](v0.2_summary.md).
+
+**Leading indicators of traction:** GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.
