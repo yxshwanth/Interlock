@@ -48,7 +48,7 @@
 - `[ ]` Signed releases, threat model, published false-positive corpus
 
 **Launch polish** (optional, not blocking)
-- `[ ]` README money-shot GIF
+- `[x]` README money-shot GIF (`media/ReadmeGif.gif`, viewer screenshots, `make demo-quiet` terminal capture)
 - `[ ]` 90-second demo recording
 - `[ ]` Launch post draft
 
