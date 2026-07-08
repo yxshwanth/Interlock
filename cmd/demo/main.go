@@ -26,6 +26,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 func main() {
@@ -590,9 +591,17 @@ func isSuccess(resp json.RawMessage) bool {
 }
 
 func banner(title string) {
-	width := len(title) + 6
-	bar := strings.Repeat("═", width)
-	fmt.Fprintf(os.Stderr, "\n╔%s╗\n║   %s   ║\n╚%s╝\n\n", bar, title, bar)
+	const sidePad = 3
+	titleCols := utf8.RuneCountInString(title)
+	innerWidth := titleCols + 2*sidePad
+	bar := strings.Repeat("═", innerWidth)
+	fmt.Fprintf(os.Stderr, "\n╔%s╗\n║%s%s%s║\n╚%s╝\n\n",
+		bar,
+		strings.Repeat(" ", sidePad),
+		title,
+		strings.Repeat(" ", innerWidth-sidePad-titleCols),
+		bar,
+	)
 }
 
 // beat prints a single curated narrative line for quiet/recording mode.
