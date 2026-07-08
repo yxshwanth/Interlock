@@ -1,4 +1,4 @@
-.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent clean bench bench-http race
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent clean bench bench-http race readme-gif
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
@@ -21,6 +21,13 @@ bench:
 
 bench-http: build
 	$(GO) test -run=TestHTTP_OverheadReport -bench=BenchmarkHTTP_EngineDelta -benchmem -benchtime=500ms ./internal/proxy/http/...
+
+# Convert media/ReadmeGif.mp4 → media/ReadmeGif.gif for the README hero (requires ffmpeg).
+readme-gif: media/ReadmeGif.gif
+
+media/ReadmeGif.gif: media/ReadmeGif.mp4
+	@command -v ffmpeg >/dev/null || { echo "ffmpeg required: sudo apt install ffmpeg"; exit 1; }
+	ffmpeg -y -i $< -vf "fps=10,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer" $@
 
 demo: clean-evidence build
 	$(GO) run ./cmd/demo

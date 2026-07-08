@@ -2,9 +2,11 @@
 
 **A runtime firewall that catches AI agents exfiltrating your data — through tool-call chains the proxy sees, and side channels it can't.**
 
-<!-- GIF: insert off→on contrast loop here (breach → blocked, ~8s). Caption below. -->
+<p align="center">
+  <img src="media/ReadmeGif.gif" alt="Firewall off: breach. Firewall on: blocked at the tool call, or detected and contained at the kernel." width="720" />
+</p>
 
-*Firewall off: breach. Firewall on: blocked at the tool call, or detected and contained at the kernel.*
+<p align="center"><em>Firewall off: breach. Firewall on: blocked at the tool call, or detected and contained at the kernel.</em></p>
 
 ---
 
@@ -79,6 +81,10 @@ No root? The proxy-only demo skips Variant B:
 make demo-quiet
 ```
 
+<p align="center">
+  <img src="media/demo-quiet.jpeg" alt="make demo-quiet terminal output — monitor breach, block prevented, results comparison" width="640" />
+</p>
+
 For verbose protocol output instead of curated narrative beats:
 
 ```bash
@@ -143,7 +149,9 @@ Events from the proxy (userspace) and eBPF (kernel) use different clocks — Go'
 
 Each trip emits an `EvidenceRecord` — session ID, verdict, action, variant, the three legs with trigger details, the sink call (tool name or syscall), optional value-overlap hit, and the full ordered timeline. The local HTML viewer at [`web/viewer.html`](web/viewer.html) renders it: verdict badge, trifecta legs, and the fused timeline.
 
-<!-- Screenshot: Variant B evidence viewer (clean quiet-mode receipt with fused timeline). -->
+| Variant A — `EXFIL` prevented (proxy) | Variant B — side channel contained (eBPF) |
+|:---:|:---:|
+| <img src="media/VariantA.jpeg" alt="Variant A evidence receipt — EXFIL prevented at send_message" width="420" /> | <img src="media/VariantB.jpeg" alt="Variant B evidence receipt — connect syscall fused with sensitive read" width="420" /> |
 
 Full architecture spec: [`docs/architecture.md`](docs/architecture.md)
 
