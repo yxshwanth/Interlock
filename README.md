@@ -1,5 +1,13 @@
 # Interlock
 
+[![CI](https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml/badge.svg)](https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/yxshwanth/Interlock)](https://github.com/yxshwanth/Interlock/releases)
+[![License: MIT](https://img.shields.io/github/license/yxshwanth/Interlock)](LICENSE)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![eBPF](https://img.shields.io/badge/eBPF-cilium--ebpf-111111?logo=linux&logoColor=white)](internal/ebpf/bpf/connect.c)
+[![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-5A67D8)](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%2B%20BTF-FCC624?logo=linux&logoColor=black)](#quickstart)
+
 **A runtime firewall that catches AI agents exfiltrating your data — through tool-call chains the proxy sees, and side channels it can't.**
 
 <p align="center">
@@ -181,8 +189,6 @@ Every detection feature ships with explicit known-gap tests naming what it does 
 ---
 
 ## Tests
-
-![CI](https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml/badge.svg)
 
 **110 tests passing**, 7 known-gap skips — engine, proxy, config, HTTP integration, overhead benchmarks, evidence, backpressure. CI runs `test` + `race` jobs on every push to `main`. eBPF integration requires root and a BTF-enabled kernel — tested locally, not in CI.
 
