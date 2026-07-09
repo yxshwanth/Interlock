@@ -830,16 +830,100 @@ func TestCheckOverlap_EgressPayload(t *testing.T) {
 	}
 }
 
+func TestEngine_IngestSyscall_EXFIL_SendtoPayload(t *testing.T) {
+	eng, sink := newTestEngine("block")
+	sid := "ebpf-sendto"
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		fmt.Sprintf(`{"content":[{"type":"text","text":"Token: %s"}]}`, secret)))
+
+	ev := model.SyscallEvent{
+		PID:            57,
+		Comm:           "exfil-udp",
+		Syscall:        "sendto",
+		DestIP:         "203.0.113.66",
+		DestPort:       9999,
+		SessionID:      sid,
+		PayloadExcerpt: secret,
+	}
+	dec := eng.IngestSyscall(ev)
+	if dec.Verdict != model.VerdictExfil {
+		t.Fatalf("expected EXFIL, got %q", dec.Verdict)
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("expected 1 evidence, got %d", len(sink.records))
+	}
+}
+
+func TestEngine_IngestSyscall_DNS_Suspicious(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "ebpf-dns"
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+
+	ev := model.SyscallEvent{
+		PID:            58,
+		Comm:           "resolver",
+		Syscall:        "dns",
+		DestIP:         "203.0.113.53",
+		DestPort:       53,
+		SessionID:      sid,
+		PayloadExcerpt: "\x03foo\x03com\x00", // no taint overlap
+	}
+	dec := eng.IngestSyscall(ev)
+	if dec.Verdict != model.VerdictSuspicious {
+		t.Fatalf("expected SUSPICIOUS for DNS without overlap, got %q", dec.Verdict)
+	}
+}
+
+func TestEngine_IngestSyscall_Openat_Suspicious(t *testing.T) {
+	eng, sink := newTestEngine("block")
+	sid := "ebpf-openat"
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+
+	ev := model.SyscallEvent{
+		PID:       59,
+		Comm:      "exfil",
+		Syscall:   "openat",
+		Path:      "/etc/shadow",
+		SessionID: sid,
+	}
+	dec := eng.IngestSyscall(ev)
+	if dec.Verdict != model.VerdictSuspicious {
+		t.Fatalf("expected SUSPICIOUS for openat, got %q", dec.Verdict)
+	}
+	if dec.Verdict == model.VerdictExfil {
+		t.Fatal("openat must not claim EXFIL")
+	}
+	sc, ok := sink.records[0].SinkCall.(map[string]any)
+	if !ok {
+		t.Fatalf("SinkCall type %T", sink.records[0].SinkCall)
+	}
+	if sc["path"] != "/etc/shadow" {
+		t.Fatalf("path = %v", sc["path"])
+	}
+}
+
 func TestCheckOverlap_PayloadTruncated_KnownGap(t *testing.T) {
-	t.Skip("known gap: secrets past first 256 egress bytes are not captured by eBPF write probe")
+	t.Skip("known gap: secrets past first 256 egress bytes are not captured by eBPF write/sendto probes")
 }
 
 func TestCheckOverlap_WriteBeforeConnect_KnownGap(t *testing.T) {
 	t.Skip("known gap: write() before a non-allowlisted connect is ignored (correlation requires recent connect)")
 }
 
-func TestEBPF_SendtoUDP_KnownGap(t *testing.T) {
-	t.Skip("known gap: UDP sendto payload capture deferred; only sys_enter_write is instrumented")
+func TestEBPF_SendtoIPv6_KnownGap(t *testing.T) {
+	t.Skip("known gap: IPv6 sendto not instrumented (AF_INET only)")
+}
+
+func TestEBPF_Sendmsg_KnownGap(t *testing.T) {
+	t.Skip("known gap: sendmsg/writev not instrumented")
+}
+
+func TestEBPF_DNS_DoH_KnownGap(t *testing.T) {
+	t.Skip("known gap: DoH/DoT DNS not covered by sendto:53 heuristic")
 }
 
 type testAuditSink struct {

@@ -52,9 +52,9 @@ STDIO single-session was a demo simplification. Real deployment means many concu
 
 Closes the detection-credibility gap for Variant A: encoded exfil in sink args is now caught.
 
-- **Shipped (encoding overlap):** canonical transforms at taint registration — base64, hex, URL-encoding, reversal; `CheckOverlap` tests sink args against all forms; evidence records `match_form`; `RedactJSON` scrubs encoded variants from logs
-- **Known gaps (skip tests):** split-across-calls, compression, double/nested encoding
-- **Shipped (post-v0.2):** eBPF `write()` first-256-byte payload capture → Variant B `EXFIL` when overlap hits; connect-only remains `SUSPICIOUS`. `sendto`/UDP still deferred.
+- **Shipped (encoding overlap):** canonical transforms at taint registration — base64, hex, URL-encoding, reversal; depth-2 nests; `gzip_base64`; same-call JSON string reassembly; `CheckOverlap` / `CheckOverlapPayload`; evidence records `match_form`; `RedactJSON` scrubs encoded variants
+- **Known gaps (skip tests):** cross-call splits, depth-3+ nests, non-gzip compressors
+- **Shipped (post-v0.2):** eBPF `write()` + `sendto()` first-256 → Variant B `EXFIL` on overlap; connect/DNS/`openat` without overlap → `SUSPICIOUS`. DNS = sendto port 53; openat uses `sensitive_paths`
 
 **Done when:** `TestCheckOverlap_EncodedExfil_KnownGap` passes — **met**.
 
@@ -85,8 +85,9 @@ The "is this operable" gate — **shipped**.
 **Post-v0.2 detection:**
 
 5. **eBPF write payload capture** — **met**: `sys_enter_write` first-256 bytes; deferred kill ~100 ms; `CheckOverlapPayload` → Variant B `EXFIL` 0.95 when overlap hits. Connect-only stays `SUSPICIOUS` 0.60.
+6. **eBPF sendto + openat + DNS** — **met**: self-contained `sendto` (IPv4); DNS via port 53; `openat` + `sensitive_paths` → `SUSPICIOUS` only.
 
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (JSONL default intentional; SQLite opt-in for retention). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`** (milestone) and **`v0.2.1`** (HTTP overhead A+C).
+**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (JSONL default intentional; SQLite opt-in for retention). **All four phases merged**. Tagged **`v0.2.0`** / **`v0.2.1`**. Current product state (including post-v0.2): [`SUMMARY.md`](SUMMARY.md).
 
 ---
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-// Interlock eBPF probes — connect() tripwire + write() first-N payload capture.
-// Events share a tagged ring-buffer layout so userspace can decode both.
+// Interlock eBPF probes — connect, write, sendto (IPv4), openat.
+// Events share a tagged ring-buffer layout so userspace can decode them.
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -10,7 +10,10 @@
 #define AF_INET 2
 #define EVENT_CONNECT 1
 #define EVENT_WRITE   2
+#define EVENT_SENDTO  3
+#define EVENT_OPENAT  4
 #define PAYLOAD_MAX   256
+#define PATH_MAX_CAP  128
 
 struct connect_event {
 	__u32 type; /* EVENT_CONNECT */
@@ -32,6 +35,29 @@ struct write_event {
 	__u32 fd;
 	char  comm[16];
 	char  payload[PAYLOAD_MAX];
+};
+
+struct sendto_event {
+	__u32 type; /* EVENT_SENDTO */
+	__u32 len;
+	__u64 ts_ns;
+	__u32 pid;
+	__u32 tid;
+	__u32 dest_ip;
+	__u16 dest_port;
+	__u16 _pad;
+	char  comm[16];
+	char  payload[PAYLOAD_MAX];
+};
+
+struct openat_event {
+	__u32 type; /* EVENT_OPENAT */
+	__u32 path_len;
+	__u64 ts_ns;
+	__u32 pid;
+	__u32 tid;
+	char  comm[16];
+	char  path[PATH_MAX_CAP];
 };
 
 struct {
@@ -144,6 +170,100 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
 	bpf_probe_read_user(ev->payload, cap, buf);
 
+	bpf_ringbuf_submit(ev, 0);
+	return 0;
+}
+
+/* sendto(fd, buf, len, flags, dest_addr, addrlen) — self-contained UDP/TCP egress. */
+SEC("tracepoint/syscalls/sys_enter_sendto")
+int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx) {
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 pid = pid_tgid >> 32;
+	__u32 tid = (__u32)pid_tgid;
+
+	__u8 *found = bpf_map_lookup_elem(&pid_filter, &pid);
+	if (!found)
+		return 0;
+
+	__u32 fd = (__u32)ctx->args[0];
+	if (fd < 3)
+		return 0;
+
+	const char *buf = (const char *)(unsigned long)ctx->args[1];
+	__u64 count = (__u64)ctx->args[2];
+	struct sockaddr *sa = (struct sockaddr *)(unsigned long)ctx->args[4];
+	if (!buf || count == 0 || !sa)
+		return 0;
+
+	unsigned short family;
+	bpf_probe_read_user(&family, sizeof(family), &sa->sa_family);
+	if (family != AF_INET)
+		return 0;
+
+	__u32 cap = PAYLOAD_MAX;
+	if (count < cap)
+		cap = (__u32)count;
+
+	struct sendto_event *ev;
+	ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
+	if (!ev) {
+		inc_drop_count();
+		return 0;
+	}
+
+	__builtin_memset(ev, 0, sizeof(*ev));
+	ev->type = EVENT_SENDTO;
+	ev->len = cap;
+	ev->ts_ns = bpf_ktime_get_ns();
+	ev->pid = pid;
+	ev->tid = tid;
+
+	struct sockaddr_in *sin = (struct sockaddr_in *)sa;
+	bpf_probe_read_user(&ev->dest_ip, sizeof(ev->dest_ip), &sin->sin_addr.s_addr);
+	bpf_probe_read_user(&ev->dest_port, sizeof(ev->dest_port), &sin->sin_port);
+	ev->dest_port = bpf_ntohs(ev->dest_port);
+
+	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
+	bpf_probe_read_user(ev->payload, cap, buf);
+
+	bpf_ringbuf_submit(ev, 0);
+	return 0;
+}
+
+/* openat(dfd, filename, flags, mode) — pathname for sensitive-path trips. */
+SEC("tracepoint/syscalls/sys_enter_openat")
+int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx) {
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 pid = pid_tgid >> 32;
+	__u32 tid = (__u32)pid_tgid;
+
+	__u8 *found = bpf_map_lookup_elem(&pid_filter, &pid);
+	if (!found)
+		return 0;
+
+	const char *filename = (const char *)(unsigned long)ctx->args[1];
+	if (!filename)
+		return 0;
+
+	struct openat_event *ev;
+	ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
+	if (!ev) {
+		inc_drop_count();
+		return 0;
+	}
+
+	__builtin_memset(ev, 0, sizeof(*ev));
+	ev->type = EVENT_OPENAT;
+	ev->ts_ns = bpf_ktime_get_ns();
+	ev->pid = pid;
+	ev->tid = tid;
+	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
+	long n = bpf_probe_read_user_str(ev->path, sizeof(ev->path), filename);
+	if (n <= 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
+	ev->path_len = (__u32)n;
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
 }

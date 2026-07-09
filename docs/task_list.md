@@ -9,11 +9,10 @@
 ## Current state
 
 - `[x]` **v0.1 — Working proof** (2026-07-04). STDIO transport, trifecta engine, Variant A blocking, eBPF `connect()` tripwire, JSONL evidence, HTML viewer. Tagged **`v0.1.0`**.
-- `[x]` **v0.2 — Usable tool** (2026-07-05). HTTP/SSE transport, multi-session concurrency, bounded encoding overlap, engine benchmarks, SQLite evidence (opt-in), backpressure, eBPF drop counter. Tagged **`v0.2.0`**. See [`v0.2_summary.md`](v0.2_summary.md).
-- `[x]` **v0.2.1 — HTTP overhead** (2026-07-05). End-to-end HTTP overhead A+C (`TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`), `make bench-http`, CI smoke. Tagged **`v0.2.1`**. PR [#17](https://github.com/yxshwanth/Interlock/pull/17).
-- `[x]` **Post-v0.2 — Async evidence + Variant B payload EXFIL.** `AsyncEvidenceSink`; eBPF `write()` first-256; deferred kill; dual claim `SUSPICIOUS`/`EXFIL`.
+- `[x]` **v0.2 — Usable tool** (2026-07-05). HTTP/SSE, multi-session, encoding overlap, benches, SQLite opt-in, backpressure. Tagged **`v0.2.0`** / **`v0.2.1`**.
+- `[x]` **Post-v0.2 — Async evidence, Variant B payload paths, bounded overlap, openat/DNS.** See [`SUMMARY.md`](SUMMARY.md).
 
-**Next:** remaining post-v0.2 backlog below — build v0.3 only if demand appears ([`ROADMAP.md`](ROADMAP.md)).
+**Next:** remaining backlog below — build v0.3 only if demand appears ([`ROADMAP.md`](ROADMAP.md)). Full current state: [`SUMMARY.md`](SUMMARY.md).
 
 ---
 
@@ -38,8 +37,11 @@
 - `[x]` **eBPF ring-buffer saturation** — CI DropCount API; root-gated `TestEBPF_RingbufSaturation_UnderLoad`
 
 **Detection**
-- `[x]` eBPF `write()` payload capture — Variant B `EXFIL` upgrade (0.95 with payload proof); `sendto`/UDP still open
-- `[ ]` Additional eBPF probes: `openat()` (sensitive paths), DNS resolution
+- `[x]` eBPF `write()` payload capture — Variant B `EXFIL` upgrade (0.95 with payload proof)
+- `[x]` eBPF `sendto()` / UDP payload — self-contained dest+excerpt; dual claim EXFIL/SUSPICIOUS
+- `[x]` Same-call JSON reassembly + depth-2 nests + `gzip_base64` (cross-call / depth-3+ still KnownGap)
+- `[x]` `openat()` sensitive paths (`sensitive_paths` config) — `SUSPICIOUS` only
+- `[x]` DNS via `sendto` port 53 — `SUSPICIOUS` (or EXFIL if payload overlaps)
 - `[ ]` Cross-server **tool-shadowing** detection
 
 **v0.3 arc** (demand-gated — see ROADMAP)
@@ -58,7 +60,7 @@
 ## Risks & open questions (living)
 
 - `[ ]` **eBPF portability** across kernels — mitigate: target BTF Ubuntu 6.x; CO-RE for v0.3.
-- `[ ]` **Value-overlap false pos/neg** — canonical encodings caught; split/compressed/nested missed (known-gap tests).
+- `[ ]` **Value-overlap false pos/neg** — canonical + depth-2 + gzip_base64 + same-call reassembly; cross-call / depth-3+ / other compressors missed (known-gap tests).
 - `[x]` **Overhead** — engine + single-session HTTP delta + concurrent multi-session absolute p99 published ([`performance.md`](performance.md)); eBPF DropCount CI + root-gated saturation.
 - `[ ]` **False-positive rate on realistic traffic** — v0.3 trust gate; bad FP rate reshapes detection logic.
 

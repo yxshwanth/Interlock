@@ -66,6 +66,7 @@ type Config struct {
 	Logging          LoggingConfig       `yaml:"logging"`
 	Enforcement      string              `yaml:"enforcement"`
 	EgressAllowlist  []string            `yaml:"egress_allowlist"`
+	SensitivePaths   []string            `yaml:"sensitive_paths"` // openat pathname prefixes; empty = ignore
 	Servers          []ServerConfig      `yaml:"servers"`
 	ToolTags         map[string][]string `yaml:"tool_tags"`
 	UntrustedOrigins struct {

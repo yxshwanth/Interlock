@@ -117,21 +117,23 @@ HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an
 
 **Attachment.** Probes are scoped to the proxy's **process subtree** — the proxy PID plus every server child PID. Userspace maintains the live PID set and pushes it to a **BPF hash map** (`BPF_MAP_TYPE_HASH`) so the probe checks membership cheaply in-kernel before emitting events.
 
-**Probe: `connect()` + `write()` (Variant B).**
-- Tracepoints: `sys_enter_connect`, `sys_enter_write`.
+**Probe: `connect()` + `write()` + `sendto()` + `openat()` (Variant B).**
+- Tracepoints: `sys_enter_connect`, `sys_enter_write`, `sys_enter_sendto`, `sys_enter_openat`.
 - Connect: destination IP/port from `sockaddr_in`, PID, TID, and comm (IPv4 only).
-- Write: first **256** bytes via `bpf_probe_read_user` (fd ≥ 3 to skip stdio); correlated in userspace to a recent non-allowlisted connect from the same PID.
+- Write: first **256** bytes via `bpf_probe_read_user` (fd ≥ 3); correlated in userspace to a recent non-allowlisted connect/`sendto` from the same PID.
+- Sendto: **self-contained** IPv4 dest + first-256 payload; allowlist on dest IP; port **53** tagged as `dns` in userspace. No prior `connect()` required.
+- Openat: pathname (≤128 bytes); userspace matches `sensitive_paths` prefixes (empty list = ignore).
 - Events pushed to a **ring buffer** (`BPF_MAP_TYPE_RINGBUF`, 256KB). Reserve failures increment a `drop_count` map surfaced via `Sensor.DropCount()`.
 - Compiled from BPF C via `bpf2go` (cilium/ebpf), loaded by Go at runtime. CO-RE via BTF at `/sys/kernel/btf/vmlinux`.
-- **`sendto`/UDP, `openat()`, DNS** — further backlog.
+- **Still deferred:** IPv6, `sendmsg`/`writev`, DoH/DoT, depth-3+ encodings.
 
-**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**, with a **~100 ms deferred kill window** after connect so a correlated write can land for payload overlap. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.3. **Honest consequence:** for Variant B the `connect()` (and possibly a short write) may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
+**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**, with a **~100 ms deferred kill window** after connect/`sendto` SUSPICIOUS so a correlated write can land for payload overlap. `sendto`/`write` EXFIL and `openat` trips kill promptly. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.3. **Honest consequence:** for Variant B the first packet (and possibly a short write) may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
 
-**Verdicts.** Connect-only (legs lit, no overlapping write excerpt) → `SUSPICIOUS` at 0.60. Write excerpt overlapping a tainted secret → `EXFIL` at 0.95 with `value_overlap.where_found: egress payload`. Writes without a recent suspicious connect are ignored (noise filter).
+**Verdicts.** Connect-only or DNS/`sendto` without overlap → `SUSPICIOUS` at 0.60. Write/`sendto` excerpt overlapping a tainted secret → `EXFIL` at 0.95 with `value_overlap.where_found: egress payload`. Openat of a sensitive path → `SUSPICIOUS` only (open ≠ proven exfil). Writes without a recent suspicious connect/`sendto` are ignored (noise filter).
 
 **Transport to userspace.** Ring buffer → Go decoder in `internal/ebpf/loader.go` → `model.SyscallEvent` structs → engine's `IngestSyscall` method.
 
-**Allowlist check.** The sensor checks each `connect()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg and arm write-payload correlation for that PID.
+**Allowlist check.** The sensor checks each `connect()`/`sendto()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg and arm write-payload correlation for that PID.
 
 **False-positive surface (stated plainly).** Connect-only Variant B still fires on any non-allowlisted `connect()` once the first two legs are lit — a **high-signal tripwire** (`SUSPICIOUS` 0.60) without payload proof. Payload-backed `EXFIL` requires a correlated write excerpt that overlaps a tainted secret. Legitimate non-allowlisted API calls during a sensitive session can still be killed on the tripwire path.
 
@@ -161,7 +163,7 @@ One state machine **per session**.
 
 **Tainted values.** When a `sensitive_source` returns data, the engine extracts candidate secrets and stores them as `TaintedValue`s — **hashed + masked, never raw** (§12). At registration, each value gets a fixed set of **canonical encodings** (literal, base64, hex, URL-encoding, reversal) held in memory only.
 
-**Value overlap.** At sink time, `CheckOverlap` scans sink args for any tainted value in any canonical form. Evidence records `match_form` (`literal`, `base64`, `hex`, `url_encoded`, `reversed`). Explicitly out of scope: split-across-calls, compression, nested encoding — each has a skip test in `overlap_test.go`. `RedactJSON` scrubs all variant strings from logged JSON, not just the raw secret.
+**Value overlap.** At sink time, `CheckOverlap` scans sink args for any tainted value in any canonical form, then (if needed) **same-call JSON string reassembly** (concat of string leaves). Forms: literal, base64, hex, URL-encoding, reversal, closed depth-2 nests (`base64_hex`, `hex_base64`, `base64_url`, `base64_reversed`), and `gzip_base64`. Evidence records `match_form`. Explicitly out of scope: **cross-call** splits, depth-3+ nests, other compressors — each has a skip test. `RedactJSON` scrubs all variant strings from logs.
 
 **Evaluation — verdict and action are separate dimensions.** The machine evaluates the moment a sink fires. **Verdict** describes what was concluded (the detection result); **Action** describes what was done about it (the enforcement response). This separation is load-bearing: Variant A can *prevent* (hold-before-forward), Variant B can only *contain* (kill after the first packet), and monitor mode *allows* — all three are valid actions for the same verdict.
 
@@ -409,11 +411,11 @@ type SessionStore interface {
 
 **Still deferred (see [`ROADMAP.md`](ROADMAP.md)):**
 
-- **eBPF payload capture** — `write()` first-256 bytes shipped; `sendto`/UDP, `openat`, DNS still deferred
+- **eBPF remaining gaps** — IPv6, `sendmsg`/`writev`, DoH/DoT (write+sendto+openat+DNS-via-53 shipped)
+- **Full dataflow taint** — same-call reassembly + depth-2 + gzip_base64 shipped; cross-call / depth-3+ / other compressors still out of scope
 - **Kernel-level blocking** (LSM/KRSI) — prevent before first packet leaves (v0.3)
-- **Full dataflow taint** — value overlap covers canonical encodings only; split/compressed/nested encoding explicitly out of scope (skip tests in `overlap_test.go`)
 - **HTTP upstream backends**, TLS termination / MITM, GET `/mcp` listen streams
 - **Operability layer** — daemon mode, Prometheus metrics, SIEM export (v0.3)
 - **Dashboard / query API** — cross-session evidence search (`TestEvidenceStore_CrossSessionQuery_KnownGap`)
 
-**Shipped in v0.2:** Streamable HTTP transport, multi-session concurrency + PID attribution, bounded encoding overlap on Variant A, engine + HTTP overhead benchmarks, JSONL evidence default (intentional) with opt-in SQLite retention, event log backpressure, eBPF ring-buffer drop counter. Milestone summary: [`v0.2_summary.md`](v0.2_summary.md).
+**Shipped (v0.2 + post-v0.2):** Streamable HTTP, multi-session, encoding-aware + bounded overlap expansion, write/sendto/openat/DNS probes, async evidence, JSONL default (intentional) with opt-in SQLite, published overhead. Current summary: [`SUMMARY.md`](SUMMARY.md).
