@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,8 +15,8 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
-// DeferredKillWindow is how long after a connect trip we wait for a write
-// payload before SIGKILL. Brief extra egress window in exchange for EXFIL proof.
+// DeferredKillWindow is how long after a connect/sendto SUSPICIOUS trip we wait
+// for a write payload before SIGKILL.
 const DeferredKillWindow = 100 * time.Millisecond
 
 // SuspiciousConnectTTL is how long a non-allowlisted connect stays eligible
@@ -23,8 +24,6 @@ const DeferredKillWindow = 100 * time.Millisecond
 const SuspiciousConnectTTL = 5 * time.Second
 
 // SyscallHandler is called for each relevant syscall event.
-// It receives the SyscallEvent and returns a Decision. If the decision
-// says Action=ActionContained, the sensor schedules SIGKILL (deferred for connect).
 type SyscallHandler func(ev model.SyscallEvent) model.Decision
 
 type pendingConnect struct {
@@ -38,24 +37,24 @@ type pendingKill struct {
 	at  time.Time
 }
 
-// Sensor manages the eBPF connect()+write() probe lifecycle.
+// Sensor manages the eBPF probe lifecycle.
 type Sensor struct {
-	loader    *Loader
-	allowlist map[string]bool
-	handler   SyscallHandler
-	log       *log.Logger
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
+	loader         *Loader
+	allowlist      map[string]bool
+	sensitivePaths []string
+	handler        SyscallHandler
+	log            *log.Logger
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
 
-	mu               sync.Mutex
-	suspiciousByPID  map[int]pendingConnect
-	deferredKills    map[int]pendingKill
+	mu              sync.Mutex
+	suspiciousByPID map[int]pendingConnect
+	deferredKills   map[int]pendingKill
 }
 
-// NewSensor creates a Sensor. allowedIPs are the egress allowlist entries
-// (IPs only, no CIDR in v0.1). handler is called for each non-allowlisted
-// connect and for write events correlated to a recent suspicious connect.
-func NewSensor(allowedIPs []string, handler SyscallHandler) (*Sensor, error) {
+// NewSensor creates a Sensor. allowedIPs are the egress allowlist.
+// sensitivePaths are pathname prefixes for openat trips (empty = ignore openat).
+func NewSensor(allowedIPs []string, sensitivePaths []string, handler SyscallHandler) (*Sensor, error) {
 	loader, err := NewLoader()
 	if err != nil {
 		return nil, fmt.Errorf("sensor: %w", err)
@@ -69,6 +68,7 @@ func NewSensor(allowedIPs []string, handler SyscallHandler) (*Sensor, error) {
 	return &Sensor{
 		loader:          loader,
 		allowlist:       allow,
+		sensitivePaths:  append([]string(nil), sensitivePaths...),
 		handler:         handler,
 		log:             log.New(os.Stderr, "[sensor] ", log.LstdFlags),
 		stopCh:          make(chan struct{}),
@@ -149,6 +149,12 @@ func (s *Sensor) readLoop() {
 		if raw.Write != nil {
 			s.handleWrite(raw.Write)
 		}
+		if raw.Sendto != nil {
+			s.handleSendto(raw.Sendto)
+		}
+		if raw.Openat != nil {
+			s.handleOpenat(raw.Openat)
+		}
 	}
 }
 
@@ -200,7 +206,6 @@ func (s *Sensor) handleWrite(raw *WriteEvent) {
 	}
 	s.mu.Unlock()
 	if !ok {
-		// No recent non-allowlisted connect — ignore (stdout/log noise filter).
 		return
 	}
 
@@ -224,11 +229,109 @@ func (s *Sensor) handleWrite(raw *WriteEvent) {
 	}
 	decision := s.handler(ev)
 	if decision.Action == model.ActionContained {
-		// Payload path: kill promptly once we have (or miss) overlap decision.
 		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s) after write", ev.PID, ev.Comm)
 		s.cancelDeferredKill(pid)
 		KillProcess(pid)
 	}
+}
+
+func (s *Sensor) handleSendto(raw *SendtoEvent) {
+	destIP := raw.DestIPString()
+	if s.allowlist[destIP] || s.allowlist[destIPNormalized(destIP)] {
+		return
+	}
+
+	pid := int(raw.PID)
+	port := int(raw.DestPort)
+
+	// Arm write correlation for the same PID (TCP-style follow-up writes).
+	s.mu.Lock()
+	s.suspiciousByPID[pid] = pendingConnect{
+		destIP:   destIP,
+		destPort: port,
+		at:       time.Now(),
+	}
+	s.mu.Unlock()
+
+	syscallName := "sendto"
+	if port == 53 {
+		syscallName = "dns"
+	}
+
+	ev := model.SyscallEvent{
+		TSMono:         int64(raw.TSNs),
+		PID:            pid,
+		TID:            int(raw.TID),
+		Comm:           raw.CommString(),
+		Syscall:        syscallName,
+		DestIP:         destIP,
+		DestPort:       port,
+		Allowlisted:    false,
+		PayloadExcerpt: string(raw.Payload),
+	}
+
+	s.log.Printf("%s detected: pid=%d dest=%s:%d len=%d",
+		syscallName, ev.PID, ev.DestIP, ev.DestPort, raw.Len)
+
+	if s.handler == nil {
+		return
+	}
+	decision := s.handler(ev)
+	if decision.Action != model.ActionContained {
+		return
+	}
+	if decision.Verdict == model.VerdictExfil {
+		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s) after %s EXFIL", ev.PID, ev.Comm, syscallName)
+		s.cancelDeferredKill(pid)
+		KillProcess(pid)
+		return
+	}
+	// SUSPICIOUS: defer so a later write can still upgrade to EXFIL.
+	s.scheduleKill(pid, raw.CommString())
+}
+
+func (s *Sensor) handleOpenat(raw *OpenatEvent) {
+	if len(s.sensitivePaths) == 0 || raw.Path == "" {
+		return
+	}
+	if !pathMatchesSensitive(raw.Path, s.sensitivePaths) {
+		return
+	}
+
+	ev := model.SyscallEvent{
+		TSMono:      int64(raw.TSNs),
+		PID:         int(raw.PID),
+		TID:         int(raw.TID),
+		Comm:        raw.CommString(),
+		Syscall:     "openat",
+		Path:        raw.Path,
+		Allowlisted: false,
+	}
+
+	s.log.Printf("openat sensitive path: pid=%d path=%s", ev.PID, ev.Path)
+
+	if s.handler == nil {
+		return
+	}
+	decision := s.handler(ev)
+	if decision.Action == model.ActionContained {
+		// open ≠ proven exfil — still contain when policy trips SUSPICIOUS.
+		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s) after openat", ev.PID, ev.Comm)
+		s.cancelDeferredKill(ev.PID)
+		KillProcess(ev.PID)
+	}
+}
+
+func pathMatchesSensitive(path string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Sensor) scheduleKill(pid int, comm string) {

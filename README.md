@@ -112,9 +112,9 @@ make demo                             # proxy-only, verbose
 
 These are design boundaries, not bugs. Naming them first is the point.
 
-1. **Value-overlap checks canonical encodings, not full dataflow analysis.** At taint registration, each secret gets a fixed transform set (literal, base64, hex, URL-encoding, reversal). Sink args are matched against all forms — encoded Variant A exfil is caught at `EXFIL` (0.95). Still misses split-across-calls, compression, nested encoding, and custom ciphers — see [`TestCheckOverlap_SplitAcrossCalls_KnownGap`](internal/engine/overlap_test.go), [`TestCheckOverlap_Compressed_KnownGap`](internal/engine/overlap_test.go), [`TestCheckOverlap_DoubleEncoded_KnownGap`](internal/engine/overlap_test.go). Can false-positive on legitimate echoes of encoded forms.
+1. **Value-overlap covers a closed transform set, not full dataflow analysis.** At taint registration: literal, base64, hex, URL-encoding, reversal, depth-2 nests (`base64_hex`, etc.), and `gzip_base64`. Same-call JSON string reassembly catches secrets split across fields in one `tools/call`. Still misses **cross-call** splits, depth-3+ nests, and other compressors — see known-gap skips in [`overlap_test.go`](internal/engine/overlap_test.go). Can false-positive on legitimate echoes of encoded forms.
 
-2. **Variant B is connect + first-256-byte write overlap, not full stream inspection.** Connect-only during a sensitive session → `SUSPICIOUS` at 0.60. Correlated `write()` whose excerpt overlaps a tainted secret → `EXFIL` at 0.95. Secrets past byte 256, UDP `sendto`, and writes before a suspicious connect are known gaps. Kill is deferred ~100 ms after connect so a write can land — brief extra egress window; still not first-packet prevention.
+2. **Variant B is connect/sendto/write/openat/DNS, not full stream inspection.** Connect-only or DNS without overlap → `SUSPICIOUS` at 0.60. Correlated `write()` or self-contained `sendto` whose excerpt overlaps taint → `EXFIL` at 0.95. Openat of `sensitive_paths` → `SUSPICIOUS` only. Secrets past byte 256, IPv6, `sendmsg`, DoH/DoT, and writes before a suspicious connect are known gaps. Kill is deferred ~100 ms after connect/`sendto` SUSPICIOUS so a write can land.
 
 3. **eBPF containment is kill-after-connect (with deferred window), not first-packet prevention.** Variant A truly prevents; Variant B severs the channel after a short wait for payload proof. *v0.3: LSM/KRSI for in-kernel blocking before the packet leaves.*
 
@@ -190,10 +190,9 @@ v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operabilit
 
 **Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
-- **v0.2 — Usable tool (complete):** see [`docs/v0.2_summary.md`](docs/v0.2_summary.md)
-- **Post-v0.2 — Async evidence, Variant B payload EXFIL, perf/operability** (landed in this tree)
+- **Current state:** [`docs/SUMMARY.md`](docs/SUMMARY.md)
 - **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
-- **Still open:** `openat`/DNS probes, tool-shadowing — see [`docs/task_list.md`](docs/task_list.md)
+- **Still open:** tool-shadowing — see [`docs/task_list.md`](docs/task_list.md)
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
 
@@ -224,9 +223,12 @@ Interlock runs privileged and loads kernel probes. Do not report vulnerabilities
 
 ## Documentation
 
+- [Current summary](docs/SUMMARY.md)
 - [Project overview & threat model](docs/project_overview.md)
 - [Architecture spec](docs/architecture.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Task list](docs/task_list.md)
+- [Performance](docs/performance.md)
 - [Changelog](CHANGELOG.md)
 
 ## Credits

@@ -15,6 +15,10 @@ egress_allowlist:
   - 127.0.0.1
   - api.anthropic.com
 
+# sensitive_paths:           # openat pathname prefixes; empty = ignore openat trips
+#   - /etc/shadow
+#   - /var/run/secrets
+#   - /home/
 servers:
   - id: tickets
     command: ./servers/tickets/tickets

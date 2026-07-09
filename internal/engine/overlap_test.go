@@ -190,9 +190,7 @@ func TestCheckOverlap_Reversed(t *testing.T) {
 	}
 }
 
-func TestCheckOverlap_SplitAcrossCalls_KnownGap(t *testing.T) {
-	t.Skip("known v0.2 gap: secret split across JSON fields or tool calls is not tracked")
-
+func TestCheckOverlap_SameCallFieldReassembly(t *testing.T) {
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	half := len(secret) / 2
 	tainted := []model.TaintedValue{
@@ -202,13 +200,18 @@ func TestCheckOverlap_SplitAcrossCalls_KnownGap(t *testing.T) {
 
 	hit := CheckOverlap(tainted, args)
 	if hit == nil {
-		t.Fatal("expected overlap when split parts rejoin in sink args (not implemented)")
+		t.Fatal("expected overlap when split parts rejoin in same-call sink args")
+	}
+	if hit.MatchForm != string(FormLiteral) {
+		t.Fatalf("MatchForm = %q", hit.MatchForm)
 	}
 }
 
-func TestCheckOverlap_Compressed_KnownGap(t *testing.T) {
-	t.Skip("known v0.2 gap: gzip/compressed exfil is not detected")
+func TestCheckOverlap_SplitAcrossCalls_KnownGap(t *testing.T) {
+	t.Skip("known gap: secret split across separate tool calls / sessions is not tracked (same-call reassembly is covered)")
+}
 
+func TestCheckOverlap_Compressed(t *testing.T) {
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -223,13 +226,18 @@ func TestCheckOverlap_Compressed_KnownGap(t *testing.T) {
 
 	hit := CheckOverlap(tainted, args)
 	if hit == nil {
-		t.Fatal("expected overlap on gzip+base64 payload (not implemented)")
+		t.Fatal("expected overlap on gzip+base64 payload")
+	}
+	if hit.MatchForm != string(FormGzipBase64) {
+		t.Fatalf("MatchForm = %q, want gzip_base64", hit.MatchForm)
 	}
 }
 
-func TestCheckOverlap_DoubleEncoded_KnownGap(t *testing.T) {
-	t.Skip("known v0.2 gap: nested/double encoding (e.g. base64(hex(secret))) is not detected")
+func TestCheckOverlap_CompressedOther_KnownGap(t *testing.T) {
+	t.Skip("known gap: zstd/deflate-raw/multi-layer compression not in canonical set")
+}
 
+func TestCheckOverlap_DoubleEncoded(t *testing.T) {
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	hexed := hex.EncodeToString([]byte(secret))
 	double := base64.StdEncoding.EncodeToString([]byte(hexed))
@@ -241,6 +249,13 @@ func TestCheckOverlap_DoubleEncoded_KnownGap(t *testing.T) {
 
 	hit := CheckOverlap(tainted, args)
 	if hit == nil {
-		t.Fatal("expected overlap on double-encoded secret (not implemented)")
+		t.Fatal("expected overlap on base64(hex(secret))")
 	}
+	if hit.MatchForm != string(FormBase64Hex) {
+		t.Fatalf("MatchForm = %q, want base64_hex", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_TripleEncoded_KnownGap(t *testing.T) {
+	t.Skip("known gap: depth-3+ nested encodings (e.g. base64(hex(base64))) are not precomputed")
 }
