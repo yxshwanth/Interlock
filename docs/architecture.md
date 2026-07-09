@@ -6,7 +6,7 @@ Interlock is a backend/systems tool, not a web app, so the usual buckets map lik
 
 - **"Frontend / backend boundary"** → the process and **trust** boundaries between the proxy, the kernel sensor, the correlation engine, and the read-only evidence viewer.
 - **"State management"** → the per-session **trifecta state machine** plus cross-plane event correlation (§7).
-- **"Database schema"** → the **event and evidence data model** (§8). Session state is in-memory; evidence defaults to **JSONL append** (`evidence.jsonl`) with opt-in **SQLite** retention (`evidence.backend: sqlite`, `max_records`).
+- **"Database schema"** → the **event and evidence data model** (§8). Session state is in-memory; evidence defaults to **JSONL append** (`evidence.jsonl`) by design, with opt-in **SQLite** retention (`evidence.backend: sqlite`, `max_records`).
 
 ---
 
@@ -397,7 +397,7 @@ type SessionStore interface {
 - **Never leaks the secrets it's protecting.** Tainted values are stored **hashed + masked** (`sk-...a9f2`), never raw. The value-overlap check compares raw values in memory only; evidence stores only the masked preview. All output files (`evidence.jsonl`, `evidence.json`, `events.jsonl`) are scrubbed by `RedactJSON` before writing — any known tainted value is replaced with its masked preview. Interlock writing the token in plaintext to a log would make the tool *itself* an exfil path — forbidden.
 - **Fail-open vs. fail-closed.** v0.1 is **fail-open with loud `[SECURITY]` warnings** on stderr. This is a conscious tradeoff to keep the dev/demo loop unblocked; a production posture would prefer fail-closed. The `[SECURITY]` prefix fires in scenarios including: (1) engine not configured, (2) engine panics mid-evaluation, (3) evidence sink write failure, (4) missing tool tags, (5) **unattributed eBPF syscalls**, (6) **event log backpressure drops**, (7) **eBPF ring-buffer reserve failures**. Deployers should monitor for `[SECURITY]` in stderr output.
 
-**Evidence persistence (v0.2 Phase 4).** Default: JSONL append (`evidence.jsonl`) + standalone `evidence.json` for the viewer. Opt-in: SQLite (`evidence.backend: sqlite`) with `max_records` retention — survives restart, prunes oldest records. See [`performance.md`](performance.md) for engine microbenchmarks and end-to-end HTTP overhead (v0.2.1).
+**Evidence persistence (v0.2 Phase 4).** **Intentional default:** JSONL append (`evidence.jsonl`) + standalone `evidence.json` for the viewer — demo/dev-friendly, no extra deps. **Opt-in retention:** SQLite (`evidence.backend: sqlite`) with `max_records` — survives restart, prunes oldest records. Bounded growth is available when operators enable SQLite; leaving JSONL as default is a posture choice, not an unfinished gap. See [`performance.md`](performance.md) for engine microbenchmarks and end-to-end HTTP overhead (v0.2.1).
 
 **Event log backpressure.** `logging.backpressure: block` (default) — synchronous writes, caller blocks. `drop` — bounded queue; overflow increments `DroppedEvents` and logs `[SECURITY]` at shutdown.
 
@@ -416,4 +416,4 @@ type SessionStore interface {
 - **Operability layer** — daemon mode, Prometheus metrics, SIEM export (v0.3)
 - **Dashboard / query API** — cross-session evidence search (`TestEvidenceStore_CrossSessionQuery_KnownGap`)
 
-**Shipped in v0.2:** Streamable HTTP transport, multi-session concurrency + PID attribution, bounded encoding overlap on Variant A, engine + HTTP overhead benchmarks, opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter. Milestone summary: [`v0.2_summary.md`](v0.2_summary.md).
+**Shipped in v0.2:** Streamable HTTP transport, multi-session concurrency + PID attribution, bounded encoding overlap on Variant A, engine + HTTP overhead benchmarks, JSONL evidence default (intentional) with opt-in SQLite retention, event log backpressure, eBPF ring-buffer drop counter. Milestone summary: [`v0.2_summary.md`](v0.2_summary.md).

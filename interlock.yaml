@@ -37,7 +37,7 @@ untrusted_origins:
   web_fetches:  true
 
 # evidence:
-#   backend: jsonl          # jsonl (default) | sqlite
+#   backend: jsonl          # jsonl (intentional default) | sqlite (opt-in retention)
 #   path: evidence.jsonl    # or evidence.db for sqlite
 #   max_records: 1000       # sqlite retention cap (0 = unlimited)
 #   backpressure: block     # block (default) | drop — async emit queue

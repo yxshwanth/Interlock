@@ -67,11 +67,11 @@ Closes the detection-credibility gap for Variant A: encoded exfil in sink args i
 The "is this operable" gate — **shipped**.
 
 - **Benchmarks:** engine hot-path suite + [`performance.md`](performance.md) with published snapshot (`make bench`)
-- **SQLite evidence (opt-in):** `evidence.backend: sqlite` with `max_records` retention; JSONL remains default
+- **Evidence posture:** JSONL append is the **intentional default** (demo/dev-friendly). SQLite is **opt-in** (`evidence.backend: sqlite` + `max_records`) for bounded restart-safe retention — not a deferred half-feature
 - **Backpressure:** `logging.backpressure: block | drop` with runtime stats at shutdown
 - **eBPF drops:** kernel `drop_count` map when ring buffer reserve fails; surfaced via `Sensor.DropCount()`
 
-**Done when:** published overhead numbers + evidence survives restart without unbounded growth — **met** (SQLite opt-in; JSONL still append-only).
+**Done when:** published overhead numbers + evidence always persists; bounded growth available via SQLite — **met** (JSONL default by design; SQLite opt-in).
 
 **Deferred:** Prometheus metrics (v0.3), SQLite for `events.jsonl`
 
@@ -86,7 +86,7 @@ The "is this operable" gate — **shipped**.
 
 5. **eBPF write payload capture** — **met**: `sys_enter_write` first-256 bytes; deferred kill ~100 ms; `CheckOverlapPayload` → Variant B `EXFIL` 0.95 when overlap hits. Connect-only stays `SUSPICIOUS` 0.60.
 
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`** (milestone) and **`v0.2.1`** (HTTP overhead A+C).
+**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (JSONL default intentional; SQLite opt-in for retention). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`** (milestone) and **`v0.2.1`** (HTTP overhead A+C).
 
 ---
 
