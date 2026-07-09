@@ -20,6 +20,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - README / architecture / ROADMAP: Variant B dual claim (tripwire or payload-backed EXFIL)
 - Taint registration path: `CanonicalEncodings` → `[]TaintedVariant` directly; cheaper `HashValue`; `extractResultText` via `strings.Builder`
 - [`docs/performance.md`](docs/performance.md) — async evidence, ingest opts, concurrent load snapshot, ringbuf test honesty
+- Docs: evidence **JSONL default is intentional posture** (SQLite opt-in for retention) — no longer labeled “partial”; stale concurrent-load / ringbuf / Variant B tripwire-only claims scrubbed from living summaries
 
 ## [0.2.1] - 2026-07-05
 

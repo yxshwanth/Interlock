@@ -47,7 +47,7 @@ flowchart TB
       Proxy["MCP Proxy — intercept + enforce"]
       Engine["Correlation Engine — trifecta state machine"]
       eBPF["eBPF Sensor — connect + write probes"]
-      Sink["Evidence Sink — JSONL + HTML viewer"]
+      Sink["Evidence Sink — JSONL default, SQLite opt-in"]
     end
 
     subgraph Untrusted["Untrusted zone"]
@@ -169,14 +169,14 @@ Full architecture spec: [`docs/architecture.md`](docs/architecture.md)
 
 **Latest release:** [`v0.2.1`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.1) — usable-tool milestone complete. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
 
-v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operability. Post-v0.2 adds async evidence emit and Variant B payload-backed `EXFIL` when the first 256 egress bytes overlap a tainted secret (connect-only remains `SUSPICIOUS`).
+v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operability. Post-v0.2 adds async evidence emit, Variant B payload-backed `EXFIL` (connect-only remains `SUSPICIOUS`), and the performance/operability backlog (concurrent HTTP p99, ringbuf DropCount tests, taint-registration opts). Evidence default is **JSONL by intention**; SQLite is opt-in for retention.
 
 **Shipped in v0.2:**
 
 - Streamable HTTP MCP transport (STDIO still default); multi-session concurrency with PID→session attribution
 - Encoding-aware value overlap on Variant A (base64, hex, URL-encoding, reversal)
 - Engine microbenchmarks + end-to-end HTTP overhead ([`docs/performance.md`](docs/performance.md), `make bench`, `make bench-http`)
-- Opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter
+- JSONL evidence by default (intentional); opt-in SQLite for retention; event log backpressure; eBPF ring-buffer drop counter
 - Trifecta state machine, proxy blocking, eBPF containment; both demo variants; HTML evidence viewer
 
 **Post-v0.2 (this tree):**
@@ -184,12 +184,16 @@ v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operabilit
 - Async evidence emit (`AsyncEvidenceSink`, `evidence.backpressure`) — trip path no longer waits on disk I/O
 - eBPF `write()` first-256-byte capture + ~100 ms deferred kill; Variant B `EXFIL` on payload overlap, `SUSPICIOUS` on connect-only
 - Local exfil fixture (`INTERLOCK_EXFIL_MODE=local`, `interlock-ebpf-local.yaml`)
+- Concurrent multi-session absolute latency (`TestHTTP_ConcurrentLoad_ReadTicket`, `CONCURRENT_SESSIONS`)
+- eBPF DropCount API in CI; root-gated ringbuf saturation (`TestEBPF_RingbufSaturation_UnderLoad`)
+- Taint-registration mechanical opts (direct `TaintedVariant` builder; isolated `IngestResult` ~8.2 µs / 38 allocs)
 
 **Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
 - **v0.2 — Usable tool (complete):** see [`docs/v0.2_summary.md`](docs/v0.2_summary.md)
-- **Post-v0.2 — Async evidence + Variant B payload EXFIL** (landed in this tree)
+- **Post-v0.2 — Async evidence, Variant B payload EXFIL, perf/operability** (landed in this tree)
 - **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
+- **Still open:** `openat`/DNS probes, tool-shadowing — see [`docs/task_list.md`](docs/task_list.md)
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
 
@@ -197,7 +201,7 @@ Every detection feature ships with explicit known-gap tests naming what it does 
 
 ## Tests
 
-**117 tests passing**, 10 known-gap skips — engine, proxy, config, HTTP integration, overhead benchmarks, evidence, async sink, backpressure. CI runs `test` + `race` jobs on every push to `main`. eBPF integration requires root and a BTF-enabled kernel — tested locally, not in CI.
+**117 tests passing**, 10 known-gap skips — engine, proxy, config, HTTP integration, overhead benchmarks, evidence, async sink, backpressure, concurrent load. CI runs `test` + `race` jobs on every push to `main`; concurrent-load smoke uses `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`. eBPF probe load requires root and a BTF-enabled kernel — DropCount API is CI-tested; live saturation is root-gated locally.
 
 ```bash
 make test

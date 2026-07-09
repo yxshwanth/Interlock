@@ -64,7 +64,7 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 | Evidence UI | Self-contained **local HTML** (read-only) |
 | Dev platform | **Ubuntu 6.x + BTF** (CO-RE-friendly) |
 | Session state | In-memory per `session_id`; HTTP multi-session via `SessionManager` + `PIDRegistry` |
-| Evidence persistence | **JSONL** default; opt-in **SQLite** with `max_records` retention |
+| Evidence persistence | **JSONL** intentional default; opt-in **SQLite** with `max_records` retention |
 
 ---
 
@@ -75,7 +75,7 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 - Streamable HTTP MCP transport; multi-session concurrency with PID→session attribution
 - Bounded encoding overlap on Variant A (base64, hex, URL-encoding, reversal)
 - Engine microbenchmarks + end-to-end HTTP overhead story ([`performance.md`](performance.md))
-- Opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter
+- Opt-in SQLite evidence (JSONL remains intentional default), event log backpressure, eBPF ring-buffer drop counter
 
 **Still out of scope** (see [`ROADMAP.md`](ROADMAP.md)):
 
@@ -101,6 +101,6 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 **v0.1 (met — tagged `v0.1.0`):** both attack variants demo on STDIO; one-command reproduce; syscall-level evidence receipt.
 
-**v0.2 (met — tagged `v0.2.0` + `v0.2.1`):** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil on Variant A, publishes scoped overhead numbers, persists evidence (SQLite opt-in). Full audit: [`v0.2_summary.md`](v0.2_summary.md).
+**v0.2 (met — tagged `v0.2.0` + `v0.2.1`):** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil on Variant A, publishes scoped overhead numbers, persists evidence (JSONL default intentional; SQLite opt-in for retention). Full audit: [`v0.2_summary.md`](v0.2_summary.md).
 
 **Leading indicators of traction:** GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.
