@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
-// Interlock eBPF connect() probe — detects outbound TCP connections from
-// monitored PIDs. Rung 1: tracepoint on sys_enter_connect, extracts dest
-// IP/port, pushes event to ring buffer. Rung 2: BPF hash map for PID-set
-// filtering so only Interlock's process subtree generates events.
+// Interlock eBPF probes — connect() tripwire + write() first-N payload capture.
+// Events share a tagged ring-buffer layout so userspace can decode both.
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -10,14 +8,30 @@
 #include <bpf/bpf_endian.h>
 
 #define AF_INET 2
+#define EVENT_CONNECT 1
+#define EVENT_WRITE   2
+#define PAYLOAD_MAX   256
 
 struct connect_event {
+	__u32 type; /* EVENT_CONNECT */
+	__u32 _pad;
 	__u64 ts_ns;
 	__u32 pid;
 	__u32 tid;
 	__u32 dest_ip;
 	__u16 dest_port;
 	char  comm[16];
+};
+
+struct write_event {
+	__u32 type; /* EVENT_WRITE */
+	__u32 len;  /* bytes captured (≤ PAYLOAD_MAX) */
+	__u64 ts_ns;
+	__u32 pid;
+	__u32 tid;
+	__u32 fd;
+	char  comm[16];
+	char  payload[PAYLOAD_MAX];
 };
 
 struct {
@@ -72,6 +86,8 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 		return 0;
 	}
 
+	__builtin_memset(ev, 0, sizeof(*ev));
+	ev->type = EVENT_CONNECT;
 	ev->ts_ns = bpf_ktime_get_ns();
 	ev->pid = pid;
 	ev->tid = tid;
@@ -82,6 +98,51 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	ev->dest_port = bpf_ntohs(ev->dest_port);
 
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
+
+	bpf_ringbuf_submit(ev, 0);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_write")
+int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx) {
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 pid = pid_tgid >> 32;
+	__u32 tid = (__u32)pid_tgid;
+
+	__u8 *found = bpf_map_lookup_elem(&pid_filter, &pid);
+	if (!found)
+		return 0;
+
+	__u32 fd = (__u32)ctx->args[0];
+	/* Skip stdin/stdout/stderr — cut log noise; socket FDs are typically ≥ 3. */
+	if (fd < 3)
+		return 0;
+
+	const char *buf = (const char *)(unsigned long)ctx->args[1];
+	__u64 count = (__u64)ctx->args[2];
+	if (!buf || count == 0)
+		return 0;
+
+	__u32 cap = PAYLOAD_MAX;
+	if (count < cap)
+		cap = (__u32)count;
+
+	struct write_event *ev;
+	ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
+	if (!ev) {
+		inc_drop_count();
+		return 0;
+	}
+
+	__builtin_memset(ev, 0, sizeof(*ev));
+	ev->type = EVENT_WRITE;
+	ev->len = cap;
+	ev->ts_ns = bpf_ktime_get_ns();
+	ev->pid = pid;
+	ev->tid = tid;
+	ev->fd = fd;
+	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
+	bpf_probe_read_user(ev->payload, cap, buf);
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;

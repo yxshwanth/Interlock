@@ -64,8 +64,16 @@ func main() {
 			if err != nil {
 				return
 			}
-			fmt.Fprintf(os.Stderr, "  CONNECT: pid=%d tid=%d comm=%s dest=%s:%d ts=%d\n",
-				ev.PID, ev.TID, ev.CommString(), ev.DestIPString(), ev.DestPort, ev.TSNs)
+			if ev.Connect != nil {
+				c := ev.Connect
+				fmt.Fprintf(os.Stderr, "  CONNECT: pid=%d tid=%d comm=%s dest=%s:%d ts=%d\n",
+					c.PID, c.TID, c.CommString(), c.DestIPString(), c.DestPort, c.TSNs)
+			}
+			if ev.Write != nil {
+				w := ev.Write
+				fmt.Fprintf(os.Stderr, "  WRITE: pid=%d fd=%d len=%d comm=%s payload=%q\n",
+					w.PID, w.FD, w.Len, w.CommString(), string(w.Payload))
+			}
 		}
 	}()
 

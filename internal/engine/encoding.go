@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
+
+	"github.com/yxshwanth/Interlock/internal/model"
 )
 
 // EncodingForm names a canonical transform applied to a tainted value at registration.
@@ -17,25 +19,20 @@ const (
 	FormReversed   EncodingForm = "reversed"
 )
 
-// EncodedForm pairs a transform name with its encoded string for overlap checks.
-type EncodedForm struct {
-	Form  EncodingForm
-	Value string
-}
-
-// CanonicalEncodings returns the fixed v0.2 transform set for a raw secret.
+// CanonicalEncodings returns the fixed v0.2 transform set for a raw secret
+// as TaintedVariant values ready for overlap checks and redaction.
 // Empty values return nil.
-func CanonicalEncodings(value string) []EncodedForm {
+func CanonicalEncodings(value string) []model.TaintedVariant {
 	if value == "" {
 		return nil
 	}
 
-	return []EncodedForm{
-		{Form: FormLiteral, Value: value},
-		{Form: FormBase64, Value: base64.StdEncoding.EncodeToString([]byte(value))},
-		{Form: FormHex, Value: hex.EncodeToString([]byte(value))},
-		{Form: FormURLEncoded, Value: url.QueryEscape(value)},
-		{Form: FormReversed, Value: reverseString(value)},
+	return []model.TaintedVariant{
+		{Form: string(FormLiteral), Value: value},
+		{Form: string(FormBase64), Value: base64.StdEncoding.EncodeToString([]byte(value))},
+		{Form: string(FormHex), Value: hex.EncodeToString([]byte(value))},
+		{Form: string(FormURLEncoded), Value: url.QueryEscape(value)},
+		{Form: string(FormReversed), Value: reverseString(value)},
 	}
 }
 

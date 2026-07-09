@@ -11,17 +11,44 @@ import (
 )
 
 // NewEvidenceSink creates an evidence sink from config. pathOverride non-empty replaces cfg.Evidence.Path.
+// The returned sink is wrapped in AsyncEvidenceSink so Emit does not block the engine on disk I/O.
 func NewEvidenceSink(cfg *config.Config, pathOverride string) (EvidenceSink, error) {
 	path := cfg.Evidence.Path
 	if pathOverride != "" {
 		path = pathOverride
 	}
+	var inner EvidenceSink
+	var err error
 	switch cfg.Evidence.Backend {
 	case "sqlite":
-		return NewSQLiteEvidenceSink(path, cfg.Evidence.MaxRecords)
+		inner, err = NewSQLiteEvidenceSink(path, cfg.Evidence.MaxRecords)
 	default:
-		return NewJSONLEvidenceSink(path)
+		inner, err = NewJSONLEvidenceSink(path)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return NewAsyncEvidenceSink(inner, cfg.Evidence.Backpressure, cfg.Evidence.QueueSize, nil), nil
+}
+
+// NewEvidenceSinkWithStats is like NewEvidenceSink but records drop-mode overflows on drops.
+func NewEvidenceSinkWithStats(cfg *config.Config, pathOverride string, drops EvidenceDropCounter) (EvidenceSink, error) {
+	path := cfg.Evidence.Path
+	if pathOverride != "" {
+		path = pathOverride
+	}
+	var inner EvidenceSink
+	var err error
+	switch cfg.Evidence.Backend {
+	case "sqlite":
+		inner, err = NewSQLiteEvidenceSink(path, cfg.Evidence.MaxRecords)
+	default:
+		inner, err = NewJSONLEvidenceSink(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return NewAsyncEvidenceSink(inner, cfg.Evidence.Backpressure, cfg.Evidence.QueueSize, drops), nil
 }
 
 // writeStandaloneEvidence writes the latest record for the HTML viewer.

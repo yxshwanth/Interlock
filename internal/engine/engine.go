@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -282,12 +283,8 @@ func (e *Engine) buildEvidence(
 }
 
 // IngestSyscall is called when the eBPF sensor detects a non-allowlisted
-// connect() syscall from a monitored PID. It lights the external_sink_invoked
-// leg via the kernel plane (Variant B) and evaluates the trifecta.
-//
-// For v0.1, syscall events never have value overlap (we don't inspect payload),
-// so the verdict for a trip is always SUSPICIOUS. The action is
-// contained_by_kill for EXFIL or detected_only for SUSPICIOUS.
+// connect() or a write() correlated to a recent suspicious connect.
+// Connect without payload overlap → SUSPICIOUS (0.60). Write with overlap → EXFIL (0.95).
 func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -301,12 +298,16 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	state := e.store.GetOrCreate(sessionID)
 
 	if !state.Legs.ExternalSinkInvoked.Lit {
+		detail := fmt.Sprintf("%s to %s:%d by pid %d (%s)", ev.Syscall, ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
+		if ev.Syscall == "write" {
+			detail = fmt.Sprintf("write() egress correlated to %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
+		}
 		state.Legs.ExternalSinkInvoked = model.Leg{
 			Lit:    true,
-			Detail: fmt.Sprintf("connect() to %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm),
+			Detail: detail,
 		}
-		e.log.Printf("leg lit: external_sink_invoked via eBPF (session=%s, dest=%s:%d, pid=%d)",
-			sessionID, ev.DestIP, ev.DestPort, ev.PID)
+		e.log.Printf("leg lit: external_sink_invoked via eBPF (session=%s, syscall=%s, dest=%s:%d, pid=%d)",
+			sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
 	}
 
 	if !state.Legs.AllLit() {
@@ -315,16 +316,21 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 
 	verdict := model.VerdictSuspicious
 	confidence := 0.6
+	var overlap *model.OverlapHit
+	if ev.PayloadExcerpt != "" {
+		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
+		if overlap != nil {
+			verdict = model.VerdictExfil
+			confidence = 0.95
+		}
+	}
 
 	action := model.ActionContained
-	if verdict == model.VerdictSuspicious {
-		action = model.ActionContained
-	}
 
 	state.Status = model.Tripped
 	state.Confidence = confidence
 
-	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence)
+	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence, overlap)
 
 	if e.sink != nil {
 		if err := e.sink.Emit(evidence); err != nil {
@@ -332,14 +338,14 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 		}
 	}
 
-	e.log.Printf("TRIFECTA DETECTED (eBPF): session=%s dest=%s:%d verdict=%s action=%s",
-		sessionID, ev.DestIP, ev.DestPort, verdict, action)
+	e.log.Printf("TRIFECTA DETECTED (eBPF): session=%s syscall=%s dest=%s:%d verdict=%s action=%s",
+		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, verdict, action)
 
 	return model.Decision{
 		Allow:    false,
 		Verdict:  verdict,
 		Action:   action,
-		Reason:   fmt.Sprintf("trifecta %s: connect() to %s:%d by pid %d", verdict, ev.DestIP, ev.DestPort, ev.PID),
+		Reason:   fmt.Sprintf("trifecta %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID),
 		Evidence: &evidence,
 	}
 }
@@ -368,6 +374,7 @@ func (e *Engine) buildEvidenceVariantB(
 	verdict model.Verdict,
 	action model.Action,
 	confidence float64,
+	overlap *model.OverlapHit,
 ) model.EvidenceRecord {
 	sinkCall := map[string]any{
 		"syscall":   ev.Syscall,
@@ -375,6 +382,11 @@ func (e *Engine) buildEvidenceVariantB(
 		"dest_port": ev.DestPort,
 		"pid":       ev.PID,
 		"comm":      ev.Comm,
+	}
+	if ev.PayloadExcerpt != "" {
+		// Redact known secrets from the excerpt before persistence.
+		redacted := RedactJSON(json.RawMessage(ev.PayloadExcerpt), state.Tainted)
+		sinkCall["payload_excerpt"] = string(redacted)
 	}
 
 	timeline := make([]model.TimelineItem, 0, len(state.Timeline)+1)
@@ -402,24 +414,25 @@ func (e *Engine) buildEvidenceVariantB(
 		timeline = append(timeline, item)
 	}
 
-	// Append the syscall event itself — last in causal order.
+	label := fmt.Sprintf("external_sink_invoked: %s to %s:%d by %s (pid %d)", ev.Syscall, ev.DestIP, ev.DestPort, ev.Comm, ev.PID)
 	timeline = append(timeline, model.TimelineItem{
 		TimelineSeq: len(state.Timeline) + 1,
 		TSMono:      ev.TSMono,
 		Kind:        "syscall",
-		Label:       fmt.Sprintf("external_sink_invoked: connect() to %s:%d by %s (pid %d)", ev.DestIP, ev.DestPort, ev.Comm, ev.PID),
+		Label:       label,
 	})
 
 	return model.EvidenceRecord{
-		SessionID:  state.SessionID,
-		TripTS:     time.Now().UnixNano(),
-		Verdict:    verdict,
-		Action:     action,
-		Variant:    model.VariantB,
-		Confidence: confidence,
-		Legs:       state.Legs,
-		SinkCall:   sinkCall,
-		Timeline:   timeline,
+		SessionID:    state.SessionID,
+		TripTS:       time.Now().UnixNano(),
+		Verdict:      verdict,
+		Action:       action,
+		Variant:      model.VariantB,
+		Confidence:   confidence,
+		Legs:         state.Legs,
+		SinkCall:     sinkCall,
+		ValueOverlap: overlap,
+		Timeline:     timeline,
 	}
 }
 
@@ -437,14 +450,15 @@ func extractResultText(result json.RawMessage) string {
 		} `json:"content"`
 	}
 	if json.Unmarshal(result, &structured) == nil && len(structured.Content) > 0 {
-		var text string
+		var b strings.Builder
 		for _, c := range structured.Content {
 			if c.Type == "text" {
-				text += c.Text + "\n"
+				b.WriteString(c.Text)
+				b.WriteByte('\n')
 			}
 		}
-		if text != "" {
-			return text
+		if b.Len() > 0 {
+			return b.String()
 		}
 	}
 

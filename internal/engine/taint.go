@@ -2,8 +2,8 @@ package engine
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -44,7 +44,7 @@ func ExtractTaintedValues(resultText, source string, seq uint64) []model.Tainted
 
 			values = append(values, model.TaintedValue{
 				Value:        val,
-				Variants:     taintedVariants(val),
+				Variants:     CanonicalEncodings(val),
 				Hash:         HashValue(val),
 				Preview:      MaskValue(val),
 				Source:       source,
@@ -57,19 +57,10 @@ func ExtractTaintedValues(resultText, source string, seq uint64) []model.Tainted
 	return values
 }
 
-func taintedVariants(value string) []model.TaintedVariant {
-	forms := CanonicalEncodings(value)
-	out := make([]model.TaintedVariant, len(forms))
-	for i, f := range forms {
-		out[i] = model.TaintedVariant{Form: string(f.Form), Value: f.Value}
-	}
-	return out
-}
-
 // HashValue returns the hex-encoded SHA-256 hash of the value.
 func HashValue(value string) string {
 	h := sha256.Sum256([]byte(value))
-	return fmt.Sprintf("%x", h)
+	return hex.EncodeToString(h[:])
 }
 
 // MaskValue returns a masked preview of the value, showing the first 3

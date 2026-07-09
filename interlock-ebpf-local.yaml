@@ -1,0 +1,37 @@
+# Interlock config for Variant B local EXFIL demo.
+# 127.0.0.1 is intentionally NOT allowlisted so local dial+write trips eBPF.
+# Set INTERLOCK_EXFIL_MODE=local when starting the exfil server (demo does this).
+
+transport:
+  mode: stdio
+
+sessions:
+  max_concurrent: 32
+  idle_timeout: 30m
+
+enforcement: block
+
+egress_allowlist:
+  - api.anthropic.com
+
+servers:
+  - id: tickets
+    command: ./servers/tickets/tickets
+    provides_tags: [sensitive_source]
+  - id: messenger
+    command: ./servers/messenger/messenger
+    provides_tags: [external_sink]
+  - id: exfil
+    command: env
+    args: [INTERLOCK_EXFIL_MODE=local, ./servers/exfil/exfil]
+    provides_tags: []
+
+tool_tags:
+  read_ticket:   [sensitive_source]
+  send_message:  [external_sink]
+  http_post:     [external_sink]
+  run_analysis:  []
+
+untrusted_origins:
+  tool_results: true
+  web_fetches:  true

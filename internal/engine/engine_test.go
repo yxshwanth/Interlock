@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -604,7 +605,7 @@ func TestEngine_IngestSyscall_TripsWhenAllLegsLit(t *testing.T) {
 		t.Fatal("should not allow when trifecta trips via eBPF")
 	}
 	if dec.Verdict != model.VerdictSuspicious {
-		t.Fatalf("expected SUSPICIOUS (no value overlap for syscalls), got %q", dec.Verdict)
+		t.Fatalf("expected SUSPICIOUS (connect without payload overlap), got %q", dec.Verdict)
 	}
 	if dec.Action != model.ActionContained {
 		t.Fatalf("expected action=contained_by_kill, got %q", dec.Action)
@@ -741,6 +742,104 @@ func TestEngine_IngestSyscall_RequiresSessionID(t *testing.T) {
 	if sink.records[0].SessionID != sid {
 		t.Fatalf("evidence should reference session %q, got %q", sid, sink.records[0].SessionID)
 	}
+}
+
+func TestEngine_IngestSyscall_EXFIL_WithPayloadOverlap(t *testing.T) {
+	eng, sink := newTestEngine("block")
+	sid := "ebpf-exfil"
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		fmt.Sprintf(`{"content":[{"type":"text","text":"Token: %s"}]}`, secret)))
+
+	ev := model.SyscallEvent{
+		PID:            55,
+		Comm:           "exfil-server",
+		Syscall:        "write",
+		DestIP:         "203.0.113.66",
+		DestPort:       4444,
+		SessionID:      sid,
+		PayloadExcerpt: "POST /exfil HTTP/1.1\r\n\r\n" + secret,
+	}
+	dec := eng.IngestSyscall(ev)
+
+	if dec.Allow {
+		t.Fatal("should not allow when payload overlaps taint")
+	}
+	if dec.Verdict != model.VerdictExfil {
+		t.Fatalf("expected EXFIL, got %q", dec.Verdict)
+	}
+	if dec.Evidence == nil || dec.Evidence.ValueOverlap == nil {
+		t.Fatal("expected value_overlap on evidence")
+	}
+	if dec.Evidence.ValueOverlap.WhereFound != "egress payload" {
+		t.Fatalf("WhereFound = %q", dec.Evidence.ValueOverlap.WhereFound)
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("expected 1 evidence record, got %d", len(sink.records))
+	}
+	sc, ok := sink.records[0].SinkCall.(map[string]any)
+	if !ok {
+		t.Fatalf("SinkCall type %T", sink.records[0].SinkCall)
+	}
+	if _, ok := sc["payload_excerpt"]; !ok {
+		t.Fatal("expected payload_excerpt in SinkCall")
+	}
+}
+
+func TestEngine_IngestSyscall_StillSuspicious_WithoutOverlap(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "ebpf-no-overlap"
+
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"}]}`))
+
+	ev := model.SyscallEvent{
+		PID:            56,
+		Comm:           "exfil-server",
+		Syscall:        "write",
+		DestIP:         "203.0.113.66",
+		DestPort:       4444,
+		SessionID:      sid,
+		PayloadExcerpt: "benign healthcheck payload",
+	}
+	dec := eng.IngestSyscall(ev)
+	if dec.Verdict != model.VerdictSuspicious {
+		t.Fatalf("expected SUSPICIOUS without overlap, got %q", dec.Verdict)
+	}
+	if dec.Evidence != nil && dec.Evidence.ValueOverlap != nil {
+		t.Fatal("should not record overlap hit")
+	}
+}
+
+func TestCheckOverlap_EgressPayload(t *testing.T) {
+	tv := model.TaintedValue{
+		Value:   "secret-token",
+		Hash:    "h",
+		Preview: "se...en",
+		Variants: []model.TaintedVariant{
+			{Form: "literal", Value: "secret-token"},
+		},
+	}
+	hit := CheckOverlapPayload([]model.TaintedValue{tv}, "exfil:secret-token")
+	if hit == nil {
+		t.Fatal("expected hit")
+	}
+	if hit.WhereFound != "egress payload" {
+		t.Fatalf("WhereFound = %q", hit.WhereFound)
+	}
+}
+
+func TestCheckOverlap_PayloadTruncated_KnownGap(t *testing.T) {
+	t.Skip("known gap: secrets past first 256 egress bytes are not captured by eBPF write probe")
+}
+
+func TestCheckOverlap_WriteBeforeConnect_KnownGap(t *testing.T) {
+	t.Skip("known gap: write() before a non-allowlisted connect is ignored (correlation requires recent connect)")
+}
+
+func TestEBPF_SendtoUDP_KnownGap(t *testing.T) {
+	t.Skip("known gap: UDP sendto payload capture deferred; only sys_enter_write is instrumented")
 }
 
 type testAuditSink struct {
