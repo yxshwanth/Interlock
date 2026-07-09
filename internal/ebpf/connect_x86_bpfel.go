@@ -20,6 +20,7 @@ const (
 	connectMapEvents                             = "events"
 	connectMapPidFilter                          = "pid_filter"
 	connectProgTracepointSyscallsSysEnterConnect = "tracepoint__syscalls__sys_enter_connect"
+	connectProgTracepointSyscallsSysEnterWrite   = "tracepoint__syscalls__sys_enter_write"
 )
 
 // loadConnect returns the embedded CollectionSpec for connect.
@@ -65,6 +66,7 @@ type connectSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type connectProgramSpecs struct {
 	TracepointSyscallsSysEnterConnect *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterWrite   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_write"`
 }
 
 // connectMapSpecs contains maps before they are loaded into the kernel.
@@ -126,11 +128,13 @@ type connectVariables struct {
 // It can be passed to loadConnectObjects or ebpf.CollectionSpec.LoadAndAssign.
 type connectPrograms struct {
 	TracepointSyscallsSysEnterConnect *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterWrite   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_write"`
 }
 
 func (p *connectPrograms) Close() error {
 	return _ConnectClose(
 		p.TracepointSyscallsSysEnterConnect,
+		p.TracepointSyscallsSysEnterWrite,
 	)
 }
 

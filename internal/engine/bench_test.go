@@ -16,7 +16,7 @@ func benchTainted(n int) []model.TaintedValue {
 		val := fmt.Sprintf("%s-%d", benchSecret, i)
 		out[i] = model.TaintedValue{
 			Value:    val,
-			Variants: taintedVariants(val),
+			Variants: CanonicalEncodings(val),
 			Hash:     HashValue(val),
 			Preview:  MaskValue(val),
 		}
@@ -65,8 +65,12 @@ func BenchmarkEngine_IngestResult_TaintExtract(b *testing.B) {
 	eng, _ := newTestEngine("block")
 	ev := makeResultEvent("bench", "read_ticket", "tickets", 1,
 		`{"content":[{"type":"text","text":"Token: `+benchSecret+`"}]}`)
+	// Warm legs once so iterations measure registration, not first-lit bookkeeping.
+	eng.IngestResult(ev)
 	b.ResetTimer()
 	for b.Loop() {
+		state := eng.store.Get("bench")
+		state.Tainted = nil
 		eng.IngestResult(ev)
 	}
 }

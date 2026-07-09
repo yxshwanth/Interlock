@@ -45,7 +45,7 @@ func main() {
 
 	var evidenceSink engine.EvidenceSink
 	if *evidencePath != "" {
-		evidenceSink, err = engine.NewEvidenceSink(cfg, *evidencePath)
+		evidenceSink, err = engine.NewEvidenceSinkWithStats(cfg, *evidencePath, engine.AtomicEvidenceDrops{N: &stats.DroppedEvidence})
 		if err != nil {
 			logger.Fatalf("evidence sink: %v", err)
 		}
@@ -145,11 +145,16 @@ func logRuntimeStats(logger *log.Logger, stats *proxy.RuntimeStats) {
 		return
 	}
 	dropped := stats.DroppedEvents.Load()
+	droppedEvidence := stats.DroppedEvidence.Load()
 	ebpfDrops := stats.EBPFRingbufDrops.Load()
-	if dropped > 0 || ebpfDrops > 0 {
-		logger.Printf("runtime stats: dropped_events=%d ebpf_ringbuf_drops=%d", dropped, ebpfDrops)
+	if dropped > 0 || droppedEvidence > 0 || ebpfDrops > 0 {
+		logger.Printf("runtime stats: dropped_events=%d dropped_evidence=%d ebpf_ringbuf_drops=%d",
+			dropped, droppedEvidence, ebpfDrops)
 		if dropped > 0 {
 			logger.Printf("[SECURITY] event log backpressure dropped %d events", dropped)
+		}
+		if droppedEvidence > 0 {
+			logger.Printf("[SECURITY] evidence emit backpressure dropped %d records", droppedEvidence)
 		}
 		if ebpfDrops > 0 {
 			logger.Printf("[SECURITY] eBPF ring buffer dropped %d connect events in kernel", ebpfDrops)

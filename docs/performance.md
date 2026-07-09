@@ -18,7 +18,7 @@ Do **not** quote `BenchmarkEngine_EvaluateRequest_Exfil` (~0.56 ms) as steady-st
 
 - **Command:** `make bench-http` (requires `make build` for demo server binaries)
 - **Harness:** `internal/proxy/http/` — `httptest` + real ticket/messenger STDIO backends; SSE responses; `initialize` outside timer
-- **A (absolute):** `TestHTTP_OverheadReport_*` — 10,000 client-side samples (`OVERHEAD_SAMPLES` env to override); p50/p95/p99/p999 — **fixture context only**, not Interlock isolation
+- **A (absolute):** `TestHTTP_OverheadReport_*` + `TestHTTP_ConcurrentLoad_ReadTicket` — 10,000 client-side samples (`OVERHEAD_SAMPLES` env to override; concurrent uses `CONCURRENT_SESSIONS`, default 4); p50/p95/p99/p999 — **fixture context only**, not Interlock isolation
 - **C (engine delta):** `BenchmarkHTTP_EngineDelta_*` — same stack, engine on vs passthrough (`engine == nil`); mean ns/op and allocs/op — **the deployer-facing Interlock cost**
 - **Environment:** Linux amd64, Go 1.25 — snapshot machine; numbers drift across hardware
 
@@ -37,8 +37,9 @@ Passthrough uses `proxy.New(..., nil)` — same HTTP path, no `EvaluateRequest` 
 |---|---:|---:|---:|---|
 | `read_ticket` (block config, benign — no trip) | 5.27 ms | 12.64 ms | 14.80 ms | Dominated by demo **tickets** STDIO backend payload work, not Interlock |
 | `send_message` benign (monitor, full eval) | 0.89 ms | 1.85 ms | 2.16 ms | Lighter messenger backend + Interlock; full trifecta + `CheckOverlap`, allow forward |
+| `read_ticket` concurrent (4 sessions, block) | 1.04 ms | 3.11 ms | 5.96 ms | `TestHTTP_ConcurrentLoad_ReadTicket` (n=1000); multi-session pool contention + backend I/O — still not Interlock isolation |
 
-Absolute rows differ because the **backends differ** (heavy read vs cheap send), not because Interlock treats them differently. Use **C** for Interlock overhead; use **A** only with the backend caveat above.
+Absolute rows differ because the **backends differ** (heavy read vs cheap send), not because Interlock treats them differently. Use **C** for Interlock overhead; use **A** only with the backend caveat above. Concurrent A adds session-pool contention on top of the same backend-dominated path.
 
 ### Reading the HTTP numbers
 
@@ -55,8 +56,8 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 **Two optimization levers (different hot spots):**
 
-1. **Block path:** evidence construction + sink write (~563 µs / 6.3K allocs on trip) — async evidence emit (ROADMAP).
-2. **Read path:** taint ingestion + canonical encodings on sensitive results — the bigger **per-benign-call** contributor (~536 µs delta).
+1. **Block path:** evidence construction (~563 µs / 6.3K allocs on trip with in-memory sink). **Async evidence emit (shipped):** `AsyncEvidenceSink` enqueues under `Emit` so JSONL/SQLite/`evidence.json` I/O no longer runs under `Engine.mu` before `Decision` returns. Construction still dominates allocs; sink I/O is off the hot path. Config: `evidence.backpressure: block | drop`, `evidence.queue_size`.
+2. **Read path:** taint ingestion + canonical encodings on sensitive results — the bigger **per-benign-call** contributor (~536 µs delta). **Shipped mechanical opts:** `CanonicalEncodings` writes `[]TaintedVariant` directly (no intermediate `EncodedForm` copy); `HashValue` uses `hex.EncodeToString`; `extractResultText` uses `strings.Builder`. Isolated `IngestResult` microbench ~8.2 µs / 38 allocs (was ~14.9 µs / 39; microbench also fixed to reset tainted slice instead of growing forever). HTTP delta remains backend+proxy dominated — expect modest wall-time change on C.
 
 ## Engine microbenchmarks
 
@@ -69,18 +70,18 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 | Benchmark | ns/op | B/op | allocs/op | Notes |
 |-----------|------:|-----:|----------:|-------|
-| `BenchmarkCanonicalEncodings` | 276 | 576 | 7 | Per-secret transform precompute at registration |
+| `BenchmarkCanonicalEncodings` | 297 | 576 | 7 | Per-secret transform precompute (direct `TaintedVariant` builder) |
 | `BenchmarkCheckOverlap_1Tainted` | 70 | 80 | 1 | Sink scan, 1 tainted value (5 forms) |
 | `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values |
 | `BenchmarkCheckOverlap_50Tainted` | 2146 | 80 | 1 | 50 tainted values |
-| `BenchmarkEngine_IngestResult_TaintExtract` | 14860 | 2808 | 39 | Sensitive source result ingest + taint — explains ReadTicket HTTP delta |
-| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence emit — rare trip only |
+| `BenchmarkEngine_IngestResult_TaintExtract` | 8163 | 2305 | 38 | Sensitive source result ingest + taint (session legs warmed; tainted reset each iter) |
+| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence **construction** (in-memory test sink) — rare trip only; production disk I/O is async via `AsyncEvidenceSink` |
 
 ### Reading the engine numbers
 
 - **Overlap check** scales linearly with tainted count; constant 80 B/op — no per-value allocation in the scan.
-- **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks.
-- **EvaluateRequest exfil path** is dominated by evidence emit on trip — see async evidence emit (ROADMAP).
+- **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks. Registration-path opts cut isolated ingest time; further wins need fewer encodings or cheaper extract.
+- **EvaluateRequest exfil path** is dominated by evidence **construction** on trip. Disk persistence is async (`AsyncEvidenceSink`); further wins require moving `buildEvidence` off the hot path (deferred).
 
 ## Known gaps
 
@@ -88,12 +89,11 @@ Each skip test names a **distinct** gap:
 
 | Test | Package | Gap |
 |---|---|---|
-| `TestHTTP_ConcurrentLoad_KnownGap` | `internal/proxy/http` | Concurrent multi-session HTTP load p99 (single-session A+C is covered) |
-| `TestEBPF_RingbufSaturation_KnownGap` | `internal/ebpf` | Kernel ring-buffer saturation under load |
+| `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: CI verifies `DropCount` API (`TestLoader_DropCount_Unloaded`); saturation flood requires root + BTF (`sudo go test`) |
 | `TestEventLogger_DiskFull_KnownGap` | `internal/proxy` | Disk-full logging behavior |
 | `TestEvidenceStore_CrossSessionQuery_KnownGap` | `internal/engine` | SQLite query API / viewer DB integration |
 
-There is **one** HTTP load gap test — `TestHTTP_ConcurrentLoad_KnownGap`. The former `TestBenchmark_FullHTTPLoad_KnownGap` in `engine/` was removed to avoid documenting the same hole twice.
+Concurrent multi-session HTTP load p99 is covered by `TestHTTP_ConcurrentLoad_ReadTicket` (CI smoke: `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`).
 
 ## Reproduce
 

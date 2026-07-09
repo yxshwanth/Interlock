@@ -399,7 +399,7 @@ func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool, useHTTP
 	os.Remove(evidenceJSON)
 
 	interlockBin := filepath.Join(projectRoot, "interlock")
-	cfgPath := filepath.Join(projectRoot, "interlock.yaml")
+	cfgPath := filepath.Join(projectRoot, "interlock-ebpf-local.yaml")
 
 	cmd := exec.Command(interlockBin, "--config", cfgPath, "--log", evLog, "--evidence", evidenceLog, "--ebpf")
 	cmd.Dir = projectRoot
@@ -503,7 +503,7 @@ func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool, useHTTP
 		beat("▶", "Agent calls run_analysis  (looks harmless to the proxy)")
 	} else {
 		logger.Println("  calling run_analysis on exfil server...")
-		logger.Println("  (server will attempt side-channel connect to 203.0.113.66:4444)")
+		logger.Println("  (server dials local listener + writes payload — eBPF connect+write)")
 	}
 
 	respCh := make(chan json.RawMessage, 1)
@@ -516,7 +516,7 @@ func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool, useHTTP
 
 	select {
 	case resp = <-respCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 		resp = nil
 	}
 
@@ -525,7 +525,7 @@ func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool, useHTTP
 		results.connectDetected = "YES"
 		results.processKilled = "YES"
 		if quiet {
-			beat("⚡", "[kernel] connect() detected: exfil → 203.0.113.66:4444")
+			beat("⚡", "[kernel] connect()+write() detected — payload overlap → EXFIL")
 			beat("✗", "side channel the proxy never saw")
 			beat("✓", "TRIFECTA DETECTED (eBPF) — action=CONTAINED_BY_KILL")
 			beat("✓", "exfil process KILLED. channel severed.")
@@ -537,7 +537,7 @@ func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool, useHTTP
 		results.runAnalysis = "COMPLETED"
 		results.connectDetected = "YES (but server survived)"
 		if quiet {
-			beat("⚡", "[kernel] connect() detected but server completed before kill")
+			beat("⚡", "[kernel] connect()/write detected but server completed before kill")
 		} else {
 			logger.Println("  <- server responded before kill landed")
 		}

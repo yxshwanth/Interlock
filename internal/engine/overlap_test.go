@@ -117,7 +117,7 @@ func TestCheckOverlap_EncodedExfil_KnownGap(t *testing.T) {
 	tainted := []model.TaintedValue{
 		{
 			Value:    secret,
-			Variants: taintedVariants(secret),
+			Variants: CanonicalEncodings(secret),
 			Hash:     HashValue(secret),
 			Preview:  MaskValue(secret),
 		},
@@ -138,7 +138,7 @@ func TestCheckOverlap_HexEncoded(t *testing.T) {
 	encoded := hex.EncodeToString([]byte(secret))
 
 	tainted := []model.TaintedValue{
-		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
 	}
 	args := json.RawMessage(`{"body": "` + encoded + `"}`)
 
@@ -159,7 +159,7 @@ func TestCheckOverlap_URLEncoded(t *testing.T) {
 	}
 
 	tainted := []model.TaintedValue{
-		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
 	}
 	args := json.RawMessage(`{"body": "` + encoded + `"}`)
 
@@ -177,7 +177,7 @@ func TestCheckOverlap_Reversed(t *testing.T) {
 	reversed := reverseString(secret)
 
 	tainted := []model.TaintedValue{
-		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
 	}
 	args := json.RawMessage(`{"body": "` + reversed + `"}`)
 
@@ -196,7 +196,7 @@ func TestCheckOverlap_SplitAcrossCalls_KnownGap(t *testing.T) {
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	half := len(secret) / 2
 	tainted := []model.TaintedValue{
-		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
 	}
 	args := json.RawMessage(`{"part_a": "` + secret[:half] + `", "part_b": "` + secret[half:] + `"}`)
 
@@ -217,7 +217,7 @@ func TestCheckOverlap_Compressed_KnownGap(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
 
 	tainted := []model.TaintedValue{
-		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
 	}
 	args := json.RawMessage(`{"body": "` + encoded + `"}`)
 
@@ -235,7 +235,7 @@ func TestCheckOverlap_DoubleEncoded_KnownGap(t *testing.T) {
 	double := base64.StdEncoding.EncodeToString([]byte(hexed))
 
 	tainted := []model.TaintedValue{
-		{Value: secret, Variants: taintedVariants(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
 	}
 	args := json.RawMessage(`{"body": "` + double + `"}`)
 

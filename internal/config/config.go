@@ -33,9 +33,11 @@ type SessionsConfig struct {
 
 // EvidenceConfig controls forensic evidence persistence.
 type EvidenceConfig struct {
-	Backend    string `yaml:"backend"`     // jsonl | sqlite (default jsonl)
-	Path       string `yaml:"path"`        // evidence.jsonl or evidence.db
-	MaxRecords int    `yaml:"max_records"` // sqlite retention cap; 0 = unlimited
+	Backend      string `yaml:"backend"`      // jsonl | sqlite (default jsonl)
+	Path         string `yaml:"path"`         // evidence.jsonl or evidence.db
+	MaxRecords   int    `yaml:"max_records"`  // sqlite retention cap; 0 = unlimited
+	Backpressure string `yaml:"backpressure"` // block | drop (default block) — async emit queue
+	QueueSize    int    `yaml:"queue_size"`   // async emit bounded queue (default 256)
 }
 
 // LoggingConfig controls event log behavior.
@@ -138,6 +140,16 @@ func (c *Config) validate() error {
 	}
 	if c.Evidence.MaxRecords == 0 {
 		c.Evidence.MaxRecords = 1000
+	}
+	switch c.Evidence.Backpressure {
+	case "", "block":
+		c.Evidence.Backpressure = "block"
+	case "drop":
+	default:
+		return fmt.Errorf("evidence.backpressure must be \"block\" or \"drop\", got %q", c.Evidence.Backpressure)
+	}
+	if c.Evidence.QueueSize == 0 {
+		c.Evidence.QueueSize = 256
 	}
 
 	switch c.Logging.Backpressure {

@@ -11,8 +11,9 @@
 - `[x]` **v0.1 — Working proof** (2026-07-04). STDIO transport, trifecta engine, Variant A blocking, eBPF `connect()` tripwire, JSONL evidence, HTML viewer. Tagged **`v0.1.0`**.
 - `[x]` **v0.2 — Usable tool** (2026-07-05). HTTP/SSE transport, multi-session concurrency, bounded encoding overlap, engine benchmarks, SQLite evidence (opt-in), backpressure, eBPF drop counter. Tagged **`v0.2.0`**. See [`v0.2_summary.md`](v0.2_summary.md).
 - `[x]` **v0.2.1 — HTTP overhead** (2026-07-05). End-to-end HTTP overhead A+C (`TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`), `make bench-http`, CI smoke. Tagged **`v0.2.1`**. PR [#17](https://github.com/yxshwanth/Interlock/pull/17).
+- `[x]` **Post-v0.2 — Async evidence + Variant B payload EXFIL.** `AsyncEvidenceSink`; eBPF `write()` first-256; deferred kill; dual claim `SUSPICIOUS`/`EXFIL`.
 
-**Next:** post-v0.2 backlog below — build v0.3 only if v0.2 produces demand ([`ROADMAP.md`](ROADMAP.md)).
+**Next:** remaining post-v0.2 backlog below — build v0.3 only if demand appears ([`ROADMAP.md`](ROADMAP.md)).
 
 ---
 
@@ -31,13 +32,13 @@
 ## Active backlog (post-v0.2)
 
 **Performance & operability**
-- `[ ]` **Async evidence emit** — decouple block decision from receipt write (~563 µs trip path)
-- `[ ]` **Taint ingestion optimization** — sensitive-read path dominates benign overhead (~536 µs delta on 2-secret fixture)
-- `[ ]` **Concurrent HTTP load p99** — `TestHTTP_ConcurrentLoad_KnownGap`
-- `[ ]` **eBPF ring-buffer saturation CI** — `TestEBPF_RingbufSaturation_KnownGap`
+- `[x]` **Async evidence emit** — `AsyncEvidenceSink`; evidence.backpressure block|drop
+- `[x]` **Taint ingestion optimization** — direct `TaintedVariant` builder; isolated IngestResult ~8.2 µs / 38 allocs
+- `[x]` **Concurrent HTTP load p99** — `TestHTTP_ConcurrentLoad_ReadTicket` (`CONCURRENT_SESSIONS`)
+- `[x]` **eBPF ring-buffer saturation** — CI DropCount API; root-gated `TestEBPF_RingbufSaturation_UnderLoad`
 
 **Detection**
-- `[ ]` eBPF `sendto`/`write` payload capture — Variant B `EXFIL` upgrade (0.95 with payload proof)
+- `[x]` eBPF `write()` payload capture — Variant B `EXFIL` upgrade (0.95 with payload proof); `sendto`/UDP still open
 - `[ ]` Additional eBPF probes: `openat()` (sensitive paths), DNS resolution
 - `[ ]` Cross-server **tool-shadowing** detection
 
@@ -58,7 +59,7 @@
 
 - `[ ]` **eBPF portability** across kernels — mitigate: target BTF Ubuntu 6.x; CO-RE for v0.3.
 - `[ ]` **Value-overlap false pos/neg** — canonical encodings caught; split/compressed/nested missed (known-gap tests).
-- `[~]` **Overhead** — engine + single-session HTTP delta published ([`performance.md`](performance.md)); concurrent multi-session load and eBPF saturation still open.
+- `[x]` **Overhead** — engine + single-session HTTP delta + concurrent multi-session absolute p99 published ([`performance.md`](performance.md)); eBPF DropCount CI + root-gated saturation.
 - `[ ]` **False-positive rate on realistic traffic** — v0.3 trust gate; bad FP rate reshapes detection logic.
 
 ---

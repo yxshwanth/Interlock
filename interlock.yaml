@@ -40,6 +40,8 @@ untrusted_origins:
 #   backend: jsonl          # jsonl (default) | sqlite
 #   path: evidence.jsonl    # or evidence.db for sqlite
 #   max_records: 1000       # sqlite retention cap (0 = unlimited)
+#   backpressure: block     # block (default) | drop — async emit queue
+#   queue_size: 256         # async emit bounded queue
 
 # logging:
 #   backpressure: block     # block (default) | drop

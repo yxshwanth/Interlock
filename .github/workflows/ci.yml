@@ -34,6 +34,9 @@ jobs:
       - name: HTTP overhead bench smoke
         run: OVERHEAD_SAMPLES=100 go test -run=TestHTTP_OverheadReport_ReadTicket -bench=BenchmarkHTTP_EngineDelta_ReadTicket/EngineOn -benchmem -benchtime=50ms ./internal/proxy/http/...
 
+      - name: HTTP concurrent load smoke
+        run: CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100 go test -run=TestHTTP_ConcurrentLoad_ReadTicket -v ./internal/proxy/http/...
+
   race:
     runs-on: ubuntu-latest
     steps:

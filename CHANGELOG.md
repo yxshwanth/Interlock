@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- Async evidence emit: `AsyncEvidenceSink` decorator; `evidence.backpressure: block | drop`, `evidence.queue_size`; `DroppedEvidence` runtime stats
+- eBPF `sys_enter_write` first-256-byte payload capture; userspace correlation to recent non-allowlisted `connect`
+- Variant B `EXFIL` (0.95) when egress excerpt overlaps taint (`where_found: egress payload`); connect-only remains `SUSPICIOUS` (0.60)
+- Deferred kill window (~100 ms) after connect so write can land before SIGKILL
+- Local exfil fixture mode (`INTERLOCK_EXFIL_MODE=local`) + `interlock-ebpf-local.yaml` for payload-backed demo
+- Known-gap skips: truncated excerpt, write-before-connect, UDP `sendto`
+- `TestHTTP_ConcurrentLoad_ReadTicket` — multi-session absolute latency p50/p95/p99 (`CONCURRENT_SESSIONS`, CI smoke)
+- eBPF `DropCount` tests: unloaded API (CI), idle after load + ringbuf saturation flood (root-gated)
+
+### Changed
+
+- README / architecture / ROADMAP: Variant B dual claim (tripwire or payload-backed EXFIL)
+- Taint registration path: `CanonicalEncodings` → `[]TaintedVariant` directly; cheaper `HashValue`; `extractResultText` via `strings.Builder`
+- [`docs/performance.md`](docs/performance.md) — async evidence, ingest opts, concurrent load snapshot, ringbuf test honesty
+
 ## [0.2.1] - 2026-07-05
 
 ### Added

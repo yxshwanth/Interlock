@@ -18,6 +18,15 @@ func overheadSampleCount() int {
 	return 10_000
 }
 
+func concurrentSessionCount() int {
+	if s := os.Getenv("CONCURRENT_SESSIONS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 4
+}
+
 type latencyStats struct {
 	N    int
 	Mean time.Duration

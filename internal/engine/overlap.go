@@ -10,18 +10,31 @@ import (
 // CheckOverlap checks whether any tainted value (literal or canonical encoding)
 // appears in the sink call's arguments. Returns the first hit, or nil.
 func CheckOverlap(tainted []model.TaintedValue, sinkArgs json.RawMessage) *model.OverlapHit {
-	if len(tainted) == 0 || len(sinkArgs) == 0 {
+	hit := checkOverlapString(tainted, string(sinkArgs))
+	if hit != nil {
+		hit.WhereFound = "sink args"
+	}
+	return hit
+}
+
+// CheckOverlapPayload checks egress payload bytes for tainted values.
+func CheckOverlapPayload(tainted []model.TaintedValue, payload string) *model.OverlapHit {
+	hit := checkOverlapString(tainted, payload)
+	if hit != nil {
+		hit.WhereFound = "egress payload"
+	}
+	return hit
+}
+
+func checkOverlapString(tainted []model.TaintedValue, haystack string) *model.OverlapHit {
+	if len(tainted) == 0 || haystack == "" {
 		return nil
 	}
-
-	argsStr := string(sinkArgs)
-
 	for _, tv := range tainted {
-		if hit := matchTaintedValue(argsStr, tv); hit != nil {
+		if hit := matchTaintedValue(haystack, tv); hit != nil {
 			return hit
 		}
 	}
-
 	return nil
 }
 
@@ -39,7 +52,7 @@ func matchTaintedValue(argsStr string, tv model.TaintedValue) *model.OverlapHit 
 			return &model.OverlapHit{
 				TaintedHash: tv.Hash,
 				Preview:     tv.Preview,
-				WhereFound:  "sink args",
+				WhereFound:  "", // filled by CheckOverlap / CheckOverlapPayload
 				MatchForm:   form.Form,
 			}
 		}
@@ -49,10 +62,5 @@ func matchTaintedValue(argsStr string, tv model.TaintedValue) *model.OverlapHit 
 
 // variantsForLegacy supports tests that construct TaintedValue without Variants.
 func variantsForLegacy(value string) []model.TaintedVariant {
-	forms := CanonicalEncodings(value)
-	out := make([]model.TaintedVariant, len(forms))
-	for i, f := range forms {
-		out[i] = model.TaintedVariant{Form: string(f.Form), Value: f.Value}
-	}
-	return out
+	return CanonicalEncodings(value)
 }

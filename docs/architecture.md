@@ -117,20 +117,23 @@ HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an
 
 **Attachment.** Probes are scoped to the proxy's **process subtree** — the proxy PID plus every server child PID. Userspace maintains the live PID set and pushes it to a **BPF hash map** (`BPF_MAP_TYPE_HASH`) so the probe checks membership cheaply in-kernel before emitting events.
 
-**Probe: `connect()` only (Variant B tripwire).**
-- Tracepoint: `tracepoint/syscalls/sys_enter_connect`.
-- Extracts destination IP/port from `sockaddr_in`, PID, TID, and comm.
+**Probe: `connect()` + `write()` (Variant B).**
+- Tracepoints: `sys_enter_connect`, `sys_enter_write`.
+- Connect: destination IP/port from `sockaddr_in`, PID, TID, and comm (IPv4 only).
+- Write: first **256** bytes via `bpf_probe_read_user` (fd ≥ 3 to skip stdio); correlated in userspace to a recent non-allowlisted connect from the same PID.
 - Events pushed to a **ring buffer** (`BPF_MAP_TYPE_RINGBUF`, 256KB). Reserve failures increment a `drop_count` map surfaced via `Sensor.DropCount()`.
 - Compiled from BPF C via `bpf2go` (cilium/ebpf), loaded by Go at runtime. CO-RE via BTF at `/sys/kernel/btf/vmlinux`.
-- **`sendto`/`write` payload capture** — deferred post-v0.2 (would upgrade Variant B from legs-only `SUSPICIOUS` to payload-backed `EXFIL`). `openat()` and DNS are further backlog.
+- **`sendto`/UDP, `openat()`, DNS** — further backlog.
+
+**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**, with a **~100 ms deferred kill window** after connect so a correlated write can land for payload overlap. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.3. **Honest consequence:** for Variant B the `connect()` (and possibly a short write) may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
+
+**Verdicts.** Connect-only (legs lit, no overlapping write excerpt) → `SUSPICIOUS` at 0.60. Write excerpt overlapping a tainted secret → `EXFIL` at 0.95 with `value_overlap.where_found: egress payload`. Writes without a recent suspicious connect are ignored (noise filter).
 
 **Transport to userspace.** Ring buffer → Go decoder in `internal/ebpf/loader.go` → `model.SyscallEvent` structs → engine's `IngestSyscall` method.
 
-**Allowlist check.** The sensor checks each `connect()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg.
+**Allowlist check.** The sensor checks each `connect()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg and arm write-payload correlation for that PID.
 
-**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**: `SIGKILL` to the process group of the offending child. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.3. **Honest consequence:** for Variant B the `connect()` may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
-
-**False-positive surface (stated plainly).** Variant B fires on any non-allowlisted `connect()` from a monitored process once the first two legs are lit. That means a server with a legitimate non-allowlisted API call during a sensitive session gets killed — with no payload evidence that anything was actually exfiltrated. This is a **high-signal tripwire**, not proof of exfil: an unexpected outbound connection from a supervised process during a sensitive session is worth killing and investigating, even without payload proof. The credible claim is "detected an unauthorized outbound connection during a sensitive session," not "detected exfiltration." eBPF payload inspection to distinguish exfil from benign egress is deferred post-v0.2.
+**False-positive surface (stated plainly).** Connect-only Variant B still fires on any non-allowlisted `connect()` once the first two legs are lit — a **high-signal tripwire** (`SUSPICIOUS` 0.60) without payload proof. Payload-backed `EXFIL` requires a correlated write excerpt that overlaps a tainted secret. Legitimate non-allowlisted API calls during a sensitive session can still be killed on the tripwire path.
 
 **Prototype-first.** The `connect()` probe was validated with a `bpftrace` one-liner before writing compiled eBPF. This de-risked the hardest part of the week.
 
@@ -406,7 +409,7 @@ type SessionStore interface {
 
 **Still deferred (see [`ROADMAP.md`](ROADMAP.md)):**
 
-- **eBPF payload capture** (`sendto`/`write`) — Variant B upgrade from tripwire to payload-backed `EXFIL`
+- **eBPF payload capture** — `write()` first-256 bytes shipped; `sendto`/UDP, `openat`, DNS still deferred
 - **Kernel-level blocking** (LSM/KRSI) — prevent before first packet leaves (v0.3)
 - **Full dataflow taint** — value overlap covers canonical encodings only; split/compressed/nested encoding explicitly out of scope (skip tests in `overlap_test.go`)
 - **HTTP upstream backends**, TLS termination / MITM, GET `/mcp` listen streams

@@ -54,7 +54,7 @@ Closes the detection-credibility gap for Variant A: encoded exfil in sink args i
 
 - **Shipped (encoding overlap):** canonical transforms at taint registration — base64, hex, URL-encoding, reversal; `CheckOverlap` tests sink args against all forms; evidence records `match_form`; `RedactJSON` scrubs encoded variants from logs
 - **Known gaps (skip tests):** split-across-calls, compression, double/nested encoding
-- **Deferred:** eBPF `sendto`/`write` payload capture (Variant B `EXFIL` upgrade — follow-up PR)
+- **Shipped (post-v0.2):** eBPF `write()` first-256-byte payload capture → Variant B `EXFIL` when overlap hits; connect-only remains `SUSPICIOUS`. `sendto`/UDP still deferred.
 
 **Done when:** `TestCheckOverlap_EncodedExfil_KnownGap` passes — **met**.
 
@@ -77,9 +77,14 @@ The "is this operable" gate — **shipped**.
 
 **Post-v0.2 performance (prioritized):**
 
-1. **End-to-end HTTP overhead (A + C)** — **met** (v0.2.1): `TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`, `make bench-http`, [`performance.md`](performance.md) snapshot. Passthrough via `proxy.New(..., nil)`; concurrent load deferred to `TestHTTP_ConcurrentLoad_KnownGap`.
-2. **Async evidence emit** — block path ~563 µs / 432 KB / 6,296 allocs on trip; dominated by evidence construction and sink write. Decouple block decision from receipt write.
-3. **Taint ingestion on sensitive reads** — HTTP delta shows ~536 µs / +63 allocs on `read_ticket` vs ~118 µs on sink overlap checks. Per-benign-call engine cost is ingestion + canonical encodings on `IngestResult`, not `CheckOverlap`. Optimize registration path if sub-ms overhead must shrink further.
+1. **End-to-end HTTP overhead (A + C)** — **met** (v0.2.1): `TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`, `make bench-http`, [`performance.md`](performance.md) snapshot. Passthrough via `proxy.New(..., nil)`. Concurrent multi-session p99 — **met**: `TestHTTP_ConcurrentLoad_ReadTicket` (`CONCURRENT_SESSIONS`, CI smoke).
+2. **Async evidence emit** — **met**: `AsyncEvidenceSink` decorator; `evidence.backpressure: block | drop`; trip path no longer waits on JSONL/SQLite I/O under `Engine.mu`. Construction still dominates allocs.
+3. **Taint ingestion on sensitive reads** — **met** (mechanical): direct `TaintedVariant` builder, cheaper `HashValue`, `strings.Builder` in `extractResultText`; isolated `IngestResult` ~8.2 µs / 38 allocs. HTTP delta still ~0.5 ms class (backend+proxy); further encoding/extract opts if sub-ms must shrink more.
+4. **eBPF ringbuf drop observability** — **met**: CI `TestLoader_DropCount_Unloaded`; root-gated idle + saturation flood (`TestEBPF_RingbufSaturation_UnderLoad`).
+
+**Post-v0.2 detection:**
+
+5. **eBPF write payload capture** — **met**: `sys_enter_write` first-256 bytes; deferred kill ~100 ms; `CheckOverlapPayload` → Variant B `EXFIL` 0.95 when overlap hits. Connect-only stays `SUSPICIOUS` 0.60.
 
 **v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`** (milestone) and **`v0.2.1`** (HTTP overhead A+C).
 
