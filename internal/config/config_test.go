@@ -241,6 +241,8 @@ evidence:
   backend: sqlite
   path: /tmp/evidence.db
   max_records: 500
+  backpressure: drop
+  queue_size: 64
 logging:
   backpressure: drop
   queue_size: 128
@@ -257,6 +259,12 @@ servers:
 	}
 	if cfg.Evidence.MaxRecords != 500 {
 		t.Errorf("max_records = %d", cfg.Evidence.MaxRecords)
+	}
+	if cfg.Evidence.Backpressure != "drop" {
+		t.Errorf("evidence.backpressure = %q", cfg.Evidence.Backpressure)
+	}
+	if cfg.Evidence.QueueSize != 64 {
+		t.Errorf("evidence.queue_size = %d", cfg.Evidence.QueueSize)
 	}
 	if cfg.Logging.Backpressure != "drop" {
 		t.Errorf("backpressure = %q", cfg.Logging.Backpressure)

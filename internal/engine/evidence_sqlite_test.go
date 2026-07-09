@@ -166,10 +166,13 @@ func TestNewEvidenceSink_DefaultJSONL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if js, ok := sink.(*JSONLEvidenceSink); ok {
-		defer js.Close()
-	} else {
-		t.Fatalf("expected JSONLEvidenceSink, got %T", sink)
+	async, ok := sink.(*AsyncEvidenceSink)
+	if !ok {
+		t.Fatalf("expected AsyncEvidenceSink, got %T", sink)
+	}
+	defer async.Close()
+	if _, ok := async.inner.(*JSONLEvidenceSink); !ok {
+		t.Fatalf("expected inner JSONLEvidenceSink, got %T", async.inner)
 	}
 }
 
@@ -185,9 +188,12 @@ func TestNewEvidenceSink_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ss, ok := sink.(*SQLiteEvidenceSink); ok {
-		defer ss.Close()
-	} else {
-		t.Fatalf("expected SQLiteEvidenceSink, got %T", sink)
+	async, ok := sink.(*AsyncEvidenceSink)
+	if !ok {
+		t.Fatalf("expected AsyncEvidenceSink, got %T", sink)
+	}
+	defer async.Close()
+	if _, ok := async.inner.(*SQLiteEvidenceSink); !ok {
+		t.Fatalf("expected inner SQLiteEvidenceSink, got %T", async.inner)
 	}
 }

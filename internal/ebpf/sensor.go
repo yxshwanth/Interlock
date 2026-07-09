@@ -8,19 +8,37 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
-// SyscallHandler is called for each non-allowlisted connect() event.
+// DeferredKillWindow is how long after a connect trip we wait for a write
+// payload before SIGKILL. Brief extra egress window in exchange for EXFIL proof.
+const DeferredKillWindow = 100 * time.Millisecond
+
+// SuspiciousConnectTTL is how long a non-allowlisted connect stays eligible
+// for write-payload correlation.
+const SuspiciousConnectTTL = 5 * time.Second
+
+// SyscallHandler is called for each relevant syscall event.
 // It receives the SyscallEvent and returns a Decision. If the decision
-// says Action=ActionContained, the sensor will SIGKILL the process.
+// says Action=ActionContained, the sensor schedules SIGKILL (deferred for connect).
 type SyscallHandler func(ev model.SyscallEvent) model.Decision
 
-// Sensor manages the eBPF connect() probe lifecycle: loads the probe,
-// maintains the PID filter, reads events, checks the egress allowlist,
-// calls the handler (engine), and enforces kill-on-detect.
+type pendingConnect struct {
+	destIP   string
+	destPort int
+	at       time.Time
+}
+
+type pendingKill struct {
+	pid int
+	at  time.Time
+}
+
+// Sensor manages the eBPF connect()+write() probe lifecycle.
 type Sensor struct {
 	loader    *Loader
 	allowlist map[string]bool
@@ -28,11 +46,15 @@ type Sensor struct {
 	log       *log.Logger
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
+
+	mu               sync.Mutex
+	suspiciousByPID  map[int]pendingConnect
+	deferredKills    map[int]pendingKill
 }
 
 // NewSensor creates a Sensor. allowedIPs are the egress allowlist entries
 // (IPs only, no CIDR in v0.1). handler is called for each non-allowlisted
-// event and should return the engine's Decision.
+// connect and for write events correlated to a recent suspicious connect.
 func NewSensor(allowedIPs []string, handler SyscallHandler) (*Sensor, error) {
 	loader, err := NewLoader()
 	if err != nil {
@@ -45,16 +67,17 @@ func NewSensor(allowedIPs []string, handler SyscallHandler) (*Sensor, error) {
 	}
 
 	return &Sensor{
-		loader:    loader,
-		allowlist: allow,
-		handler:   handler,
-		log:       log.New(os.Stderr, "[sensor] ", log.LstdFlags),
-		stopCh:    make(chan struct{}),
+		loader:          loader,
+		allowlist:       allow,
+		handler:         handler,
+		log:             log.New(os.Stderr, "[sensor] ", log.LstdFlags),
+		stopCh:          make(chan struct{}),
+		suspiciousByPID: make(map[int]pendingConnect),
+		deferredKills:   make(map[int]pendingKill),
 	}, nil
 }
 
-// AddPIDs adds the given PIDs to the BPF filter map so their connect()
-// calls generate events.
+// AddPIDs adds the given PIDs to the BPF filter map.
 func (s *Sensor) AddPIDs(pids ...int) error {
 	for _, pid := range pids {
 		if err := s.loader.AddPID(pid); err != nil {
@@ -72,14 +95,33 @@ func (s *Sensor) RemovePIDs(pids ...int) error {
 			return err
 		}
 		s.log.Printf("stopped watching PID %d", pid)
+		s.mu.Lock()
+		delete(s.suspiciousByPID, pid)
+		delete(s.deferredKills, pid)
+		s.mu.Unlock()
 	}
 	return nil
 }
 
 // Start begins the event-reading goroutine. Call Stop() to shut down.
 func (s *Sensor) Start() {
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.readLoop()
+	go s.killLoop()
+}
+
+func (s *Sensor) killLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.flushDeferredKills()
+		}
+	}
 }
 
 func (s *Sensor) readLoop() {
@@ -101,32 +143,121 @@ func (s *Sensor) readLoop() {
 			continue
 		}
 
-		destIP := raw.DestIPString()
-		if s.allowlist[destIP] || s.allowlist[destIPNormalized(destIP)] {
-			continue
+		if raw.Connect != nil {
+			s.handleConnect(raw.Connect)
 		}
-
-		ev := model.SyscallEvent{
-			TSMono:      int64(raw.TSNs),
-			PID:         int(raw.PID),
-			TID:         int(raw.TID),
-			Comm:        raw.CommString(),
-			Syscall:     "connect",
-			DestIP:      destIP,
-			DestPort:    int(raw.DestPort),
-			Allowlisted: false,
+		if raw.Write != nil {
+			s.handleWrite(raw.Write)
 		}
+	}
+}
 
-		s.log.Printf("connect detected: pid=%d comm=%s dest=%s:%d",
-			ev.PID, ev.Comm, ev.DestIP, ev.DestPort)
+func (s *Sensor) handleConnect(raw *ConnectEvent) {
+	destIP := raw.DestIPString()
+	if s.allowlist[destIP] || s.allowlist[destIPNormalized(destIP)] {
+		return
+	}
 
-		if s.handler != nil {
-			decision := s.handler(ev)
-			if decision.Action == model.ActionContained {
-				s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s)", ev.PID, ev.Comm)
-				KillProcess(ev.PID)
-			}
+	pid := int(raw.PID)
+	s.mu.Lock()
+	s.suspiciousByPID[pid] = pendingConnect{
+		destIP:   destIP,
+		destPort: int(raw.DestPort),
+		at:       time.Now(),
+	}
+	s.mu.Unlock()
+
+	ev := model.SyscallEvent{
+		TSMono:      int64(raw.TSNs),
+		PID:         pid,
+		TID:         int(raw.TID),
+		Comm:        raw.CommString(),
+		Syscall:     "connect",
+		DestIP:      destIP,
+		DestPort:    int(raw.DestPort),
+		Allowlisted: false,
+	}
+
+	s.log.Printf("connect detected: pid=%d comm=%s dest=%s:%d",
+		ev.PID, ev.Comm, ev.DestIP, ev.DestPort)
+
+	if s.handler == nil {
+		return
+	}
+	decision := s.handler(ev)
+	if decision.Action == model.ActionContained {
+		s.scheduleKill(pid, raw.CommString())
+	}
+}
+
+func (s *Sensor) handleWrite(raw *WriteEvent) {
+	pid := int(raw.PID)
+	s.mu.Lock()
+	pc, ok := s.suspiciousByPID[pid]
+	if ok && time.Since(pc.at) > SuspiciousConnectTTL {
+		delete(s.suspiciousByPID, pid)
+		ok = false
+	}
+	s.mu.Unlock()
+	if !ok {
+		// No recent non-allowlisted connect — ignore (stdout/log noise filter).
+		return
+	}
+
+	ev := model.SyscallEvent{
+		TSMono:         int64(raw.TSNs),
+		PID:            pid,
+		TID:            int(raw.TID),
+		Comm:           raw.CommString(),
+		Syscall:        "write",
+		DestIP:         pc.destIP,
+		DestPort:       pc.destPort,
+		Allowlisted:    false,
+		PayloadExcerpt: string(raw.Payload),
+	}
+
+	s.log.Printf("write payload captured: pid=%d fd=%d len=%d (correlated to %s:%d)",
+		ev.PID, raw.FD, raw.Len, pc.destIP, pc.destPort)
+
+	if s.handler == nil {
+		return
+	}
+	decision := s.handler(ev)
+	if decision.Action == model.ActionContained {
+		// Payload path: kill promptly once we have (or miss) overlap decision.
+		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s) after write", ev.PID, ev.Comm)
+		s.cancelDeferredKill(pid)
+		KillProcess(pid)
+	}
+}
+
+func (s *Sensor) scheduleKill(pid int, comm string) {
+	s.mu.Lock()
+	s.deferredKills[pid] = pendingKill{pid: pid, at: time.Now()}
+	s.mu.Unlock()
+	s.log.Printf("KILL deferred %s: pid %d (%s) — waiting for write payload", DeferredKillWindow, pid, comm)
+}
+
+func (s *Sensor) cancelDeferredKill(pid int) {
+	s.mu.Lock()
+	delete(s.deferredKills, pid)
+	s.mu.Unlock()
+}
+
+func (s *Sensor) flushDeferredKills() {
+	now := time.Now()
+	var due []int
+	s.mu.Lock()
+	for pid, pk := range s.deferredKills {
+		if now.Sub(pk.at) >= DeferredKillWindow {
+			due = append(due, pid)
+			delete(s.deferredKills, pid)
 		}
+	}
+	s.mu.Unlock()
+	for _, pid := range due {
+		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (deferred window elapsed)", pid)
+		KillProcess(pid)
 	}
 }
 
@@ -140,16 +271,12 @@ func (s *Sensor) stopping() bool {
 }
 
 // KillProcess sends SIGKILL to the process group of the given PID.
-// This is immediate and non-graceful — appropriate for a caught attacker.
 func KillProcess(pid int) {
-	// Kill the entire process group (negative PID).
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	// Also kill the individual process in case Setpgid wasn't used.
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
-// Stop shuts down the sensor: closes the ring buffer reader (unblocks
-// ReadEvent), waits for the goroutine, then closes BPF resources.
+// Stop shuts down the sensor.
 func (s *Sensor) Stop() {
 	close(s.stopCh)
 	s.loader.reader.Close()

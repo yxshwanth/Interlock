@@ -15,12 +15,12 @@ func TestCanonicalEncodings_Deterministic(t *testing.T) {
 		t.Fatalf("expected 5 forms, got %d", len(forms))
 	}
 
-	want := map[EncodingForm]string{
-		FormLiteral:    secret,
-		FormBase64:     base64.StdEncoding.EncodeToString([]byte(secret)),
-		FormHex:        hex.EncodeToString([]byte(secret)),
-		FormURLEncoded: url.QueryEscape(secret),
-		FormReversed:   reverseString(secret),
+	want := map[string]string{
+		string(FormLiteral):    secret,
+		string(FormBase64):     base64.StdEncoding.EncodeToString([]byte(secret)),
+		string(FormHex):        hex.EncodeToString([]byte(secret)),
+		string(FormURLEncoded): url.QueryEscape(secret),
+		string(FormReversed):   reverseString(secret),
 	}
 
 	for _, f := range forms {
@@ -45,7 +45,7 @@ func TestCanonicalEncodings_ReversedDiffers(t *testing.T) {
 	forms := CanonicalEncodings(secret)
 	var reversed string
 	for _, f := range forms {
-		if f.Form == FormReversed {
+		if f.Form == string(FormReversed) {
 			reversed = f.Value
 		}
 	}

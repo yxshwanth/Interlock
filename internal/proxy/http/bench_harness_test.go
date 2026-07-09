@@ -16,13 +16,15 @@ import (
 
 // benchOpts configures the HTTP overhead benchmark harness.
 type benchOpts struct {
-	EngineOn    bool
-	Enforcement string // "block" | "monitor"
-	PreferSSE   bool
+	EngineOn      bool
+	Enforcement   string // "block" | "monitor"
+	PreferSSE     bool
+	MaxConcurrent int // 0 = config default (32)
 }
 
 type benchEnv struct {
 	Client  *mcphttp.Client
+	BaseURL string // httptest URL + MCP endpoint (for additional clients)
 	Cancel  context.CancelFunc
 	Cleanup func()
 }
@@ -45,7 +47,7 @@ func requireBenchPrereqs(tb testing.TB) (ticketsBin, messengerBin string) {
 }
 
 func benchConfig(ticketsBin, messengerBin string, opts benchOpts) *config.Config {
-	return &config.Config{
+	cfg := &config.Config{
 		Transport: config.TransportConfig{
 			Mode:               "http",
 			Endpoint:           "/mcp",
@@ -66,6 +68,13 @@ func benchConfig(ticketsBin, messengerBin string, opts benchOpts) *config.Config
 			WebFetches  bool `yaml:"web_fetches"`
 		}{ToolResults: true},
 	}
+	if opts.MaxConcurrent > 0 {
+		cfg.Sessions = config.SessionsConfig{
+			MaxConcurrent: opts.MaxConcurrent,
+			IdleTimeout:   "30m",
+		}
+	}
+	return cfg
 }
 
 func setupBenchEnv(tb testing.TB, opts benchOpts) *benchEnv {
@@ -95,7 +104,8 @@ func setupBenchEnv(tb testing.TB, opts benchOpts) *benchEnv {
 
 	logger := log.New(os.Stderr, "[bench] ", 0)
 	ts := httptest.NewServer(mcphttp.NewServer(p, cfg, logger).Handler())
-	client := mcphttp.NewClient(ts.URL+cfg.Transport.Endpoint, cfg.Transport.ProtocolVersion)
+	baseURL := ts.URL + cfg.Transport.Endpoint
+	client := mcphttp.NewClient(baseURL, cfg.Transport.ProtocolVersion)
 
 	cleanup := func() {
 		ts.Close()
@@ -105,9 +115,14 @@ func setupBenchEnv(tb testing.TB, opts benchOpts) *benchEnv {
 
 	return &benchEnv{
 		Client:  client,
+		BaseURL: baseURL,
 		Cancel:  cancel,
 		Cleanup: cleanup,
 	}
+}
+
+func newBenchClient(env *benchEnv, protocolVersion string) *mcphttp.Client {
+	return mcphttp.NewClient(env.BaseURL, protocolVersion)
 }
 
 func warmupHTTPSession(tb testing.TB, client *mcphttp.Client) {

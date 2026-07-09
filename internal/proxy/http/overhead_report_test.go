@@ -1,8 +1,12 @@
 package mcphttp_test
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	mcphttp "github.com/yxshwanth/Interlock/internal/proxy/http"
 )
 
 func TestHTTP_OverheadReport_ReadTicket(t *testing.T) {
@@ -73,6 +77,68 @@ func TestHTTP_OverheadReport_MonitorSinkBenign(t *testing.T) {
 	t.Logf("full-eval p99: %s (includes monitor-mode evidence emit on trip)", formatMs(stats.P99))
 }
 
-func TestHTTP_ConcurrentLoad_KnownGap(t *testing.T) {
-	t.Skip("known gap: concurrent multi-session HTTP load p99 — single-session overhead covered by TestHTTP_OverheadReport_*")
+func TestHTTP_ConcurrentLoad_ReadTicket(t *testing.T) {
+	sessions := concurrentSessionCount()
+	env := setupBenchEnv(t, benchOpts{
+		EngineOn:      true,
+		Enforcement:   "block",
+		PreferSSE:     true,
+		MaxConcurrent: sessions + 2,
+	})
+	defer env.Cleanup()
+
+	clients := make([]*mcphttp.Client, sessions)
+	for i := range clients {
+		if i == 0 {
+			clients[i] = env.Client
+		} else {
+			clients[i] = newBenchClient(env, "2025-11-25")
+		}
+		warmupHTTPSession(t, clients[i])
+		if _, err := callReadTicket(clients[i]); err != nil {
+			t.Fatalf("warmup read_ticket session %d: %v", i, err)
+		}
+	}
+
+	n := overheadSampleCount()
+	if n < sessions {
+		n = sessions
+	}
+	perSession := n / sessions
+	total := perSession * sessions
+	samples := make([]time.Duration, total)
+
+	var ready, done sync.WaitGroup
+	ready.Add(sessions)
+	done.Add(sessions)
+	release := make(chan struct{})
+
+	for i, client := range clients {
+		go func(idx int, c *mcphttp.Client) {
+			defer done.Done()
+			ready.Done()
+			<-release
+			offset := idx * perSession
+			for j := 0; j < perSession; j++ {
+				res, err := callReadTicket(c)
+				if err != nil {
+					t.Errorf("session %d iter %d: %v", idx, j, err)
+					return
+				}
+				if !jsonHasResult(res.Body) {
+					t.Errorf("session %d iter %d: no result", idx, j)
+					return
+				}
+				samples[offset+j] = res.Duration
+			}
+		}(i, client)
+	}
+
+	ready.Wait()
+	close(release)
+	done.Wait()
+
+	stats := computeLatencyStats(samples)
+	logLatencyStats(t, fmt.Sprintf("HTTP concurrent read_ticket (%d sessions, block, SSE)", sessions), stats)
+	t.Logf("concurrent p99 (backend-dominated, multi-session): %s", formatMs(stats.P99))
 }
