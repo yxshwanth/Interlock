@@ -58,29 +58,34 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 | Layer | Choice |
 |---|---|
 | Language (proxy, engine, control plane) | **Go** |
-| Kernel sensor | **eBPF** via `cilium/ebpf` (ebpf-go); `connect()` probe only |
+| Kernel sensor | **eBPF** via `cilium/ebpf` (ebpf-go); `connect()` + `write()` + `sendto()` + `openat()` |
 | Transport intercepted | **MCP over STDIO** (default) or **Streamable HTTP** (`2025-11-25`); backend servers remain STDIO children |
 | Demo agent | **Claude Agent SDK** (scripted demo client) |
 | Evidence UI | Self-contained **local HTML** (read-only) |
 | Dev platform | **Ubuntu 6.x + BTF** (CO-RE-friendly) |
 | Session state | In-memory per `session_id`; HTTP multi-session via `SessionManager` + `PIDRegistry` |
-| Evidence persistence | **JSONL** default; opt-in **SQLite** with `max_records` retention |
+| Evidence persistence | **JSONL** intentional default; opt-in **SQLite** with `max_records` retention; async emit (`AsyncEvidenceSink`) |
 
 ---
 
-## Shipped vs deferred (v0.2.1)
+## Shipped vs deferred (post-v0.2)
 
-**Shipped in v0.2:**
+**Shipped in v0.2 / v0.2.1:**
 
 - Streamable HTTP MCP transport; multi-session concurrency with PID→session attribution
-- Bounded encoding overlap on Variant A (base64, hex, URL-encoding, reversal)
+- Bounded encoding overlap on Variant A (base64, hex, URL-encoding, reversal; depth-2 nests + `gzip_base64`)
 - Engine microbenchmarks + end-to-end HTTP overhead story ([`performance.md`](performance.md))
-- Opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter
+- Opt-in SQLite evidence (JSONL remains intentional default), event log backpressure, eBPF ring-buffer drop counter
+
+**Shipped post-v0.2:**
+
+- Async evidence emit (`AsyncEvidenceSink`; `evidence.backpressure: block | drop`)
+- eBPF `write()` first-256 + ~100 ms deferred kill → Variant B `EXFIL` on payload overlap; connect-only stays `SUSPICIOUS`
+- eBPF `sendto()` (self-contained IPv4 dest + excerpt); DNS via port 53; `openat` + `sensitive_paths` → `SUSPICIOUS`
 
 **Still out of scope** (see [`ROADMAP.md`](ROADMAP.md)):
 
-- eBPF `sendto`/`write` payload capture (Variant B remains a `connect()` tripwire)
-- Full byte-level dataflow taint (split/compressed/nested encoding — known-gap tests)
+- Full byte-level dataflow taint (cross-call splits, depth-3+ nests, non-gzip compressors — known-gap tests); IPv6 / `sendmsg` / DoH/DoT
 - Kernel-level blocking (LSM/KRSI), Kubernetes DaemonSet deployment
 - Dashboard beyond the read-only viewer, cross-session query API, SIEM/metrics layer
 - Multi-agent orchestration, policy config UX, managed platform
@@ -101,6 +106,8 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 **v0.1 (met — tagged `v0.1.0`):** both attack variants demo on STDIO; one-command reproduce; syscall-level evidence receipt.
 
-**v0.2 (met — tagged `v0.2.0` + `v0.2.1`):** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil on Variant A, publishes scoped overhead numbers, persists evidence (SQLite opt-in). Full audit: [`v0.2_summary.md`](v0.2_summary.md).
+**v0.2 (met — tagged `v0.2.0` + `v0.2.1`) and post-v0.2 (this tree):** HTTP/SSE, multi-session, encoding-aware + bounded overlap, Variant B write/sendto/openat/DNS, async evidence, published overhead. Current summary: [`SUMMARY.md`](SUMMARY.md).
+
+**Post-v0.2 (landed):** async evidence emit; Variant B payload-backed `EXFIL` via eBPF `write()`/`sendto()` first-256 overlap (connect/DNS/`openat` without overlap remain `SUSPICIOUS`).
 
 **Leading indicators of traction:** GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.

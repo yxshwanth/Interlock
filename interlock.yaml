@@ -15,6 +15,10 @@ egress_allowlist:
   - 127.0.0.1
   - api.anthropic.com
 
+# sensitive_paths:           # openat pathname prefixes; empty = ignore openat trips
+#   - /etc/shadow
+#   - /var/run/secrets
+#   - /home/
 servers:
   - id: tickets
     command: ./servers/tickets/tickets
@@ -37,7 +41,7 @@ untrusted_origins:
   web_fetches:  true
 
 # evidence:
-#   backend: jsonl          # jsonl (default) | sqlite
+#   backend: jsonl          # jsonl (intentional default) | sqlite (opt-in retention)
 #   path: evidence.jsonl    # or evidence.db for sqlite
 #   max_records: 1000       # sqlite retention cap (0 = unlimited)
 #   backpressure: block     # block (default) | drop — async emit queue

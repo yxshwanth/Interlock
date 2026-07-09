@@ -283,8 +283,10 @@ func (e *Engine) buildEvidence(
 }
 
 // IngestSyscall is called when the eBPF sensor detects a non-allowlisted
-// connect() or a write() correlated to a recent suspicious connect.
-// Connect without payload overlap → SUSPICIOUS (0.60). Write with overlap → EXFIL (0.95).
+// connect/sendto/dns, a write correlated to a recent suspicious connect,
+// or an openat of a configured sensitive path.
+// Payload overlap (write/sendto) → EXFIL (0.95). Otherwise → SUSPICIOUS (0.60).
+// openat never upgrades to EXFIL (open ≠ proven exfil).
 func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -299,15 +301,20 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 
 	if !state.Legs.ExternalSinkInvoked.Lit {
 		detail := fmt.Sprintf("%s to %s:%d by pid %d (%s)", ev.Syscall, ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
-		if ev.Syscall == "write" {
+		switch ev.Syscall {
+		case "write":
 			detail = fmt.Sprintf("write() egress correlated to %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
+		case "openat":
+			detail = fmt.Sprintf("openat sensitive path %s by pid %d (%s)", ev.Path, ev.PID, ev.Comm)
+		case "dns":
+			detail = fmt.Sprintf("dns sendto %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
 		}
 		state.Legs.ExternalSinkInvoked = model.Leg{
 			Lit:    true,
 			Detail: detail,
 		}
-		e.log.Printf("leg lit: external_sink_invoked via eBPF (session=%s, syscall=%s, dest=%s:%d, pid=%d)",
-			sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
+		e.log.Printf("leg lit: external_sink_invoked via eBPF (session=%s, syscall=%s, dest=%s:%d, path=%s, pid=%d)",
+			sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, ev.PID)
 	}
 
 	if !state.Legs.AllLit() {
@@ -317,7 +324,7 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	verdict := model.VerdictSuspicious
 	confidence := 0.6
 	var overlap *model.OverlapHit
-	if ev.PayloadExcerpt != "" {
+	if ev.Syscall != "openat" && ev.PayloadExcerpt != "" {
 		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
 		if overlap != nil {
 			verdict = model.VerdictExfil
@@ -338,14 +345,19 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 		}
 	}
 
-	e.log.Printf("TRIFECTA DETECTED (eBPF): session=%s syscall=%s dest=%s:%d verdict=%s action=%s",
-		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, verdict, action)
+	e.log.Printf("TRIFECTA DETECTED (eBPF): session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
+		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
+
+	reason := fmt.Sprintf("trifecta %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
+	if ev.Syscall == "openat" {
+		reason = fmt.Sprintf("trifecta %s: openat %s by pid %d", verdict, ev.Path, ev.PID)
+	}
 
 	return model.Decision{
 		Allow:    false,
 		Verdict:  verdict,
 		Action:   action,
-		Reason:   fmt.Sprintf("trifecta %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID),
+		Reason:   reason,
 		Evidence: &evidence,
 	}
 }
@@ -382,6 +394,9 @@ func (e *Engine) buildEvidenceVariantB(
 		"dest_port": ev.DestPort,
 		"pid":       ev.PID,
 		"comm":      ev.Comm,
+	}
+	if ev.Path != "" {
+		sinkCall["path"] = ev.Path
 	}
 	if ev.PayloadExcerpt != "" {
 		// Redact known secrets from the excerpt before persistence.

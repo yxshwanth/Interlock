@@ -70,17 +70,18 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 | Benchmark | ns/op | B/op | allocs/op | Notes |
 |-----------|------:|-----:|----------:|-------|
-| `BenchmarkCanonicalEncodings` | 297 | 576 | 7 | Per-secret transform precompute (direct `TaintedVariant` builder) |
-| `BenchmarkCheckOverlap_1Tainted` | 70 | 80 | 1 | Sink scan, 1 tainted value (5 forms) |
-| `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values |
+| `BenchmarkCanonicalEncodings` | ~88µs | ~800KB | 39 | Per-secret transforms including depth-2 nests + gzip_base64 (gzip writer dominates B/op) |
+| `BenchmarkCheckOverlap_1Tainted` | ~1.2µs | 840 | 14 | Sink scan; may reassemble JSON string leaves; more forms than v0.2 five-form set |
+| `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values (pre-expansion snapshot; re-run after form growth) |
 | `BenchmarkCheckOverlap_50Tainted` | 2146 | 80 | 1 | 50 tainted values |
 | `BenchmarkEngine_IngestResult_TaintExtract` | 8163 | 2305 | 38 | Sensitive source result ingest + taint (session legs warmed; tainted reset each iter) |
 | `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence **construction** (in-memory test sink) — rare trip only; production disk I/O is async via `AsyncEvidenceSink` |
 
 ### Reading the engine numbers
 
-- **Overlap check** scales linearly with tainted count; constant 80 B/op — no per-value allocation in the scan.
-- **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks. Registration-path opts cut isolated ingest time; further wins need fewer encodings or cheaper extract.
+- **Overlap check** scales with tainted count × form count; same-call reassembly adds a JSON walk on miss.
+- **CanonicalEncodings** grew after depth-2 + `gzip_base64` — registration cost is higher; gzip allocates a large flate window (expected).
+- **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks.
 - **EvaluateRequest exfil path** is dominated by evidence **construction** on trip. Disk persistence is async (`AsyncEvidenceSink`); further wins require moving `buildEvidence` off the hot path (deferred).
 
 ## Known gaps
