@@ -20,6 +20,8 @@ const (
 	connectMapEvents                             = "events"
 	connectMapPidFilter                          = "pid_filter"
 	connectProgTracepointSyscallsSysEnterConnect = "tracepoint__syscalls__sys_enter_connect"
+	connectProgTracepointSyscallsSysEnterOpenat  = "tracepoint__syscalls__sys_enter_openat"
+	connectProgTracepointSyscallsSysEnterSendto  = "tracepoint__syscalls__sys_enter_sendto"
 	connectProgTracepointSyscallsSysEnterWrite   = "tracepoint__syscalls__sys_enter_write"
 )
 
@@ -66,6 +68,8 @@ type connectSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type connectProgramSpecs struct {
 	TracepointSyscallsSysEnterConnect *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterOpenat  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_openat"`
+	TracepointSyscallsSysEnterSendto  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
 	TracepointSyscallsSysEnterWrite   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_write"`
 }
 
@@ -128,12 +132,16 @@ type connectVariables struct {
 // It can be passed to loadConnectObjects or ebpf.CollectionSpec.LoadAndAssign.
 type connectPrograms struct {
 	TracepointSyscallsSysEnterConnect *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterOpenat  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_openat"`
+	TracepointSyscallsSysEnterSendto  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
 	TracepointSyscallsSysEnterWrite   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_write"`
 }
 
 func (p *connectPrograms) Close() error {
 	return _ConnectClose(
 		p.TracepointSyscallsSysEnterConnect,
+		p.TracepointSyscallsSysEnterOpenat,
+		p.TracepointSyscallsSysEnterSendto,
 		p.TracepointSyscallsSysEnterWrite,
 	)
 }

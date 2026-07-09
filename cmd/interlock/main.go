@@ -73,7 +73,7 @@ func main() {
 			}
 			return eng.IngestSyscall(ev)
 		}
-		s, sErr := interlockebpf.NewSensor(cfg.EgressAllowlist, handler)
+		s, sErr := interlockebpf.NewSensor(cfg.EgressAllowlist, cfg.SensitivePaths, handler)
 		if sErr != nil {
 			logger.Printf("WARNING: eBPF sensor failed to initialize: %v", sErr)
 			logger.Printf("  (this is expected if not running as root)")

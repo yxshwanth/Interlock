@@ -11,16 +11,19 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Variant B `EXFIL` (0.95) when egress excerpt overlaps taint (`where_found: egress payload`); connect-only remains `SUSPICIOUS` (0.60)
 - Deferred kill window (~100 ms) after connect so write can land before SIGKILL
 - Local exfil fixture mode (`INTERLOCK_EXFIL_MODE=local`) + `interlock-ebpf-local.yaml` for payload-backed demo
-- Known-gap skips: truncated excerpt, write-before-connect, UDP `sendto`
+- Known-gap skips: truncated excerpt, write-before-connect, IPv6 sendto, sendmsg, DoH/DoT, cross-call split, depth-3 nests, non-gzip compressors
 - `TestHTTP_ConcurrentLoad_ReadTicket` — multi-session absolute latency p50/p95/p99 (`CONCURRENT_SESSIONS`, CI smoke)
 - eBPF `DropCount` tests: unloaded API (CI), idle after load + ringbuf saturation flood (root-gated)
+- eBPF `sys_enter_sendto` (IPv4, self-contained dest+payload); DNS tagged when dest port is 53
+- eBPF `sys_enter_openat` + config `sensitive_paths` → `SUSPICIOUS` (never EXFIL)
+- Same-call JSON string reassembly; depth-2 nested encodings; `gzip_base64` canonical form
 
 ### Changed
 
-- README / architecture / ROADMAP: Variant B dual claim (tripwire or payload-backed EXFIL)
+- README / architecture / ROADMAP: Variant B dual claim (tripwire or payload-backed EXFIL); sendto/openat/DNS; bounded overlap expansion
 - Taint registration path: `CanonicalEncodings` → `[]TaintedVariant` directly; cheaper `HashValue`; `extractResultText` via `strings.Builder`
-- [`docs/performance.md`](docs/performance.md) — async evidence, ingest opts, concurrent load snapshot, ringbuf test honesty
-
+- [`docs/performance.md`](docs/performance.md) — async evidence, ingest opts, concurrent load snapshot, ringbuf test honesty; encoding form-count growth note
+- Docs: consolidated historical week/v0.2 summaries into [`docs/SUMMARY.md`](docs/SUMMARY.md)
 ## [0.2.1] - 2026-07-05
 
 ### Added
@@ -62,7 +65,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - HTTP demo path: `make demo-http`, `make demo-http-ebpf`, `make demo-quiet-http`, `make demo-quiet-http-ebpf`
 - Example configs: `interlock-http.yaml`, `interlock-http-monitor.yaml`
 - Auth header redaction helpers for HTTP request metadata
-- v0.2 milestone summary: [`docs/v0.2_summary.md`](docs/v0.2_summary.md)
+- Current product summary: [`docs/SUMMARY.md`](docs/SUMMARY.md) (replaces historical week/v0.2 summary docs)
 
 ### Changed
 
