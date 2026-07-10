@@ -81,7 +81,7 @@ cd Interlock
 sudo make demo-quiet-ebpf GO=$(which go)
 ```
 
-Requires **Go 1.25+** and **Linux with BTF** (`ls /sys/kernel/btf/vmlinux` should succeed; Ubuntu 6.x works). The eBPF path does not build or run on macOS/Windows. The demo runs three passes — monitor (breach), block (prevented), eBPF (detected and contained) — and prints a comparison table at the end.
+Requires **Go 1.25+** and **Linux with BTF** (`ls /sys/kernel/btf/vmlinux` should succeed; Ubuntu 6.x works). The eBPF path does not build or run on macOS/Windows. The demo runs three passes — monitor (literal secret breach), block (**gzip_base64** prevented), eBPF (**payload EXFIL** contained) — and prints a comparison table at the end.
 
 No root? The proxy-only demo skips Variant B:
 
@@ -90,7 +90,7 @@ make demo-quiet
 ```
 
 <p align="center">
-  <img src="media/demo-quiet.jpeg" alt="make demo-quiet terminal output — monitor breach, block prevented, results comparison" width="640" />
+  <img src="media/demo-quiet.jpeg" alt="make demo-quiet terminal output — literal breach, gzip_base64 prevented, payload EXFIL contained" width="640" />
 </p>
 
 For verbose protocol output instead of curated narrative beats:
@@ -102,7 +102,7 @@ make demo                             # proxy-only, verbose
 
 ---
 
-> **Why `sudo`?** Variant B loads eBPF probes on the `connect()` and `write()` tracepoints to watch the monitored process subtree. That requires root (`CAP_BPF`). Here's precisely what it does: traces `connect()` and `write()` from PIDs in a filter map, reads destination IP/port and first-256-byte write excerpts, and pushes events to a ring buffer. Nothing else — no network traffic sent, no files modified, no data leaves the box. The probe source is in [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c). Read the thing you're being asked to trust.
+> **Why `sudo`?** Variant B loads eBPF probes on `connect()`, `write()`, and `sendto()` to watch the monitored process subtree. That requires root (`CAP_BPF`). The demo money-shot uses local dial + `write()` payload overlap (`INTERLOCK_EXFIL_MODE=local`). Here's precisely what it does: traces those syscalls from PIDs in a filter map, reads destination IP/port and first-256-byte write excerpts, and pushes events to a ring buffer. Nothing else — no network traffic sent, no files modified, no data leaves the box. The probe source is in [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c). Read the thing you're being asked to trust.
 >
 > **Why `GO=$(which go)`?** `sudo` resets `PATH`, so the Makefile can't find your Go binary unless you pass it explicitly.
 
