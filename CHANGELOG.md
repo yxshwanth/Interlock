@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-10
+
 ### Added
 
 - Async evidence emit: `AsyncEvidenceSink` decorator; `evidence.backpressure: block | drop`, `evidence.queue_size`; `DroppedEvidence` runtime stats
@@ -25,6 +27,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Taint registration path: `CanonicalEncodings` → `[]TaintedVariant` directly; cheaper `HashValue`; `extractResultText` via `strings.Builder`
 - [`docs/performance.md`](docs/performance.md) — async evidence, ingest opts, concurrent load snapshot, ringbuf test honesty; encoding form-count growth note
 - Docs: consolidated historical week/v0.2 summaries into [`docs/SUMMARY.md`](docs/SUMMARY.md)
+
 ## [0.2.1] - 2026-07-05
 
 ### Added
@@ -116,7 +119,8 @@ First release — a working proof that runtime trifecta detection works across t
 - Redaction is pattern-matched — treat runtime event/evidence logs as sensitive artifacts
 - eBPF integration tested locally (root + BTF kernel), not in CI
 
-[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/yxshwanth/Interlock/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yxshwanth/Interlock/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yxshwanth/Interlock/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yxshwanth/Interlock/releases/tag/v0.1.0

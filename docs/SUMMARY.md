@@ -1,7 +1,7 @@
 # Interlock — Current Summary
 
-**Latest tagged release:** [`v0.2.1`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.1) (2026-07-05).  
-**This tree:** post-v0.2 detection + operability work beyond the tag (async evidence, Variant B payload paths, bounded overlap expansion, openat/DNS). See [`CHANGELOG.md`](../CHANGELOG.md) `[Unreleased]`.
+**Latest tagged release:** [`v0.2.2`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.2) (2026-07-10).  
+**This tree:** matches `v0.2.2` — async evidence, Variant B payload paths, bounded overlap expansion, openat/DNS, tool-shadowing. See [`CHANGELOG.md`](../CHANGELOG.md).
 
 Living docs: [`architecture.md`](architecture.md) · [`ROADMAP.md`](ROADMAP.md) · [`task_list.md`](task_list.md) · [`performance.md`](performance.md) · [`project_overview.md`](project_overview.md)
 
@@ -69,7 +69,7 @@ Honest asymmetry: Variant A **prevents**; Variant B **detects + contains** (firs
 
 ## What’s next
 
-**Active backlog:** demand-gated **v0.3** (K8s DaemonSet, LSM/KRSI, daemon/metrics/SIEM, signed releases). Details: [`task_list.md`](task_list.md), [`ROADMAP.md`](ROADMAP.md).
+**Shipped in `v0.2.2`.** Next is demand-gated **v0.3** (K8s DaemonSet, LSM/KRSI, daemon/metrics/SIEM, signed releases). Details: [`task_list.md`](task_list.md), [`ROADMAP.md`](ROADMAP.md).
 
 **Do not start v0.3** until external demand appears for fleet deploy / in-kernel prevent.
 
@@ -95,4 +95,4 @@ eBPF needs root + BTF kernel. CI covers unit/race + DropCount API; live probe lo
 | `v0.1.0` | STDIO proof: trifecta, Variant A block, connect tripwire, JSONL evidence |
 | `v0.2.0` | HTTP/SSE, multi-session, encoding overlap, benches, SQLite opt-in, backpressure |
 | `v0.2.1` | End-to-end HTTP overhead A+C |
-| Unreleased (this tree) | Async evidence; write/sendto/openat/DNS; bounded overlap expansion; concurrent load + ringbuf tests |
+| `v0.2.2` | Async evidence; write/sendto/openat/DNS; bounded overlap expansion; tool-shadowing; concurrent load + ringbuf tests |
