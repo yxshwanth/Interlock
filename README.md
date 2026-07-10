@@ -169,32 +169,26 @@ Full architecture spec: [`docs/architecture.md`](docs/architecture.md)
 
 ## Project status — v0.2
 
-**Latest release:** [`v0.2.1`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.1) — usable-tool milestone complete. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
+**Latest release:** [`v0.2.2`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.2) — usable-tool milestone plus post-v0.2 detection/operability. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
 
-v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operability. Post-v0.2 adds async evidence emit, Variant B payload-backed `EXFIL` (connect-only remains `SUSPICIOUS`), and the performance/operability backlog (concurrent HTTP p99, ringbuf DropCount tests, taint-registration opts). Evidence default is **JSONL by intention**; SQLite is opt-in for retention.
+v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operability. `v0.2.2` adds async evidence emit, Variant B payload-backed `EXFIL` (connect-only remains `SUSPICIOUS`), bounded overlap expansion, tool-shadowing, and the performance/operability backlog (concurrent HTTP p99, ringbuf DropCount tests, taint-registration opts). Evidence default is **JSONL by intention**; SQLite is opt-in for retention.
 
-**Shipped in v0.2:**
+**Shipped in v0.2 / v0.2.2:**
 
 - Streamable HTTP MCP transport (STDIO still default); multi-session concurrency with PID→session attribution
-- Encoding-aware value overlap on Variant A (base64, hex, URL-encoding, reversal)
+- Encoding-aware value overlap on Variant A (base64, hex, URL-encoding, reversal; depth-2 nests, `gzip_base64`, same-call JSON reassembly)
 - Engine microbenchmarks + end-to-end HTTP overhead ([`docs/performance.md`](docs/performance.md), `make bench`, `make bench-http`)
-- JSONL evidence by default (intentional); opt-in SQLite for retention; event log backpressure; eBPF ring-buffer drop counter
+- JSONL evidence by default (intentional); opt-in SQLite for retention; async evidence emit; event log backpressure; eBPF ring-buffer drop counter
 - Trifecta state machine, proxy blocking, eBPF containment; both demo variants; HTML evidence viewer
-
-**Post-v0.2 (this tree):**
-
-- Async evidence emit (`AsyncEvidenceSink`, `evidence.backpressure`) — trip path no longer waits on disk I/O
-- eBPF `write()` first-256-byte capture + ~100 ms deferred kill; Variant B `EXFIL` on payload overlap, `SUSPICIOUS` on connect-only
+- eBPF `write()`/`sendto()` first-256-byte capture + ~100 ms deferred kill; Variant B `EXFIL` on payload overlap, `SUSPICIOUS` on connect-only / DNS / `openat`
 - Local exfil fixture (`INTERLOCK_EXFIL_MODE=local`, `interlock-ebpf-local.yaml`)
-- Concurrent multi-session absolute latency (`TestHTTP_ConcurrentLoad_ReadTicket`, `CONCURRENT_SESSIONS`)
-- eBPF DropCount API in CI; root-gated ringbuf saturation (`TestEBPF_RingbufSaturation_UnderLoad`)
-- Taint-registration mechanical opts (direct `TaintedVariant` builder; isolated `IngestResult` ~8.2 µs / 38 allocs)
+- Concurrent multi-session absolute latency (`TestHTTP_ConcurrentLoad_ReadTicket`); eBPF DropCount CI + root-gated ringbuf saturation
+- Startup tool-shadowing detection (first-owner-wins); mid-session re-registration remains a known gap
 
 **Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
 - **Current state:** [`docs/SUMMARY.md`](docs/SUMMARY.md)
 - **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
-- **Shipped (post-v0.2):** startup tool-shadowing detection (first-owner-wins); mid-session re-registration remains a known gap
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
 

@@ -53,7 +53,7 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 ---
 
-## Core tech stack (v0.2.1)
+## Core tech stack (v0.2.2)
 
 | Layer | Choice |
 |---|---|
@@ -68,20 +68,18 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 ---
 
-## Shipped vs deferred (post-v0.2)
+## Shipped vs deferred (v0.2.2)
 
-**Shipped in v0.2 / v0.2.1:**
+**Shipped in v0.2 / v0.2.1 / v0.2.2:**
 
 - Streamable HTTP MCP transport; multi-session concurrency with PID→session attribution
 - Bounded encoding overlap on Variant A (base64, hex, URL-encoding, reversal; depth-2 nests + `gzip_base64`)
 - Engine microbenchmarks + end-to-end HTTP overhead story ([`performance.md`](performance.md))
 - Opt-in SQLite evidence (JSONL remains intentional default), event log backpressure, eBPF ring-buffer drop counter
-
-**Shipped post-v0.2:**
-
 - Async evidence emit (`AsyncEvidenceSink`; `evidence.backpressure: block | drop`)
 - eBPF `write()` first-256 + ~100 ms deferred kill → Variant B `EXFIL` on payload overlap; connect-only stays `SUSPICIOUS`
 - eBPF `sendto()` (self-contained IPv4 dest + excerpt); DNS via port 53; `openat` + `sensitive_paths` → `SUSPICIOUS`
+- Startup tool-shadowing detection (first-owner-wins)
 
 **Still out of scope** (see [`ROADMAP.md`](ROADMAP.md)):
 
@@ -106,8 +104,6 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 **v0.1 (met — tagged `v0.1.0`):** both attack variants demo on STDIO; one-command reproduce; syscall-level evidence receipt.
 
-**v0.2 (met — tagged `v0.2.0` + `v0.2.1`) and post-v0.2 (this tree):** HTTP/SSE, multi-session, encoding-aware + bounded overlap, Variant B write/sendto/openat/DNS, async evidence, published overhead. Current summary: [`SUMMARY.md`](SUMMARY.md).
-
-**Post-v0.2 (landed):** async evidence emit; Variant B payload-backed `EXFIL` via eBPF `write()`/`sendto()` first-256 overlap (connect/DNS/`openat` without overlap remain `SUSPICIOUS`).
+**v0.2 (met — tagged `v0.2.0` / `v0.2.1` / `v0.2.2`):** HTTP/SSE, multi-session, encoding-aware + bounded overlap, Variant B write/sendto/openat/DNS, async evidence, tool-shadowing, published overhead. Current summary: [`SUMMARY.md`](SUMMARY.md).
 
 **Leading indicators of traction:** GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.
