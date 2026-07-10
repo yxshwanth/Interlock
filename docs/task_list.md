@@ -52,8 +52,8 @@
 
 **Launch polish** (optional, not blocking)
 - `[x]` README money-shot GIF (`media/ReadmeGif.gif`, viewer screenshots, `make demo-quiet` terminal capture)
-- `[ ]` 90-second demo recording
-- `[ ]` Launch post draft
+- `[x]` 90-second demo recording
+- `[x]` Launch post draft
 
 ---
 
@@ -83,7 +83,7 @@ State machine, taint extraction, value overlap, hold-before-forward, evidence JS
 ### Week 3 — eBPF sensor (Variant B) `[x]`
 `connect()` probe, PID filter map, ring buffer, `IngestSyscall`, kill-on-detect, exfil fixture, fused timeline.
 
-### Week 4 — Harden, film, write `[~]`
-Redaction, fail-open docs, one-command demo, CI/CONTRIBUTING done. GIF, demo video, launch post still open.
+### Week 4 — Harden, film, write `[x]`
+Redaction, fail-open docs, one-command demo, CI/CONTRIBUTING done. GIF, demo video, and launch post shipped.
 
 </details>
