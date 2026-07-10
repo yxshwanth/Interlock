@@ -46,7 +46,7 @@ Honest asymmetry: Variant A **prevents**; Variant B **detects + contains** (firs
 - Published overhead: [`performance.md`](performance.md) — engine delta ~0.5 ms sensitive reads / ~0.1 ms sink checks; concurrent HTTP absolute p99 via `TestHTTP_ConcurrentLoad_ReadTicket`
 
 ### Demos
-- `make demo` / `make demo-ebpf` / HTTP variants; local exfil: `INTERLOCK_EXFIL_MODE=local` + `interlock-ebpf-local.yaml`
+- `make demo` / `make demo-ebpf`: Pass 1 literal breach → Pass 2 `gzip_base64` block → Pass 3 payload EXFIL + kill (`INTERLOCK_EXFIL_MODE=local` + `interlock-ebpf-local.yaml`); HTTP variants separate
 
 ---
 
