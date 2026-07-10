@@ -124,6 +124,8 @@ These are design boundaries, not bugs. Naming them first is the point.
 
 6. **Performance numbers include HTTP overhead (v0.2.1+).** [`docs/performance.md`](docs/performance.md) publishes engine-on vs passthrough delta: **~0.5 ms on sensitive reads (typical)** and **~0.1 ms on sink checks** — sub-millisecond. Read-path cost scales with secrets-per-result (snapshot uses a 2-secret fixture). Absolute end-to-end p99 is backend-dominated — do not quote ~12 ms `read_ticket` as Interlock's cost. Concurrent multi-session absolute latency is published via `TestHTTP_ConcurrentLoad_ReadTicket`.
 
+7. **Tool shadowing is checked at registration time only.** Cross-server duplicate tool names use first-owner-wins: the first server keeps the route, the duplicate is omitted from aggregated `tools/list`, and a `tool_shadowing` security audit is emitted. A server that dynamically adds tools mid-session is not re-checked — see `TestToolShadowing_RuntimeReregistration_KnownGap`.
+
 ---
 
 ## How it works
@@ -192,7 +194,7 @@ v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operabilit
 
 - **Current state:** [`docs/SUMMARY.md`](docs/SUMMARY.md)
 - **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
-- **Still open:** tool-shadowing — see [`docs/task_list.md`](docs/task_list.md)
+- **Shipped (post-v0.2):** startup tool-shadowing detection (first-owner-wins); mid-session re-registration remains a known gap
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
 

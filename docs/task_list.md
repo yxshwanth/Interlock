@@ -42,7 +42,7 @@
 - `[x]` Same-call JSON reassembly + depth-2 nests + `gzip_base64` (cross-call / depth-3+ still KnownGap)
 - `[x]` `openat()` sensitive paths (`sensitive_paths` config) — `SUSPICIOUS` only
 - `[x]` DNS via `sendto` port 53 — `SUSPICIOUS` (or EXFIL if payload overlaps)
-- `[ ]` Cross-server **tool-shadowing** detection
+- `[x]` Cross-server **tool-shadowing** detection (startup first-owner-wins; mid-session re-registration known gap)
 
 **v0.3 arc** (demand-gated — see ROADMAP)
 - `[ ]` Kubernetes DaemonSet deployment
