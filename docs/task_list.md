@@ -10,7 +10,7 @@
 
 - `[x]` **v0.1 — Working proof** (2026-07-04). STDIO transport, trifecta engine, Variant A blocking, eBPF `connect()` tripwire, JSONL evidence, HTML viewer. Tagged **`v0.1.0`**.
 - `[x]` **v0.2 — Usable tool** (2026-07-05). HTTP/SSE, multi-session, encoding overlap, benches, SQLite opt-in, backpressure. Tagged **`v0.2.0`** / **`v0.2.1`**.
-- `[x]` **Post-v0.2 — Async evidence, Variant B payload paths, bounded overlap, openat/DNS.** See [`SUMMARY.md`](SUMMARY.md).
+- `[x]` **Post-v0.2 — Async evidence, Variant B payload paths, bounded overlap, openat/DNS, tool-shadowing.** Tagged **`v0.2.2`**. See [`SUMMARY.md`](SUMMARY.md).
 
 **Next:** remaining backlog below — build v0.3 only if demand appears ([`ROADMAP.md`](ROADMAP.md)). Full current state: [`SUMMARY.md`](SUMMARY.md).
 
