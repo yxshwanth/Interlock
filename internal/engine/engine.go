@@ -380,6 +380,26 @@ func (e *Engine) recordUnattributedSyscall(ev model.SyscallEvent, reason string)
 	}
 }
 
+// RecordToolShadowing logs and audit-emits a cross-server tool-name collision.
+// Registration keeps the first owner; this is not a trifecta trip.
+func (e *Engine) RecordToolShadowing(ev model.ShadowEvent) {
+	reason := fmt.Sprintf("tool %q: owner=%s, shadow=%s (session %s) — route unchanged, shadow refused",
+		ev.ToolName, ev.OwnerServerID, ev.ShadowServerID, ev.SessionID)
+	e.log.Printf("[SECURITY] tool shadowing: %s", reason)
+
+	if e.audit == nil {
+		return
+	}
+	rec := model.SecurityAuditEvent{
+		Kind:   "tool_shadowing",
+		Reason: reason,
+		TSWall: time.Now(),
+	}
+	if err := e.audit.EmitSecurityAudit(rec); err != nil {
+		e.log.Printf("[SECURITY] security audit write failed: %v", err)
+	}
+}
+
 func (e *Engine) buildEvidenceVariantB(
 	state *model.SessionState,
 	ev model.SyscallEvent,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yxshwanth/Interlock/internal/config"
+	"github.com/yxshwanth/Interlock/internal/model"
 )
 
 // PIDHooks notifies when child PIDs should be added/removed from eBPF watch.
@@ -23,6 +24,7 @@ type SessionRuntime struct {
 	servers      map[string]*serverConn
 	toolRoute    map[string]*serverConn
 	allTools     []json.RawMessage
+	shadowEvents []model.ShadowEvent
 	pending      map[string]*pendingCall
 	syncWait     map[string]chan []byte
 	mu           sync.Mutex
@@ -96,6 +98,8 @@ func (sm *SessionManager) Create(session *Session) (*SessionRuntime, error) {
 			return nil, err
 		}
 	}
+
+	sm.emitToolShadowing(rt)
 
 	sm.mu.Lock()
 	sm.runtimes[session.ID] = rt
@@ -298,15 +302,46 @@ func (sm *SessionManager) startAndInit(ctx context.Context, rt *SessionRuntime, 
 			Name string `json:"name"`
 		}
 		json.Unmarshal(raw, &td)
-		rt.toolRoute[td.Name] = sc
-		sc.tools = append(sc.tools, raw)
-		rt.allTools = append(rt.allTools, raw)
-		sm.log.Printf("  registered tool %q from server %q (session %s)", td.Name, cfg.ID, rt.Session.ID)
+		if rt.registerTool(td.Name, rt.Session.ID, sc, raw) {
+			sm.log.Printf("  registered tool %q from server %q (session %s)", td.Name, cfg.ID, rt.Session.ID)
+		} else {
+			owner := rt.toolRoute[td.Name].cfg.ID
+			sm.log.Printf("[SECURITY] tool shadowing detected: server %q attempted to register tool %q, already owned by server %q — registration refused, route unchanged",
+				cfg.ID, td.Name, owner)
+		}
 	}
 
 	go sm.proxy.readServerFrames(ctx, rt, sc)
 	go copyStderr(cfg.ID, sc.proc.Stderr)
 	return nil
+}
+
+// registerTool implements first-owner-wins tool routing. On conflict it records
+// a ShadowEvent and leaves the existing route / aggregated tools list unchanged.
+// Returns true if the tool was newly registered.
+func (rt *SessionRuntime) registerTool(name, sessionID string, sc *serverConn, raw json.RawMessage) bool {
+	if existing, conflict := rt.toolRoute[name]; conflict {
+		rt.shadowEvents = append(rt.shadowEvents, model.ShadowEvent{
+			ToolName:       name,
+			OwnerServerID:  existing.cfg.ID,
+			ShadowServerID: sc.cfg.ID,
+			SessionID:      sessionID,
+		})
+		return false
+	}
+	rt.toolRoute[name] = sc
+	sc.tools = append(sc.tools, raw)
+	rt.allTools = append(rt.allTools, raw)
+	return true
+}
+
+func (sm *SessionManager) emitToolShadowing(rt *SessionRuntime) {
+	if len(rt.shadowEvents) == 0 || sm.proxy == nil || sm.proxy.engine == nil {
+		return
+	}
+	for _, ev := range rt.shadowEvents {
+		sm.proxy.engine.RecordToolShadowing(ev)
+	}
 }
 
 func (sm *SessionManager) watchRuntimePIDs(rt *SessionRuntime) {

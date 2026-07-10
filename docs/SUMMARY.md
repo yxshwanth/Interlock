@@ -32,6 +32,7 @@ Honest asymmetry: Variant A **prevents**; Variant B **detects + contains** (firs
 - Depth-2 nests (`base64_hex`, `hex_base64`, `base64_url`, `base64_reversed`) + `gzip_base64`
 - Same-call JSON string reassembly (secret split across fields in one `tools/call`)
 - Evidence records `match_form`; `RedactJSON` scrubs variants
+- Cross-server tool-shadowing at registration: first-owner-wins; `tool_shadowing` audit
 
 ### Detection — Variant B
 - `connect()` (IPv4) tripwire → `SUSPICIOUS` / deferred kill (~100 ms)
@@ -62,13 +63,13 @@ Honest asymmetry: Variant A **prevents**; Variant B **detects + contains** (firs
 | DoH/DoT | DNS = sendto:53 heuristic |
 | Write before suspicious connect | Correlation requires recent connect/sendto |
 | First-packet prevention | LSM/KRSI → v0.3 |
-| Tool-shadowing | Backlog |
+| Tool-shadowing | Startup detection shipped; runtime re-registration not checked |
 
 ---
 
 ## What’s next
 
-**Active backlog:** cross-server tool-shadowing; then demand-gated **v0.3** (K8s DaemonSet, LSM/KRSI, daemon/metrics/SIEM, signed releases). Details: [`task_list.md`](task_list.md), [`ROADMAP.md`](ROADMAP.md).
+**Active backlog:** demand-gated **v0.3** (K8s DaemonSet, LSM/KRSI, daemon/metrics/SIEM, signed releases). Details: [`task_list.md`](task_list.md), [`ROADMAP.md`](ROADMAP.md).
 
 **Do not start v0.3** until external demand appears for fleet deploy / in-kernel prevent.
 
