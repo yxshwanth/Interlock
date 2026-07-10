@@ -105,6 +105,15 @@ type SecurityAuditEvent struct {
 	Syscall SyscallEvent `json:"syscall,omitempty"`
 }
 
+// ShadowEvent records a cross-server tool-name collision at registration time.
+// First owner keeps the route; the shadowing server's duplicate is refused.
+type ShadowEvent struct {
+	ToolName       string `json:"tool_name"`
+	OwnerServerID  string `json:"owner_server_id"`
+	ShadowServerID string `json:"shadow_server_id"`
+	SessionID      string `json:"session_id"`
+}
+
 // ---------------------------------------------------------------------------
 // Engine state: trifecta state machine
 // ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - eBPF `sys_enter_sendto` (IPv4, self-contained dest+payload); DNS tagged when dest port is 53
 - eBPF `sys_enter_openat` + config `sensitive_paths` → `SUSPICIOUS` (never EXFIL)
 - Same-call JSON string reassembly; depth-2 nested encodings; `gzip_base64` canonical form
+- Startup tool-shadowing detection: first-owner-wins routing; duplicate omitted from `tools/list`; `SecurityAuditEvent` kind `tool_shadowing`
 
 ### Changed
 
