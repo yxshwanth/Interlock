@@ -12,7 +12,7 @@
 - `[x]` **v0.2 — Usable tool** (2026-07-05). HTTP/SSE, multi-session, encoding overlap, benches, SQLite opt-in, backpressure. Tagged **`v0.2.0`** / **`v0.2.1`**.
 - `[x]` **Post-v0.2 — Async evidence, Variant B payload paths, bounded overlap, openat/DNS, tool-shadowing.** Tagged **`v0.2.2`**. See [`SUMMARY.md`](SUMMARY.md).
 
-**Next:** remaining backlog below — build v0.3 only if demand appears ([`ROADMAP.md`](ROADMAP.md)). Full current state: [`SUMMARY.md`](SUMMARY.md).
+**Next:** LSM/KRSI (§3) and enterprise readiness (§5). Phase 4 Trust (corpus, threat model, reproducible releases) **met**. Full queue: [`ROADMAP.md`](ROADMAP.md) **Next build order**.
 
 ---
 
@@ -36,19 +36,70 @@
 - `[x]` **Concurrent HTTP load p99** — `TestHTTP_ConcurrentLoad_ReadTicket` (`CONCURRENT_SESSIONS`)
 - `[x]` **eBPF ring-buffer saturation** — CI DropCount API; root-gated `TestEBPF_RingbufSaturation_UnderLoad`
 
-**Detection**
+**Detection** (gap priorities: [`SUMMARY.md`](SUMMARY.md) — usage-gated)
 - `[x]` eBPF `write()` payload capture — Variant B `EXFIL` upgrade (0.95 with payload proof)
 - `[x]` eBPF `sendto()` / UDP payload — self-contained dest+excerpt; dual claim EXFIL/SUSPICIOUS
-- `[x]` Same-call JSON reassembly + depth-2 nests + `gzip_base64` (cross-call / depth-3+ still KnownGap)
+- `[x]` Same-call JSON reassembly + depth-2 nests + `gzip_base64`; cross-call fragment buffer **met**; depth-3 recursive decoder **met**
 - `[x]` `openat()` sensitive paths (`sensitive_paths` config) — `SUSPICIOUS` only
 - `[x]` DNS via `sendto` port 53 — `SUSPICIOUS` (or EXFIL if payload overlaps)
 - `[x]` Cross-server **tool-shadowing** detection (startup first-owner-wins; mid-session re-registration known gap)
 
-**v0.3 arc** (demand-gated — see ROADMAP)
-- `[ ]` Kubernetes DaemonSet deployment
-- `[ ]` LSM/KRSI kernel-level blocking (Variant B prevent, not contain)
-- `[ ]` Daemon mode, hot-reload config, Prometheus metrics, SIEM export
-- `[ ]` Signed releases, threat model, published false-positive corpus
+**v0.3 arc** (active — see ROADMAP). Ship order follows integrator demand: **Phase 3 before Phase 2**.
+
+| Phase | Status | Focus |
+|---|---|---|
+| 1 — Kubernetes DaemonSet | `[x]` | Sensor-only; `--mode=sensor`; PID→pod; `deploy/k8s/`; `make demo-k8s` EXFIL |
+| 3 — Operability | `[x]` | Metrics/health, webhook, OCSF SIEM — **met**; systemd + SIGHUP cleanup shipped |
+| 2 — LSM/KRSI blocking | `[ ]` | After FP remediation — in-kernel prevent; `sendmsg`/`writev`; fail-closed |
+| 4 — Trust | `[x]` | FP corpus + threat model + reproducible release path **met** |
+
+**Phase 3 checklist**
+- `[x]` Slice 1 — Prometheus `/metrics` + `/healthz` (`observability.listen`); DaemonSet probes + `service-metrics.yaml`
+- `[x]` Slice 2 — trip webhook (Slack/PagerDuty/generic) on evidence emit
+- `[x]` Slice 3 — SIEM export (OCSF Detection Finding; CEF deferred)
+- `[x]` Cleanup — systemd units + SIGHUP hot-reload (allowlist/sensitive_paths/alerting/siem; K8s primary)
+
+**Phase 4 checklist**
+- `[x]` Benign/malicious detection corpus (`internal/corpus`) + published report [`docs/fp_corpus.md`](fp_corpus.md); scope write-up [`docs/detection_boundary.md`](detection_boundary.md). `make fp-corpus` regenerates, `go test ./internal/corpus/...` runs it in CI (no root/BTF/kind). Detection rate 100.0% (20/20 EXFIL-tier, non-gap). Operational FP remediated in **Next build order §1** (relevance-aware blocking, content-binding, leg decay).
+- `[x]` Least-privilege audit (documented residual caps) + tamper-resistance threat model — [`threat_model.md`](threat_model.md)
+- `[x]` Signed, reproducible releases — `make release`, `SHA256SUMS`, release workflow; [`reproducible_builds.md`](reproducible_builds.md)
+
+**Next build order** (source of truth detail: [`ROADMAP.md`](ROADMAP.md) — ship §1 before amplifying enforcement)
+
+1. **Resolve operational FP rate** — **done**
+   - `[x]` Relevance-aware blocking — in block mode, `SUSPICIOUS` without value overlap → evidence/alert + `allowed_monitor`; hard `prevented` / `contained_by_kill` only for `EXFIL`
+   - `[x]` Leg decay (TTL and/or N-call) for sticky `sensitive_source_touched` / related legs
+   - `[x]` Content-binding — require relationship between untrusted content and sink payload before `SUSPICIOUS`
+   - `[x]` Re-run corpus; re-pin benign `ExpectTripByDesign`; do not regress 100% EXFIL detection / 0% EXFIL-tier FP
+
+2. **Close "will cover" detection gaps** — **partial**
+   - `[x]` Session-level fragment buffer (cross-call secret splits)
+   - `[x]` Fat taint-map scaling benches (gate for fragment buffer)
+   - `[x]` `PAYLOAD_MAX=1024` + runtime `ebpf.payload_capture_bytes` (default 512); larger/dynamic / `tcp_sendmsg` still longer-term
+   - `[x]` Widen `extractResultText` (bounded string-leaf walk)
+   - `[x]` Bounded recursive decoder on sink path (depth-3), fast-path + bench within ~0.5 ms budget
+   - `[x]` Capabilities-first DaemonSet + PRIVILEGE managed-cluster checklist / EKS+GKE scripts — **EKS validated 2026-07-12** (caps: load+observe; privileged: full EXFIL); GKE still pending `gcloud auth login`
+
+3. **Strengthen Variant B (kernel prevention + coverage)**
+   - `[ ]` LSM/KRSI `socket_connect` → `-EPERM` before packet leaves (throwaway VM first)
+   - `[ ]` `sendmsg` / `writev` probes (scatter-gather evasion)
+
+4. **Sensor↔proxy taint bridge**
+   - `[x]` Unprivileged proxy forwards taint to node sensor (Unix NDJSON socket; `POD_UID` → `k8s:<podUID>`)
+
+5. **Operability & enterprise readiness**
+   - `[ ]` `fail_closed: true` — ringbuf drop / sink failure / panic → block monitored egress
+   - `[ ]` CEF SIEM export alongside OCSF
+   - `[ ]` Cross-session evidence dashboard / query (`session_id`, verdict, `pod_name`)
+
+**Phase 1 checklist**
+- `[x]` Multi-stage Dockerfile (Go + eBPF/BTF runtime) — `make image`
+- `[x]` `deploy/k8s/` DaemonSet, RBAC, ConfigMap; documented securityContext ([`PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md))
+- `[x]` Host/cgroup PID → container → pod attribution (`internal/k8s`) + `pod_context` on evidence
+- `[x]` Node-local watch: register/unregister labeled pod PIDs on schedule/terminate
+- `[x]` kind demo path — `make demo-k8s` / `scripts/demo-k8s.sh`
+- `[x]` Sensor-mode taint seeding via openat + `/proc` read; `make demo-k8s` shows EXFIL 0.95 with redacted payload excerpt
+- `[x]` EKS live pass — AL2023/containerd; caps DaemonSet load+`/healthz`+cross-pod connect/write; privileged DaemonSet seed→EXFIL→kill ([`PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md))
 
 **Launch polish** (optional, not blocking)
 - `[x]` README money-shot GIF (`media/ReadmeGif.gif`, viewer screenshots, `make demo-quiet` terminal capture)
@@ -60,9 +111,11 @@
 ## Risks & open questions (living)
 
 - `[ ]` **eBPF portability** across kernels — mitigate: target BTF Ubuntu 6.x; CO-RE for v0.3.
-- `[ ]` **Value-overlap false pos/neg** — canonical + depth-2 + gzip_base64 + same-call reassembly; cross-call / depth-3+ / other compressors missed (known-gap tests).
+- `[ ]` **Value-overlap false pos/neg** — canonical + depth-2 + gzip_base64 + same-call reassembly + depth-3 decoder; other compressors / depth-4+ missed (known-gap tests).
 - `[x]` **Overhead** — engine + single-session HTTP delta + concurrent multi-session absolute p99 published ([`performance.md`](performance.md)); eBPF DropCount CI + root-gated saturation.
-- `[ ]` **False-positive rate on realistic traffic** — v0.3 trust gate; bad FP rate reshapes detection logic.
+- `[x]` **False-positive rate on realistic traffic** — measured then remediated: [`docs/fp_corpus.md`](fp_corpus.md). Sticky/content-blind legs previously drove a high any-trip rate; ROADMAP §1 (relevance-aware blocking, content-binding, leg decay) closed that. EXFIL-tier FP remains 0.0%.
+- `[x]` **Sticky, content-blind trifecta legs** — fixed in **Next build order §1**. See [`docs/fp_corpus.md`](fp_corpus.md) and [`ROADMAP.md`](ROADMAP.md).
+- `[ ]` **Do not ship LSM hard-prevent on top of today's SUSPICIOUS tripwire** — would amplify operational FPs into host-level denials; §1 before Phase 2.
 
 ---
 

@@ -15,6 +15,11 @@ type EvidenceDropCounter interface {
 	Add(delta uint64)
 }
 
+// EvidenceEmitObserver is notified after a successful evidence persist (async worker).
+type EvidenceEmitObserver interface {
+	OnEvidenceEmitted(rec model.EvidenceRecord)
+}
+
 // AtomicEvidenceDrops adapts sync/atomic.Uint64 to EvidenceDropCounter.
 type AtomicEvidenceDrops struct {
 	N *atomic.Uint64
@@ -38,6 +43,7 @@ type AsyncEvidenceSink struct {
 	backpressure string
 	queue        chan model.EvidenceRecord
 	drops        EvidenceDropCounter
+	observer     EvidenceEmitObserver
 	log          *log.Logger
 	done         chan struct{}
 
@@ -66,6 +72,13 @@ func NewAsyncEvidenceSink(inner EvidenceSink, backpressure string, queueSize int
 	s.wg.Add(1)
 	go s.writeLoop()
 	return s
+}
+
+// SetEmitObserver registers a hook invoked after successful inner.Emit.
+func (s *AsyncEvidenceSink) SetEmitObserver(o EvidenceEmitObserver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observer = o
 }
 
 func (s *AsyncEvidenceSink) writeLoop() {
@@ -98,6 +111,13 @@ func (s *AsyncEvidenceSink) emitInner(rec model.EvidenceRecord) {
 	}
 	if err := s.inner.Emit(rec); err != nil {
 		s.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
+		return
+	}
+	s.mu.Lock()
+	obs := s.observer
+	s.mu.Unlock()
+	if obs != nil {
+		obs.OnEvidenceEmitted(rec)
 	}
 }
 

@@ -92,6 +92,7 @@ func setupBenchEnv(tb testing.TB, opts benchOpts) *benchEnv {
 		store := engine.NewSessionStore()
 		tagger := engine.NewTagger(cfg)
 		eng = engine.NewEngine(store, tagger, cfg.Enforcement, nil)
+		eng.Configure(cfg)
 	}
 
 	p := proxy.New(cfg, evLogger, eng)

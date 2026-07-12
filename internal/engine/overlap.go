@@ -11,13 +11,17 @@ import (
 // CheckOverlap checks whether any tainted value (literal or canonical encoding)
 // appears in the sink call's arguments. Returns the first hit, or nil.
 // If no direct hit, concatenates all JSON string values in the args object
-// (same-call field reassembly) and retries.
+// (same-call field reassembly) and retries. On still-miss, attempts a bounded
+// recursive base64/hex decode (depth ≤ 3) on JSON string leaves.
 func CheckOverlap(tainted []model.TaintedValue, sinkArgs json.RawMessage) *model.OverlapHit {
 	hit := checkOverlapString(tainted, string(sinkArgs))
 	if hit == nil {
 		if reassembled := joinJSONStringValues(sinkArgs); reassembled != "" && reassembled != string(sinkArgs) {
 			hit = checkOverlapString(tainted, reassembled)
 		}
+	}
+	if hit == nil {
+		hit = checkOverlapDecoded(tainted, decodeCandidatesFromArgs(sinkArgs))
 	}
 	if hit != nil {
 		hit.WhereFound = "sink args"
@@ -26,8 +30,12 @@ func CheckOverlap(tainted []model.TaintedValue, sinkArgs json.RawMessage) *model
 }
 
 // CheckOverlapPayload checks egress payload bytes for tainted values.
+// On miss, attempts bounded recursive base64/hex decode (depth ≤ 3).
 func CheckOverlapPayload(tainted []model.TaintedValue, payload string) *model.OverlapHit {
 	hit := checkOverlapString(tainted, payload)
+	if hit == nil {
+		hit = checkOverlapDecoded(tainted, decodeCandidatesFromPayload(payload))
+	}
 	if hit != nil {
 		hit.WhereFound = "egress payload"
 	}

@@ -115,6 +115,26 @@ servers: []
 	}
 }
 
+func TestLoadSensorAllowsNoServers(t *testing.T) {
+	yaml := `
+enforcement: block
+egress_allowlist:
+  - 10.96.0.1
+sensitive_paths:
+  - /etc/shadow
+`
+	cfg, err := LoadSensor(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Servers) != 0 {
+		t.Fatalf("servers=%v", cfg.Servers)
+	}
+	if len(cfg.EgressAllowlist) != 1 {
+		t.Fatalf("allowlist=%v", cfg.EgressAllowlist)
+	}
+}
+
 func TestLoadMissingServerID(t *testing.T) {
 	yaml := `
 servers:
@@ -288,9 +308,186 @@ servers:
 	}
 }
 
+func TestLoadObservabilityConfig(t *testing.T) {
+	yaml := `
+observability:
+  listen: "0.0.0.0:9090"
+  metrics_path: /metrics
+  health_path: /healthz
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Observability.Listen != "0.0.0.0:9090" {
+		t.Errorf("listen = %q", cfg.Observability.Listen)
+	}
+	if cfg.Observability.MetricsPath != "/metrics" {
+		t.Errorf("metrics_path = %q", cfg.Observability.MetricsPath)
+	}
+	if cfg.Observability.HealthPath != "/healthz" {
+		t.Errorf("health_path = %q", cfg.Observability.HealthPath)
+	}
+}
+
+func TestLoadObservabilityDefaults(t *testing.T) {
+	yaml := `
+observability:
+  listen: "127.0.0.1:9090"
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Observability.MetricsPath != "/metrics" || cfg.Observability.HealthPath != "/healthz" {
+		t.Fatalf("defaults: metrics=%q health=%q", cfg.Observability.MetricsPath, cfg.Observability.HealthPath)
+	}
+}
+
+func TestLoadObservabilityInvalidPath(t *testing.T) {
+	yaml := `
+observability:
+  listen: "127.0.0.1:9090"
+  metrics_path: metrics
+servers:
+  - id: s1
+    command: echo
+`
+	_, err := Load(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for metrics_path without leading /")
+	}
+}
+
+func TestLoadAlertingAndSIEMConfig(t *testing.T) {
+	yaml := `
+alerting:
+  webhook:
+    url: https://hooks.example/slack
+    format: slack
+    min_verdict: EXFIL
+    timeout: 3s
+siem:
+  format: ocsf
+  path: /tmp/ocsf.jsonl
+  min_verdict: SUSPICIOUS
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Alerting.Webhook.Enabled() || cfg.Alerting.Webhook.Format != "slack" {
+		t.Fatalf("webhook=%+v", cfg.Alerting.Webhook)
+	}
+	if cfg.Alerting.Webhook.MinVerdict != "EXFIL" {
+		t.Fatalf("min_verdict=%q", cfg.Alerting.Webhook.MinVerdict)
+	}
+	if !cfg.SIEM.Enabled() || cfg.SIEM.Format != "ocsf" {
+		t.Fatalf("siem=%+v", cfg.SIEM)
+	}
+}
+
+func TestLoadPagerDutyRequiresKey(t *testing.T) {
+	yaml := `
+alerting:
+  webhook:
+    url: https://events.pagerduty.com/v2/enqueue
+    format: pagerduty
+servers:
+  - id: s1
+    command: echo
+`
+	_, err := Load(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for missing pagerduty_routing_key")
+	}
+}
+
+func TestLoadSIEMInvalidFormat(t *testing.T) {
+	yaml := `
+siem:
+  format: cef
+  path: /tmp/x
+servers:
+  - id: s1
+    command: echo
+`
+	_, err := Load(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected error for cef")
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path/interlock.yaml")
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestTrifectaDefaults(t *testing.T) {
+	yaml := `
+enforcement: block
+servers:
+  - id: tickets
+    command: ./servers/tickets
+tool_tags:
+  read_ticket: [sensitive_source]
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Trifecta.LegTTLDuration() != 30*time.Minute {
+		t.Errorf("default leg_ttl = %v", cfg.Trifecta.LegTTLDuration())
+	}
+	if cfg.Trifecta.DecayAfterCallsOrDefault() != 32 {
+		t.Errorf("default decay_after_calls = %d", cfg.Trifecta.DecayAfterCallsOrDefault())
+	}
+	if cfg.Trifecta.ContentBindMinLenOrDefault() != 16 {
+		t.Errorf("default content_bind_min_len = %d", cfg.Trifecta.ContentBindMinLenOrDefault())
+	}
+	if cfg.Trifecta.FragmentMaxChunksOrDefault() != 16 {
+		t.Errorf("default fragment_max_chunks = %d", cfg.Trifecta.FragmentMaxChunksOrDefault())
+	}
+	if cfg.Trifecta.FragmentMaxBytesOrDefault() != 64*1024 {
+		t.Errorf("default fragment_max_bytes = %d", cfg.Trifecta.FragmentMaxBytesOrDefault())
+	}
+}
+
+func TestTrifectaCustom(t *testing.T) {
+	yaml := `
+enforcement: block
+trifecta:
+  leg_ttl: 5m
+  decay_after_calls: 8
+  content_bind_min_len: 24
+servers:
+  - id: tickets
+    command: ./servers/tickets
+tool_tags:
+  read_ticket: [sensitive_source]
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Trifecta.LegTTLDuration() != 5*time.Minute {
+		t.Errorf("leg_ttl = %v", cfg.Trifecta.LegTTLDuration())
+	}
+	if cfg.Trifecta.DecayAfterCallsOrDefault() != 8 {
+		t.Errorf("decay_after_calls = %d", cfg.Trifecta.DecayAfterCallsOrDefault())
+	}
+	if cfg.Trifecta.ContentBindMinLenOrDefault() != 24 {
+		t.Errorf("content_bind_min_len = %d", cfg.Trifecta.ContentBindMinLenOrDefault())
 	}
 }

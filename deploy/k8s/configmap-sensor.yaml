@@ -1,0 +1,26 @@
+# Sensor-only DaemonSet config — no MCP servers (proxy runs elsewhere).
+enforcement: block
+egress_allowlist:
+  # Cluster DNS / API — adjust per environment.
+  - 10.96.0.1
+  - 10.96.0.10
+sensitive_paths:
+  - /etc/shadow
+  - /var/run/secrets
+  - /secrets
+# Node-local Unix socket for unprivileged MCP proxy → sensor taint seeding.
+# Mount hostPath /var/run/interlock on both DaemonSet and agent proxy pods.
+taint_bridge:
+  enabled: true
+  socket_path: /var/run/interlock/taint.sock
+evidence:
+  backend: jsonl
+  path: /var/log/interlock/evidence.jsonl
+  backpressure: drop
+  queue_size: 256
+logging:
+  backpressure: drop
+  queue_size: 256
+observability:
+  listen: "0.0.0.0:9090"
+# alerting/siem: configure via Secret; see deploy/k8s/README.md

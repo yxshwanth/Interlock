@@ -11,6 +11,7 @@
 /servers/tickets/tickets
 /servers/messenger/messenger
 /servers/exfil/exfil
+/dist/
 
 # Test binary
 *.test
