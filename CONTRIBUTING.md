@@ -26,13 +26,26 @@ make demo-quiet
 ## Project layout
 
 ```
-cmd/interlock/       Main binary — proxy + engine + optional eBPF sensor
-cmd/demo/            Scripted demo client (three-pass)
-cmd/ebpf-test/       Throwaway eBPF verification tool — not a supported product surface
-internal/            Private packages (Go enforces: not a public API)
-servers/             Toy MCP servers for the demo (tickets, messenger, exfil)
-web/                 Evidence viewer (self-contained HTML)
-docs/                Architecture, roadmap, design notes
+cmd/interlock/         Main binary — proxy + engine + optional eBPF sensor (--mode=proxy|sensor)
+cmd/demo/              Scripted demo client (three-pass)
+cmd/k8s-exfil-demo/    Demo workload for the kind e2e path (make demo-k8s)
+cmd/ebpf-test/         Throwaway eBPF verification tool — not a supported product surface
+internal/              Private packages (Go enforces: not a public API)
+  config/              YAML load/validate/defaults for proxy and sensor modes
+  proxy/                MCP proxy core + internal/proxy/http (Streamable HTTP transport)
+  engine/               Trifecta state machine, taint/overlap, evidence emission
+  ebpf/                 eBPF probes (connect/write/sendto/openat), loader, sensor
+  k8s/                  Node-local pod watcher, cgroup→pod attribution (v0.3 Phase 1)
+  observability/        Prometheus /metrics + /healthz (v0.3 Phase 3)
+  alerting/             Trip webhooks — generic/Slack/PagerDuty (v0.3 Phase 3)
+  siem/                 OCSF Detection Finding export (v0.3 Phase 3)
+  reload/               SIGHUP hot-reload of allowlist/sensitive_paths/alerting/siem (v0.3 Phase 3)
+  model/                Shared types: events, decisions, evidence
+servers/               Toy MCP servers for the demo (tickets, messenger, exfil)
+web/                    Evidence viewer (self-contained HTML)
+deploy/k8s/             DaemonSet (privileged + capabilities), RBAC, ConfigMap, metrics Service, PRIVILEGE.md, eks/ + gke/ helpers
+deploy/systemd/         Bare-metal/VM units + SIGHUP reload notes
+docs/                   Architecture, roadmap, design notes
 ```
 
 ## Tests
@@ -42,7 +55,7 @@ make test              # go test ./... && go vet ./...
 go test -race ./...    # concurrency-sensitive paths should pass clean
 ```
 
-**73 tests** across 8 packages is the current baseline — new features should include tests.
+**178 tests** is the current baseline (`go test ./... -list '.*' | grep -c '^Test'`) — new features should include tests, and this number will drift; don't hardcode it in new docs without re-checking.
 
 CI runs `go build`, `go vet`, and `go test` on every push to `main`. eBPF probe loading requires root and a BTF-enabled kernel; it is tested locally, not in CI.
 
@@ -71,13 +84,29 @@ The repo commits bpf2go-generated files so users can `go build` without installi
 - `internal/ebpf/connect_x86_bpfel.o`
 - `internal/ebpf/bpf/vmlinux.h`
 
-Regenerate after changing `internal/ebpf/bpf/connect.c`:
+Regenerate after changing `internal/ebpf/bpf/connect.c` using the **pinned builder** (recommended):
+
+```bash
+make bpf-generate
+```
+
+Or on a host with clang + libbpf-dev:
 
 ```bash
 go generate ./internal/ebpf/...
 ```
 
-Do not hand-edit generated files.
+Do not hand-edit generated files. Details: [`docs/reproducible_builds.md`](docs/reproducible_builds.md).
+
+## Release builds
+
+```bash
+make release          # dist/interlock_linux_amd64 + SHA256SUMS (CGO_ENABLED=0, -trimpath)
+./dist/interlock_linux_amd64 --version
+```
+
+Pushing a signed `v*` tag uploads those artifacts via `.github/workflows/release.yml`.
+TCB / tamper-resistance: [`docs/threat_model.md`](docs/threat_model.md).
 
 ## Code style
 
@@ -113,11 +142,11 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for v0.2 and v0.3 plans. Open an issue be
 
 High-value areas:
 
-- HTTP/SSE MCP transport (v0.2 Phase 1)
-- Multi-session PID attribution (v0.2 Phase 2)
-- Encoded-exfil taint tracking (v0.2 Phase 3)
-- Additional eBPF probes (`sendto` payload excerpt)
-
+- LSM/KRSI in-kernel blocking (v0.3 Phase 2 — demand-gated, highest risk/reward)
+- Fail-closed, CEF SIEM, cross-session evidence query (ROADMAP Next §5)
+- eBPF gaps: IPv6, `sendmsg`/`writev`, larger payload capture
+- Dataflow taint: depth-4+ nests, non-gzip compressors
+- Phase 4 Trust **met** — [`docs/threat_model.md`](docs/threat_model.md), [`docs/reproducible_builds.md`](docs/reproducible_builds.md), [`docs/fp_corpus.md`](docs/fp_corpus.md)
 ## Security
 
 Report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not open public issues for security bugs.

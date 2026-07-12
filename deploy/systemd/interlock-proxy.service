@@ -1,0 +1,20 @@
+[Unit]
+Description=Interlock MCP proxy
+Documentation=https://github.com/yxshwanth/Interlock
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/interlock/interlock.env
+# Add --ebpf to ExecStart for Variant B on this host.
+ExecStart=/usr/local/bin/interlock --config=/etc/interlock/interlock.yaml --log=/var/log/interlock/events.jsonl --evidence=/var/log/interlock/evidence.jsonl
+Restart=on-failure
+RestartSec=5
+User=root
+KillMode=mixed
+TimeoutStopSec=30
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target

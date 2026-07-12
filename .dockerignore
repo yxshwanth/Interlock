@@ -1,0 +1,9 @@
+.git
+# Do NOT list bare "interlock" — dockerignore matches any path segment and would
+# exclude cmd/interlock/. The root binary is harmless if copied into the build context.
+servers/tickets/tickets
+servers/messenger/messenger
+servers/exfil/exfil
+*.jsonl
+evidence.json
+media/

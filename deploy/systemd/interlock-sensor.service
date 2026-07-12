@@ -1,0 +1,22 @@
+[Unit]
+Description=Interlock sensor (eBPF, no MCP proxy)
+Documentation=https://github.com/yxshwanth/Interlock
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/interlock/interlock.env
+ExecStart=/usr/local/bin/interlock --mode=sensor --ebpf --config=/etc/interlock/interlock.yaml --log=/var/log/interlock/events.jsonl --evidence=/var/log/interlock/evidence.jsonl
+Restart=on-failure
+RestartSec=5
+# eBPF load typically requires root (CAP_BPF / CAP_PERFMON / CAP_SYS_ADMIN).
+# Match DaemonSet privilege expectations; see deploy/k8s/PRIVILEGE.md.
+User=root
+KillMode=mixed
+TimeoutStopSec=30
+# SIGHUP reloads allowlist, sensitive_paths, alerting, and siem without restart.
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target
