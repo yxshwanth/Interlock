@@ -81,19 +81,33 @@ func ParseToolCallParams(params json.RawMessage) (ToolCallParams, error) {
 // Plane 2: kernel (eBPF sensor — Week 3)
 // ---------------------------------------------------------------------------
 
+// PodContext identifies the Kubernetes pod that owns a monitored process.
+// Present on sensor-mode Variant B evidence; omitted for proxy-local demos.
+type PodContext struct {
+	Namespace string `json:"namespace"`
+	PodName   string `json:"pod_name"`
+	PodUID    string `json:"pod_uid"`
+	NodeName  string `json:"node_name,omitempty"`
+}
+
 // SyscallEvent represents a single syscall observation from the eBPF sensor.
 type SyscallEvent struct {
-	TSMono         int64  `json:"ts_mono_ns"`
-	PID            int    `json:"pid"`
-	TID            int    `json:"tid"`
-	Comm           string `json:"comm"`
-	Syscall        string `json:"syscall"` // connect | sendto | write | openat | dns
-	DestIP         string `json:"dest_ip,omitempty"`
-	DestPort       int    `json:"dest_port,omitempty"`
-	Allowlisted    bool   `json:"allowlisted,omitempty"`
-	Path           string `json:"path,omitempty"`
-	PayloadExcerpt string `json:"payload_excerpt,omitempty"`
-	SessionID      string `json:"session_id,omitempty"`
+	TSMono         int64       `json:"ts_mono_ns"`
+	PID            int         `json:"pid"`
+	TID            int         `json:"tid"`
+	Comm           string      `json:"comm"`
+	Syscall        string      `json:"syscall"` // connect | sendto | write | openat | dns
+	DestIP         string      `json:"dest_ip,omitempty"`
+	DestPort       int         `json:"dest_port,omitempty"`
+	Allowlisted    bool        `json:"allowlisted,omitempty"`
+	Path           string      `json:"path,omitempty"`
+	PayloadExcerpt string      `json:"payload_excerpt,omitempty"`
+	SessionID      string      `json:"session_id,omitempty"`
+	CgroupID       uint64      `json:"cgroup_id,omitempty"`
+	Pod            *PodContext `json:"pod_context,omitempty"`
+	// FileContents is set by sensor-mode userspace after openat (via /proc/<pid>/root).
+	// Never persisted on evidence.
+	FileContents string `json:"-"`
 }
 
 // SecurityAuditEvent records a security-relevant observation outside normal
@@ -121,9 +135,11 @@ type ShadowEvent struct {
 // Leg represents one leg of the trifecta: a boolean flag plus the event
 // that lit it and a human-readable detail string.
 type Leg struct {
-	Lit        bool   `json:"lit"`
-	TriggerSeq uint64 `json:"trigger_seq,omitempty"`
-	Detail     string `json:"detail,omitempty"`
+	Lit         bool   `json:"lit"`
+	TriggerSeq  uint64 `json:"trigger_seq,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+	LitAt       int64  `json:"lit_at_ns,omitempty"` // wall time when lit (for TTL decay)
+	EventsAtLit uint64 `json:"-"`                   // session EventCount when lit (for N-call decay)
 }
 
 // TrifectaLegs holds the three legs of the lethal trifecta.
@@ -178,6 +194,15 @@ type SessionState struct {
 	TimelineLabels map[uint64]string `json:"-"`
 	CreatedAt      int64             `json:"created_at_ns"`
 	LastActivity   int64             `json:"last_activity_ns"`
+	// EventCount increments on each ingest/evaluate/syscall observation.
+	// Used with Leg.EventsAtLit for N-call leg decay.
+	EventCount uint64 `json:"-"`
+	// UntrustedExcerpts are bounded raw excerpts from non-sensitive tool
+	// results, used for SUSPICIOUS content-binding (never persisted on evidence).
+	UntrustedExcerpts []string `json:"-"`
+	// FragmentChunks is a rolling FIFO of sensitive-source result text used to
+	// reassemble secrets split across calls. Raw in memory only — never on evidence.
+	FragmentChunks []string `json:"-"`
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +250,7 @@ type EvidenceRecord struct {
 	SinkCall     any            `json:"sink_call"`
 	ValueOverlap *OverlapHit    `json:"value_overlap,omitempty"`
 	Timeline     []TimelineItem `json:"timeline"`
+	Pod          *PodContext    `json:"pod_context,omitempty"`
 }
 
 // OverlapHit records a tainted value found in sink arguments or egress payload.
@@ -232,7 +258,7 @@ type OverlapHit struct {
 	TaintedHash string `json:"tainted_hash"`
 	Preview     string `json:"preview"`
 	WhereFound  string `json:"where_found"` // "sink args" | "egress payload"
-	MatchForm   string `json:"match_form,omitempty"` // literal | base64 | hex | url_encoded | reversed
+	MatchForm   string `json:"match_form,omitempty"` // literal | base64 | hex | … | decoded_base64_hex_…
 }
 
 // TimelineItem is one entry in the evidence timeline.

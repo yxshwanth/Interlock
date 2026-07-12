@@ -24,7 +24,7 @@ The framing is Simon Willison's **"lethal trifecta."** An agent is dangerous whe
 
 Any one leg is safe. All three, live in one session, is how data walks out — usually via **tool poisoning**: an attacker hides instructions inside a tool's *result*, which the agent reads as trusted context. The mid-2025 Supabase/Cursor breach was exactly this shape: privileged data access + attacker-supplied input + an external channel.
 
-Interlock detects that combination **at runtime** and cuts the third leg before data leaves.
+Interlock detects that combination **at runtime** and cuts the third leg before data leaves — when it can **prove** a secret moved (byte/encoding overlap). What that proof covers, and the intentional **semantic / paraphrase** gap, are spelled out in [`detection_boundary.md`](detection_boundary.md).
 
 ---
 
@@ -53,7 +53,7 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 ---
 
-## Core tech stack (v0.2.2)
+## Core tech stack (v0.2.2 + v0.3 Phase 1/3)
 
 | Layer | Choice |
 |---|---|
@@ -65,10 +65,14 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 | Dev platform | **Ubuntu 6.x + BTF** (CO-RE-friendly) |
 | Session state | In-memory per `session_id`; HTTP multi-session via `SessionManager` + `PIDRegistry` |
 | Evidence persistence | **JSONL** intentional default; opt-in **SQLite** with `max_records` retention; async emit (`AsyncEvidenceSink`) |
+| Kubernetes deploy | Sensor-only **DaemonSet** (`--mode=sensor`); `internal/k8s` node-local pod attribution; `deploy/k8s/`; **EKS validated** (caps observe / privileged EXFIL) |
+| Metrics / health | **Prometheus** `client_golang` — `/metrics` + `/healthz` (`internal/observability`) |
+| Alerting / SIEM | Webhooks — generic/Slack/PagerDuty (`internal/alerting`); **OCSF 1.3** Detection Finding export (`internal/siem`) |
+| Config lifecycle | `SIGHUP` hot-reload (`internal/reload`); systemd units for bare-metal (`deploy/systemd/`) |
 
 ---
 
-## Shipped vs deferred (v0.2.2)
+## Shipped vs deferred (v0.2.2 + v0.3 Phase 1/3)
 
 **Shipped in v0.2 / v0.2.1 / v0.2.2:**
 
@@ -81,11 +85,17 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 - eBPF `sendto()` (self-contained IPv4 dest + excerpt); DNS via port 53; `openat` + `sensitive_paths` → `SUSPICIOUS`
 - Startup tool-shadowing detection (first-owner-wins)
 
-**Still out of scope** (see [`ROADMAP.md`](ROADMAP.md)):
+**Shipped — v0.3 Phase 1:** sensor-only Kubernetes DaemonSet (`--mode=sensor`, PID→pod attribution, `deploy/k8s/`, `make demo-k8s`); EKS live pass 2026-07-12 ([`PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md)).
 
-- Full byte-level dataflow taint (cross-call splits, depth-3+ nests, non-gzip compressors — known-gap tests); IPv6 / `sendmsg` / DoH/DoT
-- Kernel-level blocking (LSM/KRSI), Kubernetes DaemonSet deployment
-- Dashboard beyond the read-only viewer, cross-session query API, SIEM/metrics layer
+**Shipped — v0.3 Phase 3:** Operability — Prometheus `/metrics` + `/healthz`, trip webhooks (generic/Slack/PagerDuty), OCSF SIEM export, `SIGHUP` hot-reload, systemd units for bare-metal.
+
+**Deferred / out of scope** (priority tiers: [`SUMMARY.md`](SUMMARY.md); roadmap: [`ROADMAP.md`](ROADMAP.md)):
+
+- Full byte-level dataflow taint (depth-4+ nests, non-gzip compressors — known-gap tests); IPv6 / `sendmsg`/`writev`
+- **DoH/DoT** — out of scope; mitigate with network-layer DNS controls
+- LSM/KRSI in-kernel blocking — Phase 2, demand-gated (not a hard exit gate); signed releases + threat model — Phase 4 **met** ([`threat_model.md`](threat_model.md), [`reproducible_builds.md`](reproducible_builds.md))
+- Sensor↔proxy taint bridge (sensor demo seeds via openat + `/proc`; production bridge still deferred)
+- Dashboard beyond the read-only viewer, cross-session query API
 - Multi-agent orchestration, policy config UX, managed platform
 
 ---
@@ -106,4 +116,6 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 **v0.2 (met — tagged `v0.2.0` / `v0.2.1` / `v0.2.2`):** HTTP/SSE, multi-session, encoding-aware + bounded overlap, Variant B write/sendto/openat/DNS, async evidence, tool-shadowing, published overhead. Current summary: [`SUMMARY.md`](SUMMARY.md).
 
-**Leading indicators of traction:** GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.
+**v0.3 (in progress):** Phase 1 DaemonSet + Phase 3 operability **met**; Phase 4 Trust **met** (FP corpus, threat model, reproducible releases). Phase 2 LSM/KRSI when demand requires in-kernel prevent. Exit state: [`ROADMAP.md`](ROADMAP.md).
+
+**Leading indicators of traction:** integrator outreach (gate cleared), GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.

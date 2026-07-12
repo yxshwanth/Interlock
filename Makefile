@@ -1,7 +1,10 @@
-.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent clean bench bench-http race readme-gif
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent demo-k8s image clean bench bench-http race readme-gif fp-corpus release bpf-generate
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
+IMAGE ?= interlock:dev
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS_RELEASE = -s -w -X main.version=$(VERSION)
 
 build:
 	$(GO) build -o interlock ./cmd/interlock
@@ -9,18 +12,37 @@ build:
 	$(GO) build -o servers/messenger/messenger ./servers/messenger
 	$(GO) build -o servers/exfil/exfil ./servers/exfil
 
+# Reproducible linux/amd64 artifacts + SHA256SUMS under dist/ (see docs/reproducible_builds.md).
+release:
+	chmod +x scripts/release-build.sh
+	VERSION=$(VERSION) ./scripts/release-build.sh
+
+# Regenerate bpf2go artifacts inside the pinned builder (requires Docker).
+bpf-generate:
+	docker build -f deploy/build/Dockerfile.bpf -t interlock-bpf-builder .
+	docker run --rm -v "$(CURDIR):/src" -w /src interlock-bpf-builder \
+		go generate ./internal/ebpf/...
+
+image:
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
+
 test:
 	$(GO) test ./...
 	$(GO) vet ./...
 
 race:
-	CGO_ENABLED=1 $(GO) test -race -short ./internal/proxy/... ./internal/engine/...
+	CGO_ENABLED=1 $(GO) test -race -short ./internal/proxy/... ./internal/engine/... ./internal/k8s/... ./internal/config/...
 
 bench:
 	$(GO) test -bench=. -benchmem -benchtime=50ms ./internal/engine/...
 
 bench-http: build
 	$(GO) test -run='TestHTTP_OverheadReport|TestHTTP_ConcurrentLoad' -bench=BenchmarkHTTP_EngineDelta -benchmem -benchtime=500ms ./internal/proxy/http/...
+
+# Regenerates docs/fp_corpus.md from the internal/corpus benign/malicious
+# corpus. No root/BTF/kind required — drives internal/engine directly.
+fp-corpus: build
+	$(GO) run ./cmd/fp-corpus
 
 # Convert media/ReadmeGif.mp4 → media/ReadmeGif.gif for the README hero (requires ffmpeg).
 readme-gif: media/ReadmeGif.gif
@@ -84,6 +106,11 @@ demo-quiet-http-ebpf: clean-evidence build
 	fi
 	INTERLOCK_DEMO_QUIET=1 INTERLOCK_DEMO_HTTP=1 $(GO) run ./cmd/demo
 
+# Sensor-only DaemonSet on kind (requires docker, kind, kubectl). See deploy/k8s/PRIVILEGE.md.
+demo-k8s:
+	chmod +x scripts/demo-k8s.sh
+	INTERLOCK_IMAGE=$(IMAGE) ./scripts/demo-k8s.sh
+
 clean-evidence:
 	rm -f evidence.jsonl evidence.json events.jsonl
 	rm -f events-monitor.jsonl events-block.jsonl events-ebpf.jsonl
@@ -91,3 +118,4 @@ clean-evidence:
 
 clean: clean-evidence
 	rm -f $(BINARIES)
+	rm -rf dist/

@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: interlock-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: interlock-sensor
+  namespace: interlock-system
+---
+# Cluster-wide list/watch of pods (node filter is client-side via fieldSelector).
+# Scope further with WATCH_NAMESPACE env on the DaemonSet if desired.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: interlock-sensor
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: interlock-sensor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: interlock-sensor
+subjects:
+  - kind: ServiceAccount
+    name: interlock-sensor
+    namespace: interlock-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: interlock-sensor-config
+  namespace: interlock-system
+data:
+  interlock.yaml: |
+    enforcement: block
+    egress_allowlist:
+      - 10.96.0.1
+      - 10.96.0.10
+    sensitive_paths:
+      - /etc/shadow
+      - /var/run/secrets
+      - /secrets
+    taint_bridge:
+      enabled: true
+      socket_path: /var/run/interlock/taint.sock
+    evidence:
+      backend: jsonl
+      path: /var/log/interlock/evidence.jsonl
+      backpressure: drop
+      queue_size: 256
+    logging:
+      backpressure: drop
+      queue_size: 256
+    observability:
+      listen: "0.0.0.0:9090"

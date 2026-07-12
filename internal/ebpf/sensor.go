@@ -26,6 +26,10 @@ const SuspiciousConnectTTL = 5 * time.Second
 // SyscallHandler is called for each relevant syscall event.
 type SyscallHandler func(ev model.SyscallEvent) model.Decision
 
+// KillResolver maps a BPF event (init-ns PID + cgroup) to PIDs killable in
+// the sensor's PID namespace (needed when hostPID ≠ BPF init namespace, e.g. kind).
+type KillResolver func(cgroupID uint64, bpfPID int) []int
+
 type pendingConnect struct {
 	destIP   string
 	destPort int
@@ -40,12 +44,15 @@ type pendingKill struct {
 // Sensor manages the eBPF probe lifecycle.
 type Sensor struct {
 	loader         *Loader
-	allowlist      map[string]bool
-	sensitivePaths []string
 	handler        SyscallHandler
+	killResolver   KillResolver
 	log            *log.Logger
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
+
+	cfgMu          sync.RWMutex
+	allowlist      map[string]bool
+	sensitivePaths []string
 
 	mu              sync.Mutex
 	suspiciousByPID map[int]pendingConnect
@@ -77,6 +84,55 @@ func NewSensor(allowedIPs []string, sensitivePaths []string, handler SyscallHand
 	}, nil
 }
 
+// SetKillResolver sets optional PID translation for SIGKILL targets.
+func (s *Sensor) SetKillResolver(r KillResolver) {
+	s.killResolver = r
+}
+
+// SetPayloadCaptureBytes updates the kernel write/sendto capture window.
+func (s *Sensor) SetPayloadCaptureBytes(n int) error {
+	if s == nil || s.loader == nil {
+		return fmt.Errorf("sensor: loader not ready")
+	}
+	return s.loader.SetPayloadCaptureBytes(n)
+}
+
+// UpdateAllowlist replaces the egress allowlist (SIGHUP hot-reload).
+func (s *Sensor) UpdateAllowlist(allowedIPs []string) {
+	allow := make(map[string]bool, len(allowedIPs))
+	for _, ip := range allowedIPs {
+		allow[ip] = true
+	}
+	s.cfgMu.Lock()
+	s.allowlist = allow
+	s.cfgMu.Unlock()
+	s.log.Printf("allowlist updated: %d entries", len(allow))
+}
+
+// UpdateSensitivePaths replaces openat sensitive path prefixes (SIGHUP hot-reload).
+func (s *Sensor) UpdateSensitivePaths(paths []string) {
+	cp := append([]string(nil), paths...)
+	s.cfgMu.Lock()
+	s.sensitivePaths = cp
+	s.cfgMu.Unlock()
+	s.log.Printf("sensitive_paths updated: %d prefixes", len(cp))
+}
+
+func (s *Sensor) isAllowlisted(destIP string) bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.allowlist[destIP] || s.allowlist[destIPNormalized(destIP)]
+}
+
+func (s *Sensor) matchesSensitivePath(path string) bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	if len(s.sensitivePaths) == 0 || path == "" {
+		return false
+	}
+	return pathMatchesSensitive(path, s.sensitivePaths)
+}
+
 // AddPIDs adds the given PIDs to the BPF filter map.
 func (s *Sensor) AddPIDs(pids ...int) error {
 	for _, pid := range pids {
@@ -101,6 +157,60 @@ func (s *Sensor) RemovePIDs(pids ...int) error {
 		s.mu.Unlock()
 	}
 	return nil
+}
+
+// AddCgroupIDs watches tasks by cgroup v2 ID (cross-PID-namespace safe).
+func (s *Sensor) AddCgroupIDs(ids ...uint64) error {
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if err := s.loader.AddCgroupID(id); err != nil {
+			return err
+		}
+		s.log.Printf("watching cgroup id=%d", id)
+	}
+	return nil
+}
+
+// RemoveCgroupIDs stops watching cgroups.
+func (s *Sensor) RemoveCgroupIDs(ids ...uint64) error {
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if err := s.loader.RemoveCgroupID(id); err != nil {
+			return err
+		}
+		s.log.Printf("stopped watching cgroup id=%d", id)
+	}
+	return nil
+}
+
+func (s *Sensor) containPIDs(cgroupID uint64, bpfPID int, reason string) {
+	targets := []int{bpfPID}
+	if s.killResolver != nil {
+		if resolved := s.killResolver(cgroupID, bpfPID); len(resolved) > 0 {
+			targets = resolved
+		}
+	}
+	for _, pid := range targets {
+		s.log.Printf("KILL-ON-DETECT: SIGKILL pid %d (%s)", pid, reason)
+		s.cancelDeferredKill(pid)
+		KillProcess(pid)
+	}
+}
+
+func (s *Sensor) scheduleContain(cgroupID uint64, bpfPID int, comm string) {
+	targets := []int{bpfPID}
+	if s.killResolver != nil {
+		if resolved := s.killResolver(cgroupID, bpfPID); len(resolved) > 0 {
+			targets = resolved
+		}
+	}
+	for _, pid := range targets {
+		s.scheduleKill(pid, comm)
+	}
 }
 
 // Start begins the event-reading goroutine. Call Stop() to shut down.
@@ -160,7 +270,10 @@ func (s *Sensor) readLoop() {
 
 func (s *Sensor) handleConnect(raw *ConnectEvent) {
 	destIP := raw.DestIPString()
-	if s.allowlist[destIP] || s.allowlist[destIPNormalized(destIP)] {
+	s.log.Printf("connect observed: pid=%d cgroup=%d comm=%s dest=%s:%d",
+		int(raw.PID), raw.CgroupID, raw.CommString(), destIP, int(raw.DestPort))
+	if s.isAllowlisted(destIP) {
+		s.log.Printf("connect allowlisted, ignoring: dest=%s", destIP)
 		return
 	}
 
@@ -182,6 +295,7 @@ func (s *Sensor) handleConnect(raw *ConnectEvent) {
 		DestIP:      destIP,
 		DestPort:    int(raw.DestPort),
 		Allowlisted: false,
+		CgroupID:    raw.CgroupID,
 	}
 
 	s.log.Printf("connect detected: pid=%d comm=%s dest=%s:%d",
@@ -192,7 +306,7 @@ func (s *Sensor) handleConnect(raw *ConnectEvent) {
 	}
 	decision := s.handler(ev)
 	if decision.Action == model.ActionContained {
-		s.scheduleKill(pid, raw.CommString())
+		s.scheduleContain(raw.CgroupID, pid, raw.CommString())
 	}
 }
 
@@ -219,6 +333,7 @@ func (s *Sensor) handleWrite(raw *WriteEvent) {
 		DestPort:       pc.destPort,
 		Allowlisted:    false,
 		PayloadExcerpt: string(raw.Payload),
+		CgroupID:       raw.CgroupID,
 	}
 
 	s.log.Printf("write payload captured: pid=%d fd=%d len=%d (correlated to %s:%d)",
@@ -229,15 +344,13 @@ func (s *Sensor) handleWrite(raw *WriteEvent) {
 	}
 	decision := s.handler(ev)
 	if decision.Action == model.ActionContained {
-		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s) after write", ev.PID, ev.Comm)
-		s.cancelDeferredKill(pid)
-		KillProcess(pid)
+		s.containPIDs(raw.CgroupID, pid, "after write")
 	}
 }
 
 func (s *Sensor) handleSendto(raw *SendtoEvent) {
 	destIP := raw.DestIPString()
-	if s.allowlist[destIP] || s.allowlist[destIPNormalized(destIP)] {
+	if s.isAllowlisted(destIP) {
 		return
 	}
 
@@ -268,6 +381,7 @@ func (s *Sensor) handleSendto(raw *SendtoEvent) {
 		DestPort:       port,
 		Allowlisted:    false,
 		PayloadExcerpt: string(raw.Payload),
+		CgroupID:       raw.CgroupID,
 	}
 
 	s.log.Printf("%s detected: pid=%d dest=%s:%d len=%d",
@@ -281,20 +395,14 @@ func (s *Sensor) handleSendto(raw *SendtoEvent) {
 		return
 	}
 	if decision.Verdict == model.VerdictExfil {
-		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s) after %s EXFIL", ev.PID, ev.Comm, syscallName)
-		s.cancelDeferredKill(pid)
-		KillProcess(pid)
+		s.containPIDs(raw.CgroupID, pid, "after "+syscallName+" EXFIL")
 		return
 	}
-	// SUSPICIOUS: defer so a later write can still upgrade to EXFIL.
-	s.scheduleKill(pid, raw.CommString())
+	// Only EXFIL hard-contains; SUSPICIOUS is detected_only (no deferred kill).
 }
 
 func (s *Sensor) handleOpenat(raw *OpenatEvent) {
-	if len(s.sensitivePaths) == 0 || raw.Path == "" {
-		return
-	}
-	if !pathMatchesSensitive(raw.Path, s.sensitivePaths) {
+	if !s.matchesSensitivePath(raw.Path) {
 		return
 	}
 
@@ -306,6 +414,7 @@ func (s *Sensor) handleOpenat(raw *OpenatEvent) {
 		Syscall:     "openat",
 		Path:        raw.Path,
 		Allowlisted: false,
+		CgroupID:    raw.CgroupID,
 	}
 
 	s.log.Printf("openat sensitive path: pid=%d path=%s", ev.PID, ev.Path)
@@ -315,10 +424,7 @@ func (s *Sensor) handleOpenat(raw *OpenatEvent) {
 	}
 	decision := s.handler(ev)
 	if decision.Action == model.ActionContained {
-		// open ≠ proven exfil — still contain when policy trips SUSPICIOUS.
-		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (%s) after openat", ev.PID, ev.Comm)
-		s.cancelDeferredKill(ev.PID)
-		KillProcess(ev.PID)
+		s.containPIDs(raw.CgroupID, int(raw.PID), "after openat")
 	}
 }
 
@@ -391,6 +497,11 @@ func (s *Sensor) Stop() {
 // DropCount returns kernel-side ring buffer reserve failures.
 func (s *Sensor) DropCount() (uint64, error) {
 	return s.loader.DropCount()
+}
+
+// FilterCounts returns watched PID and cgroup filter map sizes.
+func (s *Sensor) FilterCounts() (pids, cgroups int, err error) {
+	return s.loader.FilterCounts()
 }
 
 func destIPNormalized(ip string) string {

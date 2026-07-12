@@ -11,7 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yxshwanth/Interlock/internal/config"
 	"github.com/yxshwanth/Interlock/internal/model"
+)
+
+const (
+	maxUntrustedExcerpts = 8
+	maxUntrustedExcerpt  = 4096
+	defaultFragmentChunks = 16
+	defaultFragmentBytes  = 64 * 1024
 )
 
 // EvidenceSink receives evidence records when a trifecta trips.
@@ -24,6 +32,10 @@ type SecurityAuditSink interface {
 	EmitSecurityAudit(rec model.SecurityAuditEvent) error
 }
 
+// TaintForwarder is invoked (outside Engine.mu) after new tainted values are
+// registered from a sensitive_source result. Used by the proxy→sensor bridge.
+type TaintForwarder func(tvs []model.TaintedValue)
+
 // Engine is the core trifecta policy engine. It evaluates tool calls against
 // the three-leg state machine and emits verdicts + evidence.
 type Engine struct {
@@ -34,10 +46,20 @@ type Engine struct {
 	mode   string // "block" or "monitor"
 	log    *log.Logger
 	mu     sync.Mutex
+
+	untrustedToolResults bool
+	legTTL               time.Duration
+	decayAfterCalls      int
+	contentBindMinLen    int
+	fragmentMaxChunks    int
+	fragmentMaxBytes     int
+
+	taintForwarder TaintForwarder
 }
 
 // NewEngine creates an engine wired to the given store, tagger, and mode.
 // sink may be nil (evidence is logged to stderr only).
+// Call Configure to apply trifecta / untrusted_origins settings from config.
 func NewEngine(store *SessionStore, tagger *Tagger, mode string, sink EvidenceSink) *Engine {
 	if mode == "" {
 		mode = "block"
@@ -54,12 +76,34 @@ func NewEngine(store *SessionStore, tagger *Tagger, mode string, sink EvidenceSi
 	}
 
 	return &Engine{
-		store:  store,
-		tagger: tagger,
-		sink:   sink,
-		mode:   mode,
-		log:    l,
+		store:                store,
+		tagger:               tagger,
+		sink:                 sink,
+		mode:                 mode,
+		log:                  l,
+		untrustedToolResults: true,
+		legTTL:               30 * time.Minute,
+		decayAfterCalls:      32,
+		contentBindMinLen:    defaultContentBindMinLen,
+		fragmentMaxChunks:    defaultFragmentChunks,
+		fragmentMaxBytes:     defaultFragmentBytes,
 	}
+}
+
+// Configure applies trifecta decay / content-bind knobs and untrusted_origins
+// from cfg. Safe to call after NewEngine; nil cfg is a no-op.
+func (e *Engine) Configure(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.untrustedToolResults = cfg.UntrustedOrigins.ToolResults
+	e.legTTL = cfg.Trifecta.LegTTLDuration()
+	e.decayAfterCalls = cfg.Trifecta.DecayAfterCallsOrDefault()
+	e.contentBindMinLen = cfg.Trifecta.ContentBindMinLenOrDefault()
+	e.fragmentMaxChunks = cfg.Trifecta.FragmentMaxChunksOrDefault()
+	e.fragmentMaxBytes = cfg.Trifecta.FragmentMaxBytesOrDefault()
 }
 
 // SetSecurityAuditSink wires optional JSONL audit logging for security events.
@@ -67,40 +111,102 @@ func (e *Engine) SetSecurityAuditSink(s SecurityAuditSink) {
 	e.audit = s
 }
 
+// SetTaintForwarder wires an optional callback for newly registered taints
+// (proxy→sensor Unix-socket bridge). Invoked outside Engine.mu.
+func (e *Engine) SetTaintForwarder(fn TaintForwarder) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.taintForwarder = fn
+}
+
+// RegisterRemoteTaint seeds taint into a sensor session (typically k8s:<podUID>)
+// from the node-local taint bridge. Lights sensitive_source_touched like openat seed.
+func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
+	if sessionID == "" || tv.Value == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	state := e.store.GetOrCreate(sessionID)
+	e.touchSession(state, tv.Seq, "remote taint registered")
+
+	if !state.Legs.SensitiveSourceTouched.Lit {
+		now := time.Now().UnixNano()
+		detail := "proxy taint bridge"
+		if tv.Source != "" {
+			detail = "proxy taint bridge: " + tv.Source
+		}
+		state.Legs.SensitiveSourceTouched = model.Leg{
+			Lit:         true,
+			Detail:      detail,
+			LitAt:       now,
+			EventsAtLit: state.EventCount,
+		}
+	}
+
+	if len(tv.Variants) == 0 {
+		tv.Variants = CanonicalEncodings(tv.Value)
+	}
+	if tv.Hash == "" {
+		tv.Hash = HashValue(tv.Value)
+	}
+	if tv.Preview == "" {
+		tv.Preview = MaskValue(tv.Value)
+	}
+	if tv.RegisteredAt == 0 {
+		tv.RegisteredAt = time.Now().UnixNano()
+	}
+
+	added := appendUniqueTainted(state.Tainted, tv)
+	if len(added) == 0 {
+		return
+	}
+	state.Tainted = append(state.Tainted, added...)
+	e.log.Printf("remote taint: session=%s source=%s registered %d value(s)",
+		sessionID, tv.Source, len(added))
+}
+
 // IngestResult is called when a server→agent result arrives. It updates
 // the trifecta legs (sensitive_source_touched, untrusted_content_present),
 // extracts tainted values from sensitive sources, and appends to the timeline.
 func (e *Engine) IngestResult(ev model.InterceptedEvent) {
+	var toForward []model.TaintedValue
+	var forwarder TaintForwarder
+
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	state := e.store.GetOrCreate(ev.SessionID)
-	if state.TimelineLabels == nil {
-		state.TimelineLabels = make(map[uint64]string)
-	}
-	state.LastActivity = time.Now().UnixNano()
-	state.Timeline = append(state.Timeline, ev.Seq)
+	e.touchSession(state, ev.Seq, fmt.Sprintf("%s result returned", ev.ToolName))
 
-	if ev.ToolName != "" {
-		state.TimelineLabels[ev.Seq] = fmt.Sprintf("%s result returned", ev.ToolName)
-	}
-
-	if e.tagger.IsSensitiveSource(ev.ToolName, ev.ServerID) {
+	sensitive := e.tagger != nil && e.tagger.IsSensitiveSource(ev.ToolName, ev.ServerID)
+	if sensitive {
 		e.setSensitiveSourceTouched(state, ev)
 
 		resultText := extractResultText(ev.Result)
 		if resultText != "" {
 			source := fmt.Sprintf("%s/%s", ev.ServerID, ev.ToolName)
+			e.appendFragment(state, resultText)
 			tainted := ExtractTaintedValues(resultText, source, ev.Seq)
-			state.Tainted = append(state.Tainted, tainted...)
-			if len(tainted) > 0 {
+			// Reassembly-first: secrets split across calls may only match
+			// secretPatterns on the concatenated fragment buffer.
+			reassembled := ExtractTaintedValues(strings.Join(state.FragmentChunks, ""), source, ev.Seq)
+			added := appendUniqueTainted(state.Tainted, append(tainted, reassembled...)...)
+			state.Tainted = append(state.Tainted, added...)
+			if len(added) > 0 {
 				e.log.Printf("extracted %d tainted value(s) from %s (session=%s)",
-					len(tainted), source, ev.SessionID)
+					len(added), source, ev.SessionID)
+				toForward = added
+				forwarder = e.taintForwarder
 			}
 		}
+	} else if e.untrustedToolResults {
+		e.setUntrustedContentPresent(state, ev, extractResultText(ev.Result))
 	}
+	e.mu.Unlock()
 
-	e.setUntrustedContentPresent(state, ev)
+	if len(toForward) > 0 && forwarder != nil {
+		forwarder(toForward)
+	}
 }
 
 // EvaluateRequest is called before forwarding a tools/call. It checks whether
@@ -110,45 +216,21 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 	defer e.mu.Unlock()
 
 	state := e.store.GetOrCreate(ev.SessionID)
-	if state.TimelineLabels == nil {
-		state.TimelineLabels = make(map[uint64]string)
-	}
-	state.LastActivity = time.Now().UnixNano()
-	state.Timeline = append(state.Timeline, ev.Seq)
+	e.touchSession(state, ev.Seq, fmt.Sprintf("%s called", ev.ToolName))
 
-	if ev.ToolName != "" {
-		state.TimelineLabels[ev.Seq] = fmt.Sprintf("%s called", ev.ToolName)
-	}
-
-	if !e.tagger.IsExternalSink(ev.ToolName, ev.ServerID) {
+	if e.tagger == nil || !e.tagger.IsExternalSink(ev.ToolName, ev.ServerID) {
 		return model.Decision{Allow: true}
 	}
 
 	e.setExternalSinkInvoked(state, ev)
 
-	if !state.Legs.AllLit() {
+	overlap := CheckOverlap(state.Tainted, ev.ToolArgs)
+	verdict, confidence, ok := e.classifyTrip(state, overlap, string(ev.ToolArgs))
+	if !ok {
 		return model.Decision{Allow: true}
 	}
 
-	overlap := CheckOverlap(state.Tainted, ev.ToolArgs)
-
-	var verdict model.Verdict
-	var confidence float64
-	if overlap != nil {
-		verdict = model.VerdictExfil
-		confidence = 0.95
-	} else {
-		verdict = model.VerdictSuspicious
-		confidence = 0.6
-	}
-
-	allow := e.mode == "monitor"
-	var action model.Action
-	if allow {
-		action = model.ActionAllowed
-	} else {
-		action = model.ActionPrevented
-	}
+	allow, action := e.proxyAction(verdict)
 
 	state.Status = model.Tripped
 	state.Confidence = confidence
@@ -187,40 +269,161 @@ func (e *Engine) RedactEvent(ev *model.InterceptedEvent) {
 	ev.Result = RedactJSON(ev.Result, state.Tainted)
 }
 
+func (e *Engine) touchSession(state *model.SessionState, seq uint64, label string) {
+	now := time.Now().UnixNano()
+	if state.TimelineLabels == nil {
+		state.TimelineLabels = make(map[uint64]string)
+	}
+	state.LastActivity = now
+	state.EventCount++
+	e.pruneLegs(state, now)
+	if seq != 0 {
+		state.Timeline = append(state.Timeline, seq)
+		if label != "" && !strings.HasPrefix(label, " ") {
+			state.TimelineLabels[seq] = label
+		}
+	}
+}
+
+func (e *Engine) pruneLegs(state *model.SessionState, now int64) {
+	e.maybeDecayLeg(&state.Legs.SensitiveSourceTouched, state, now, "sensitive_source_touched")
+	if e.maybeDecayLeg(&state.Legs.UntrustedContentPresent, state, now, "untrusted_content_present") {
+		state.UntrustedExcerpts = nil
+	}
+	e.maybeDecayLeg(&state.Legs.ExternalSinkInvoked, state, now, "external_sink_invoked")
+}
+
+func (e *Engine) maybeDecayLeg(leg *model.Leg, state *model.SessionState, now int64, name string) bool {
+	if !leg.Lit {
+		return false
+	}
+	ttlExpired := e.legTTL > 0 && leg.LitAt > 0 && now-leg.LitAt >= e.legTTL.Nanoseconds()
+	callsExpired := e.decayAfterCalls > 0 && leg.EventsAtLit > 0 &&
+		state.EventCount > leg.EventsAtLit &&
+		int(state.EventCount-leg.EventsAtLit) >= e.decayAfterCalls
+	if !ttlExpired && !callsExpired {
+		return false
+	}
+	*leg = model.Leg{}
+	e.log.Printf("leg decayed: %s (session=%s, ttl=%v, calls=%v)", name, state.SessionID, ttlExpired, callsExpired)
+	return true
+}
+
+// RewindLegClocks moves LitAt on all lit legs backward by d so the next
+// touchSession/pruneLegs observes TTL expiry. Used by the FP corpus to
+// exercise trifecta.leg_ttl without sleeping wall-clock time.
+func (e *Engine) RewindLegClocks(sessionID string, d time.Duration) {
+	if d <= 0 || sessionID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	state := e.store.Get(sessionID)
+	if state == nil {
+		return
+	}
+	delta := d.Nanoseconds()
+	rewind := func(leg *model.Leg) {
+		if leg.Lit && leg.LitAt > delta {
+			leg.LitAt -= delta
+		} else if leg.Lit {
+			leg.LitAt = 1
+		}
+	}
+	rewind(&state.Legs.SensitiveSourceTouched)
+	rewind(&state.Legs.UntrustedContentPresent)
+	rewind(&state.Legs.ExternalSinkInvoked)
+}
+
+// classifyTrip decides EXFIL / SUSPICIOUS / no-trip.
+// EXFIL: value overlap against registered taint (sensitive leg may have decayed).
+// SUSPICIOUS: AllLit + content bind between untrusted excerpts and sink.
+func (e *Engine) classifyTrip(state *model.SessionState, overlap *model.OverlapHit, sinkPayload string) (model.Verdict, float64, bool) {
+	if overlap != nil {
+		return model.VerdictExfil, 0.95, true
+	}
+	if state.Legs.AllLit() && CheckContentBind(state.UntrustedExcerpts, sinkPayload, e.contentBindMinLen) {
+		return model.VerdictSuspicious, 0.6, true
+	}
+	return "", 0, false
+}
+
+func (e *Engine) proxyAction(verdict model.Verdict) (allow bool, action model.Action) {
+	if verdict == model.VerdictExfil {
+		if e.mode == "monitor" {
+			return true, model.ActionAllowed
+		}
+		return false, model.ActionPrevented
+	}
+	// SUSPICIOUS: evidence/alert only — never hard-block.
+	return true, model.ActionAllowed
+}
+
+func (e *Engine) variantBAction(verdict model.Verdict) (allow bool, action model.Action) {
+	if verdict == model.VerdictExfil {
+		return false, model.ActionContained
+	}
+	return true, model.ActionDetectedOnly
+}
+
 func (e *Engine) setSensitiveSourceTouched(state *model.SessionState, ev model.InterceptedEvent) {
 	if state.Legs.SensitiveSourceTouched.Lit {
 		return
 	}
+	now := time.Now().UnixNano()
 	state.Legs.SensitiveSourceTouched = model.Leg{
-		Lit:        true,
-		TriggerSeq: ev.Seq,
-		Detail:     fmt.Sprintf("tool %s returned sensitive data", ev.ToolName),
+		Lit:         true,
+		TriggerSeq:  ev.Seq,
+		Detail:      fmt.Sprintf("tool %s returned sensitive data", ev.ToolName),
+		LitAt:       now,
+		EventsAtLit: state.EventCount,
 	}
 	e.log.Printf("leg lit: sensitive_source_touched (session=%s, tool=%s, seq=%d)",
 		ev.SessionID, ev.ToolName, ev.Seq)
 }
 
-func (e *Engine) setUntrustedContentPresent(state *model.SessionState, ev model.InterceptedEvent) {
+func (e *Engine) setUntrustedContentPresent(state *model.SessionState, ev model.InterceptedEvent, excerpt string) {
+	e.storeUntrustedExcerpt(state, excerpt)
 	if state.Legs.UntrustedContentPresent.Lit {
 		return
 	}
+	now := time.Now().UnixNano()
 	state.Legs.UntrustedContentPresent = model.Leg{
-		Lit:        true,
-		TriggerSeq: ev.Seq,
-		Detail:     fmt.Sprintf("untrusted content from tool result (tool=%s)", ev.ToolName),
+		Lit:         true,
+		TriggerSeq:  ev.Seq,
+		Detail:      fmt.Sprintf("untrusted content from tool result (tool=%s)", ev.ToolName),
+		LitAt:       now,
+		EventsAtLit: state.EventCount,
 	}
 	e.log.Printf("leg lit: untrusted_content_present (session=%s, seq=%d)",
 		ev.SessionID, ev.Seq)
+}
+
+func (e *Engine) storeUntrustedExcerpt(state *model.SessionState, excerpt string) {
+	excerpt = strings.TrimSpace(excerpt)
+	if excerpt == "" {
+		return
+	}
+	if len(excerpt) > maxUntrustedExcerpt {
+		excerpt = excerpt[:maxUntrustedExcerpt]
+	}
+	if len(state.UntrustedExcerpts) >= maxUntrustedExcerpts {
+		state.UntrustedExcerpts = state.UntrustedExcerpts[1:]
+	}
+	state.UntrustedExcerpts = append(state.UntrustedExcerpts, excerpt)
 }
 
 func (e *Engine) setExternalSinkInvoked(state *model.SessionState, ev model.InterceptedEvent) {
 	if state.Legs.ExternalSinkInvoked.Lit {
 		return
 	}
+	now := time.Now().UnixNano()
 	state.Legs.ExternalSinkInvoked = model.Leg{
-		Lit:        true,
-		TriggerSeq: ev.Seq,
-		Detail:     fmt.Sprintf("external sink tool %s invoked", ev.ToolName),
+		Lit:         true,
+		TriggerSeq:  ev.Seq,
+		Detail:      fmt.Sprintf("external sink tool %s invoked", ev.ToolName),
+		LitAt:       now,
+		EventsAtLit: state.EventCount,
 	}
 	e.log.Printf("leg lit: external_sink_invoked (session=%s, tool=%s, seq=%d)",
 		ev.SessionID, ev.ToolName, ev.Seq)
@@ -285,8 +488,8 @@ func (e *Engine) buildEvidence(
 // IngestSyscall is called when the eBPF sensor detects a non-allowlisted
 // connect/sendto/dns, a write correlated to a recent suspicious connect,
 // or an openat of a configured sensitive path.
-// Payload overlap (write/sendto) → EXFIL (0.95). Otherwise → SUSPICIOUS (0.60).
-// openat never upgrades to EXFIL (open ≠ proven exfil).
+// Payload overlap (write/sendto) → EXFIL (0.95). SUSPICIOUS requires AllLit
+// plus content-bind and never hard-kills. openat never upgrades to EXFIL.
 func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -298,6 +501,7 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	}
 
 	state := e.store.GetOrCreate(sessionID)
+	e.touchSession(state, 0, "")
 
 	if !state.Legs.ExternalSinkInvoked.Lit {
 		detail := fmt.Sprintf("%s to %s:%d by pid %d (%s)", ev.Syscall, ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
@@ -309,30 +513,28 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 		case "dns":
 			detail = fmt.Sprintf("dns sendto %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
 		}
+		now := time.Now().UnixNano()
 		state.Legs.ExternalSinkInvoked = model.Leg{
-			Lit:    true,
-			Detail: detail,
+			Lit:         true,
+			Detail:      detail,
+			LitAt:       now,
+			EventsAtLit: state.EventCount,
 		}
 		e.log.Printf("leg lit: external_sink_invoked via eBPF (session=%s, syscall=%s, dest=%s:%d, path=%s, pid=%d)",
 			sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, ev.PID)
 	}
 
-	if !state.Legs.AllLit() {
-		return model.Decision{Allow: true}
-	}
-
-	verdict := model.VerdictSuspicious
-	confidence := 0.6
 	var overlap *model.OverlapHit
 	if ev.Syscall != "openat" && ev.PayloadExcerpt != "" {
 		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
-		if overlap != nil {
-			verdict = model.VerdictExfil
-			confidence = 0.95
-		}
 	}
 
-	action := model.ActionContained
+	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt)
+	if !ok {
+		return model.Decision{Allow: true}
+	}
+
+	allow, action := e.variantBAction(verdict)
 
 	state.Status = model.Tripped
 	state.Confidence = confidence
@@ -354,12 +556,121 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	}
 
 	return model.Decision{
-		Allow:    false,
+		Allow:    allow,
 		Verdict:  verdict,
 		Action:   action,
 		Reason:   reason,
 		Evidence: &evidence,
 	}
+}
+
+// IngestSyscallSensor handles Variant B events in sensor-only mode (no MCP proxy).
+//
+// openat on a sensitive path: seed taint + light sensitive_source_touched, do not
+// contain (opening a file is not exfiltration).
+// connect/write/sendto/dns: EXFIL on payload overlap; SUSPICIOUS only with AllLit
+// + content-bind (soft detected_only).
+func (e *Engine) IngestSyscallSensor(ev model.SyscallEvent) model.Decision {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		e.recordUnattributedSyscall(ev, "no pod attribution for monitored PID")
+		return model.Decision{Allow: true}
+	}
+
+	state := e.store.GetOrCreate(sessionID)
+	e.touchSession(state, 0, "")
+
+	if ev.Syscall == "openat" {
+		e.seedSensorSensitiveOpen(state, ev)
+		return model.Decision{Allow: true}
+	}
+
+	detail := fmt.Sprintf("%s to %s:%d by pid %d (%s)", ev.Syscall, ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
+	switch ev.Syscall {
+	case "write":
+		detail = fmt.Sprintf("write() egress correlated to %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
+	case "dns":
+		detail = fmt.Sprintf("dns sendto %s:%d by pid %d (%s)", ev.DestIP, ev.DestPort, ev.PID, ev.Comm)
+	}
+	now := time.Now().UnixNano()
+	state.Legs.ExternalSinkInvoked = model.Leg{
+		Lit:         true,
+		Detail:      detail,
+		LitAt:       now,
+		EventsAtLit: state.EventCount,
+	}
+
+	var overlap *model.OverlapHit
+	if ev.PayloadExcerpt != "" {
+		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
+	}
+
+	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt)
+	if !ok {
+		return model.Decision{Allow: true}
+	}
+
+	allow, action := e.variantBAction(verdict)
+	state.Status = model.Tripped
+	state.Confidence = confidence
+
+	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence, overlap)
+
+	if e.sink != nil {
+		if err := e.sink.Emit(evidence); err != nil {
+			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
+		}
+	}
+
+	e.log.Printf("SENSOR TRIP: session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
+		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
+
+	reason := fmt.Sprintf("sensor %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
+	return model.Decision{
+		Allow:    allow,
+		Verdict:  verdict,
+		Action:   action,
+		Reason:   reason,
+		Evidence: &evidence,
+	}
+}
+
+// seedSensorSensitiveOpen lights sensitive_source_touched and registers taint from
+// FileContents (read by the DaemonSet via /proc/<pid>/root). Does not trip or kill.
+// Does not light untrusted_content_present — sensor-only has no MCP untrusted plane.
+func (e *Engine) seedSensorSensitiveOpen(state *model.SessionState, ev model.SyscallEvent) {
+	path := ev.Path
+	if path == "" {
+		path = "(unknown)"
+	}
+	if !state.Legs.SensitiveSourceTouched.Lit {
+		now := time.Now().UnixNano()
+		state.Legs.SensitiveSourceTouched = model.Leg{
+			Lit:         true,
+			Detail:      fmt.Sprintf("openat sensitive path %s by pid %d (%s)", path, ev.PID, ev.Comm),
+			LitAt:       now,
+			EventsAtLit: state.EventCount,
+		}
+	}
+
+	if ev.FileContents == "" {
+		e.log.Printf("sensor seed: openat %s session=%s — no file contents (taint not registered)", path, state.SessionID)
+		return
+	}
+
+	source := "sensor:" + path
+	tainted := ExtractTaintedValues(ev.FileContents, source, 0)
+	if len(tainted) == 0 {
+		e.log.Printf("sensor seed: openat %s session=%s — no secret patterns in file (%d bytes)",
+			path, state.SessionID, len(ev.FileContents))
+		return
+	}
+	state.Tainted = append(state.Tainted, tainted...)
+	e.log.Printf("sensor seed: openat %s session=%s — registered %d tainted value(s)",
+		path, state.SessionID, len(tainted))
 }
 
 func (e *Engine) recordUnattributedSyscall(ev model.SyscallEvent, reason string) {
@@ -468,34 +779,146 @@ func (e *Engine) buildEvidenceVariantB(
 		SinkCall:     sinkCall,
 		ValueOverlap: overlap,
 		Timeline:     timeline,
+		Pod:          ev.Pod,
 	}
 }
 
-// extractResultText pulls the text content from a tools/call MCP result.
-// MCP results are structured as {content: [{type: "text", text: "..."}]}.
+// appendFragment pushes a sensitive-source text chunk into the session's
+// rolling FIFO, enforcing chunk-count and total-byte caps.
+func (e *Engine) appendFragment(state *model.SessionState, chunk string) {
+	if chunk == "" {
+		return
+	}
+	// extractResultText appends a trailing newline per text leaf; strip so
+	// abutting paginated halves reassemble into a contiguous secret.
+	chunk = strings.TrimRight(chunk, "\n")
+	if chunk == "" {
+		return
+	}
+	maxChunks := e.fragmentMaxChunks
+	if maxChunks <= 0 {
+		maxChunks = defaultFragmentChunks
+	}
+	maxBytes := e.fragmentMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultFragmentBytes
+	}
+	// Oversized single chunk: keep a trailing window so reassembly can still
+	// catch a secret that straddles the end of a large page.
+	if len(chunk) > maxBytes {
+		chunk = chunk[len(chunk)-maxBytes:]
+	}
+	state.FragmentChunks = append(state.FragmentChunks, chunk)
+	for len(state.FragmentChunks) > maxChunks || fragmentBytes(state.FragmentChunks) > maxBytes {
+		if len(state.FragmentChunks) == 0 {
+			break
+		}
+		state.FragmentChunks = state.FragmentChunks[1:]
+	}
+}
+
+func fragmentBytes(chunks []string) int {
+	n := 0
+	for _, c := range chunks {
+		n += len(c)
+	}
+	return n
+}
+
+// appendUniqueTainted returns values in candidates whose Hash is not already
+// present in existing (or earlier in candidates).
+func appendUniqueTainted(existing []model.TaintedValue, candidates ...model.TaintedValue) []model.TaintedValue {
+	seen := make(map[string]struct{}, len(existing)+len(candidates))
+	for _, tv := range existing {
+		seen[tv.Hash] = struct{}{}
+	}
+	var out []model.TaintedValue
+	for _, tv := range candidates {
+		if _, ok := seen[tv.Hash]; ok {
+			continue
+		}
+		seen[tv.Hash] = struct{}{}
+		out = append(out, tv)
+	}
+	return out
+}
+
+// extractResultText pulls text from a tools/call MCP result for taint scanning.
+// It prefers content[].type=="text", then walks other JSON string leaves
+// (bounded depth/bytes) so secrets outside the MCP text envelope are still found.
 func extractResultText(result json.RawMessage) string {
 	if len(result) == 0 {
 		return ""
 	}
 
+	var b strings.Builder
 	var structured struct {
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
 	}
-	if json.Unmarshal(result, &structured) == nil && len(structured.Content) > 0 {
-		var b strings.Builder
+	if json.Unmarshal(result, &structured) == nil {
 		for _, c := range structured.Content {
 			if c.Type == "text" {
 				b.WriteString(c.Text)
 				b.WriteByte('\n')
 			}
 		}
+	}
+
+	var root any
+	if err := json.Unmarshal(result, &root); err != nil {
 		if b.Len() > 0 {
 			return b.String()
 		}
+		return string(result)
 	}
+	// Skip the MCP "content" array — already handled above — so paginated
+	// content[].text halves stay abutting in the fragment buffer.
+	walkJSONStrings(root, 0, &b, true)
+	if b.Len() == 0 {
+		return string(result)
+	}
+	return b.String()
+}
 
-	return string(result)
+const (
+	maxExtractDepth = 8
+	maxExtractBytes = 64 * 1024
+)
+
+func walkJSONStrings(v any, depth int, b *strings.Builder, skipContentKey bool) {
+	if depth > maxExtractDepth || b.Len() >= maxExtractBytes {
+		return
+	}
+	switch x := v.(type) {
+	case string:
+		if b.Len()+len(x)+1 > maxExtractBytes {
+			remain := maxExtractBytes - b.Len()
+			if remain > 0 {
+				b.WriteString(x[:remain])
+			}
+			return
+		}
+		b.WriteString(x)
+		b.WriteByte('\n')
+	case []any:
+		for _, el := range x {
+			walkJSONStrings(el, depth+1, b, false)
+			if b.Len() >= maxExtractBytes {
+				return
+			}
+		}
+	case map[string]any:
+		for k, el := range x {
+			if skipContentKey && k == "content" {
+				continue
+			}
+			walkJSONStrings(el, depth+1, b, false)
+			if b.Len() >= maxExtractBytes {
+				return
+			}
+		}
+	}
 }

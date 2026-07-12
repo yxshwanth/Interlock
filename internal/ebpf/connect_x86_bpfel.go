@@ -16,8 +16,10 @@ import (
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
+	connectMapCgroupFilter                       = "cgroup_filter"
 	connectMapDropCount                          = "drop_count"
 	connectMapEvents                             = "events"
+	connectMapPayloadCap                         = "payload_cap"
 	connectMapPidFilter                          = "pid_filter"
 	connectProgTracepointSyscallsSysEnterConnect = "tracepoint__syscalls__sys_enter_connect"
 	connectProgTracepointSyscallsSysEnterOpenat  = "tracepoint__syscalls__sys_enter_openat"
@@ -77,9 +79,11 @@ type connectProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type connectMapSpecs struct {
-	DropCount *ebpf.MapSpec `ebpf:"drop_count"`
-	Events    *ebpf.MapSpec `ebpf:"events"`
-	PidFilter *ebpf.MapSpec `ebpf:"pid_filter"`
+	CgroupFilter *ebpf.MapSpec `ebpf:"cgroup_filter"`
+	DropCount    *ebpf.MapSpec `ebpf:"drop_count"`
+	Events       *ebpf.MapSpec `ebpf:"events"`
+	PayloadCap   *ebpf.MapSpec `ebpf:"payload_cap"`
+	PidFilter    *ebpf.MapSpec `ebpf:"pid_filter"`
 }
 
 // connectVariableSpecs contains global variables before they are loaded into the kernel.
@@ -108,15 +112,19 @@ func (o *connectObjects) Close() error {
 //
 // It can be passed to loadConnectObjects or ebpf.CollectionSpec.LoadAndAssign.
 type connectMaps struct {
-	DropCount *ebpf.Map `ebpf:"drop_count"`
-	Events    *ebpf.Map `ebpf:"events"`
-	PidFilter *ebpf.Map `ebpf:"pid_filter"`
+	CgroupFilter *ebpf.Map `ebpf:"cgroup_filter"`
+	DropCount    *ebpf.Map `ebpf:"drop_count"`
+	Events       *ebpf.Map `ebpf:"events"`
+	PayloadCap   *ebpf.Map `ebpf:"payload_cap"`
+	PidFilter    *ebpf.Map `ebpf:"pid_filter"`
 }
 
 func (m *connectMaps) Close() error {
 	return _ConnectClose(
+		m.CgroupFilter,
 		m.DropCount,
 		m.Events,
+		m.PayloadCap,
 		m.PidFilter,
 	)
 }
