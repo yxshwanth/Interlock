@@ -149,6 +149,18 @@ func TestFrameWriterSingle(t *testing.T) {
 	}
 }
 
+func TestFrameWriterRejectsOversized(t *testing.T) {
+	var buf bytes.Buffer
+	fw := NewFrameWriter(&buf)
+	huge := make([]byte, maxFrameSize+1)
+	if err := fw.WriteFrame(huge); err == nil {
+		t.Fatal("expected error for oversized frame")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("wrote %d bytes on reject", buf.Len())
+	}
+}
+
 func TestFrameWriterMultiple(t *testing.T) {
 	var buf bytes.Buffer
 	fw := NewFrameWriter(&buf)
