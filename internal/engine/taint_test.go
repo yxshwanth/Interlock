@@ -199,3 +199,26 @@ func TestRedactJSON_EncodedVariants(t *testing.T) {
 		t.Fatalf("expected masked preview in output, got %s", redacted)
 	}
 }
+
+func TestExtractResultText_NestedMetadataSecret(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	raw := json.RawMessage(`{
+		"content":[{"type":"text","text":"benign ticket body only"}],
+		"metadata":{"debug":{"maybe_token":"` + secret + `"}}
+	}`)
+	text := extractResultText(raw)
+	values := ExtractTaintedValues(text, "tickets/read_ticket", 1)
+	if len(values) == 0 {
+		t.Fatal("expected nested metadata secret to be found after extractResultText walks string leaves")
+	}
+	found := false
+	for _, v := range values {
+		if v.Value == secret {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected secret among tainted values, got %+v", values)
+	}
+}

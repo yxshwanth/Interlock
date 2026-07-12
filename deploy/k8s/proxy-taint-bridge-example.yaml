@@ -1,0 +1,42 @@
+# Example: MCP proxy sidecar / agent pod wiring for the taint bridge.
+# The node-local sensor DaemonSet listens on hostPath /var/run/interlock/taint.sock.
+# Mount the same directory and set POD_UID via the Downward API.
+#
+# Proxy config snippet (in the proxy's interlock.yaml):
+#   taint_bridge:
+#     enabled: true
+#     socket_path: /var/run/interlock/taint.sock
+#
+apiVersion: v1
+kind: Pod
+metadata:
+  name: interlock-proxy-bridge-example
+  labels:
+    interlock.io/monitor: "true"
+spec:
+  containers:
+    - name: mcp-proxy
+      image: interlock:dev
+      imagePullPolicy: IfNotPresent
+      args:
+        - --mode=proxy
+        - --config=/etc/interlock/interlock.yaml
+      env:
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+      volumeMounts:
+        - name: taint-bridge
+          mountPath: /var/run/interlock
+        - name: proxy-config
+          mountPath: /etc/interlock
+          readOnly: true
+  volumes:
+    - name: taint-bridge
+      hostPath:
+        path: /var/run/interlock
+        type: DirectoryOrCreate
+    - name: proxy-config
+      configMap:
+        name: interlock-proxy-config # operator-provided; must enable taint_bridge

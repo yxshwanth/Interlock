@@ -4,6 +4,40 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-12
+
+**v0.3 — Adoptable Product** (Phase 1 DaemonSet, Phase 3 operability, Phase 4 Trust). Phase 2 LSM/KRSI remains demand-gated.
+
+### Added
+
+- **Phase 4 Trust:** TCB threat model ([`docs/threat_model.md`](docs/threat_model.md)) — ringbuf blind, bridge poison, fail-open DoS, PID misattribution, evidence tamper, unmonitored bypass channels; least-privilege residual caps documented
+- **Reproducible releases:** `make release` / `scripts/release-build.sh` (`CGO_ENABLED=0`, `-trimpath`, version ldflags); `SHA256SUMS` (+ BPF embed hashes); `.github/workflows/release.yml` on `v*` tags; pinned BPF builder [`deploy/build/Dockerfile.bpf`](deploy/build/Dockerfile.bpf); [`docs/reproducible_builds.md`](docs/reproducible_builds.md); `--version` on `interlock`
+- **Monitor mode pilot brief:** [`docs/pilot.md`](docs/pilot.md)
+- **Bounded recursive decoder (depth-3)** — on `CheckOverlap` / `CheckOverlapPayload` miss, unwrap base64 then hex up to depth 3; `match_form` `decoded_*`; closes triple-nest KnownGap; benches gate ~100 µs miss-path at 1K and ~0.3 ms decode-miss
+- **Sensor↔proxy taint bridge** — Unix NDJSON socket (`internal/bridge`, `taint_bridge` config); proxy forwards newly extracted taints keyed by `POD_UID`; sensor `RegisterRemoteTaint` into `k8s:<podUID>`; hostPath `/var/run/interlock` on DaemonSets + [`proxy-taint-bridge-example.yaml`](deploy/k8s/proxy-taint-bridge-example.yaml)
+- **Sensor-only Kubernetes DaemonSet** (`--mode=sensor`): runs the eBPF sensor without the MCP proxy; `internal/k8s` node-local pod watcher (`interlock.io/monitor=true`), cgroup→container ID→pod attribution via `/proc/<pid>/cgroup`, `PodAttribution` registry
+- `IngestSyscallSensor`: sensitive `openat` seeds taint via `/proc/<pid>/root` file read (no kill); egress `connect`/`write`/`sendto`/DNS contain; payload overlap → `EXFIL` 0.95 with redacted `payload_excerpt`
+- Evidence `pod_context` (`namespace`, `pod_name`, `pod_uid`, `node_name`); sensor session ID is `k8s:<podUID>`
+- `cmd/k8s-exfil-demo` — demo workload that reads a mounted secret then exfiltrates it over TCP, for the kind e2e path
+- Multi-stage `Dockerfile` + `make image`; `deploy/k8s/` — `daemonset.yaml`, `daemonset-capabilities.yaml`, `rbac.yaml`, `configmap-sensor.yaml`, `service-metrics.yaml`, `demo/exfil-pod.yaml`; [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md) privilege surface doc
+- `deploy/k8s/eks/` — EKS cluster/IAM/push/validate/delete helpers; `push-image-kaniko.sh` for builds without local Docker
+- `make demo-k8s` / `scripts/demo-k8s.sh` — kind load, apply, labeled exfil pod, asserts EXFIL evidence with redacted excerpt
+- **Prometheus metrics + health** (`internal/observability`): `/metrics` (`promhttp`) and `/healthz` on `observability.listen`; detection and drop counters; DaemonSet liveness/readiness probes + headless `interlock-sensor-metrics` Service
+- **Trip webhooks** (`internal/alerting`): async HTTP delivery on evidence emit — `generic` | `slack` | `pagerduty`
+- **OCSF SIEM export** (`internal/siem`): Detection Finding (`class_uid=2004`) to JSONL and/or HTTP; CEF deferred
+- `engine.MultiEmitObserver` — fan-out of evidence emits to metrics, webhook, and SIEM observers
+- **SIGHUP hot-reload** (`internal/reload`): live-swaps `egress_allowlist`, `sensitive_paths`, `alerting.webhook`, `siem`
+- **systemd units** (`deploy/systemd/`): sensor + proxy units with `ExecReload` → `SIGHUP`
+- **FP / detection corpus** (`internal/corpus`, `docs/fp_corpus.md`, `docs/detection_boundary.md`) — EXFIL-tier detection 100% on non-gap malicious; EXFIL-tier FP 0.0%
+- Config: `observability.*`, `alerting.webhook.*`, `siem.*`, `taint_bridge.*`
+
+### Changed
+
+- `cmd/interlock/main.go`: sensor and proxy modes wire reload runtime, optional taint bridge, `--version`
+- `internal/ebpf/sensor.go`: allowlist / sensitive_paths behind `RWMutex` for hot-reload
+- Docs: ROADMAP Phase 1/3/4 Trust marked shipped; Phase 2 LSM/KRSI demand-gated
+- Docs: EKS validation (2026-07-12) recorded in [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md)
+
 ## [0.2.2] - 2026-07-10
 
 ### Added
@@ -119,7 +153,8 @@ First release — a working proof that runtime trifecta detection works across t
 - Redaction is pattern-matched — treat runtime event/evidence logs as sensitive artifacts
 - eBPF integration tested locally (root + BTF kernel), not in CI
 
-[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yxshwanth/Interlock/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/yxshwanth/Interlock/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yxshwanth/Interlock/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yxshwanth/Interlock/compare/v0.1.0...v0.2.0

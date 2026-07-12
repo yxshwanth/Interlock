@@ -1,0 +1,35 @@
+# Sensor-only config sample (no MCP servers).
+# Used by the Kubernetes DaemonSet; also valid for local --mode=sensor.
+enforcement: block
+egress_allowlist:
+  - 10.96.0.1
+  - 10.96.0.10
+sensitive_paths:
+  - /etc/shadow
+  - /var/run/secrets
+  - /secrets
+taint_bridge:
+  enabled: false
+  # socket_path: /var/run/interlock/taint.sock
+evidence:
+  backend: jsonl
+  path: evidence-sensor.jsonl
+  backpressure: drop
+  queue_size: 256
+logging:
+  backpressure: drop
+  queue_size: 256
+observability:
+  listen: "0.0.0.0:9090"
+# alerting / siem disabled by default — set URLs via Secret, not committed config.
+# alerting:
+#   webhook:
+#     url: https://hooks.slack.com/services/...
+#     format: slack          # generic | slack | pagerduty
+#     min_verdict: SUSPICIOUS
+#     # pagerduty_routing_key: required when format=pagerduty
+# siem:
+#   format: ocsf
+#   path: /var/log/interlock/ocsf.jsonl
+#   # url: https://siem.example/ingest
+#   min_verdict: SUSPICIOUS

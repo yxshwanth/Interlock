@@ -14,8 +14,10 @@ const (
 	eventTypeWrite   uint32 = 2
 	eventTypeSendto  uint32 = 3
 	eventTypeOpenat  uint32 = 4
-	payloadMax              = 256
+	payloadMax              = 1024
 	pathMax                 = 128
+	defaultPayloadCapture   = 512
+	minPayloadCapture       = 64
 )
 
 // ConnectEvent is the Go-side representation of a BPF connect event.
@@ -25,18 +27,20 @@ type ConnectEvent struct {
 	TID      uint32
 	DestIP   uint32
 	DestPort uint16
+	CgroupID uint64
 	Comm     [16]byte
 }
 
 // WriteEvent is the Go-side representation of a BPF write payload excerpt.
 type WriteEvent struct {
-	TSNs    uint64
-	PID     uint32
-	TID     uint32
-	FD      uint32
-	Len     uint32
-	Comm    [16]byte
-	Payload []byte
+	TSNs     uint64
+	PID      uint32
+	TID      uint32
+	FD       uint32
+	Len      uint32
+	CgroupID uint64
+	Comm     [16]byte
+	Payload  []byte
 }
 
 // SendtoEvent is a self-contained sendto (dest + payload excerpt).
@@ -47,18 +51,20 @@ type SendtoEvent struct {
 	DestIP   uint32
 	DestPort uint16
 	Len      uint32
+	CgroupID uint64
 	Comm     [16]byte
 	Payload  []byte
 }
 
 // OpenatEvent is a pathname open from a monitored PID.
 type OpenatEvent struct {
-	TSNs    uint64
-	PID     uint32
-	TID     uint32
-	PathLen uint32
-	Comm    [16]byte
-	Path    string
+	TSNs     uint64
+	PID      uint32
+	TID      uint32
+	PathLen  uint32
+	CgroupID uint64
+	Comm     [16]byte
+	Path     string
 }
 
 // DestIPString returns the destination IP as a dotted-quad string.
@@ -156,14 +162,58 @@ func NewLoader() (*Loader, error) {
 		return nil, fmt.Errorf("creating ring buffer reader: %w", err)
 	}
 
-	return &Loader{
+	l := &Loader{
 		objs:        objs,
 		connectLink: tpConnect,
 		writeLink:   tpWrite,
 		sendtoLink:  tpSendto,
 		openatLink:  tpOpenat,
 		reader:      rd,
-	}, nil
+	}
+	if err := l.SetPayloadCaptureBytes(defaultPayloadCapture); err != nil {
+		l.Close()
+		return nil, fmt.Errorf("setting default payload capture: %w", err)
+	}
+	return l, nil
+}
+
+// PayloadMax is the compiled-in capture ceiling (event struct size).
+func PayloadMax() int { return payloadMax }
+
+// ClampPayloadCaptureBytes clamps n into [minPayloadCapture, payloadMax].
+func ClampPayloadCaptureBytes(n int) int {
+	if n < minPayloadCapture {
+		return minPayloadCapture
+	}
+	if n > payloadMax {
+		return payloadMax
+	}
+	return n
+}
+
+// SetPayloadCaptureBytes updates the BPF payload_cap map (how many bytes of
+// each write/sendto are copied). Cannot exceed the compiled PAYLOAD_MAX.
+func (l *Loader) SetPayloadCaptureBytes(n int) error {
+	if l.objs.PayloadCap == nil {
+		return fmt.Errorf("payload_cap map not loaded")
+	}
+	n = ClampPayloadCaptureBytes(n)
+	var key uint32
+	val := uint32(n)
+	return l.objs.PayloadCap.Put(key, val)
+}
+
+// PayloadCaptureBytes reads the current runtime capture cap from the BPF map.
+func (l *Loader) PayloadCaptureBytes() (int, error) {
+	if l.objs.PayloadCap == nil {
+		return 0, fmt.Errorf("payload_cap map not loaded")
+	}
+	var key uint32
+	var val uint32
+	if err := l.objs.PayloadCap.Lookup(&key, &val); err != nil {
+		return 0, err
+	}
+	return int(val), nil
 }
 
 // UpdatePIDSet replaces the BPF PID filter map contents with the given PIDs.
@@ -202,6 +252,23 @@ func (l *Loader) RemovePID(pid int) error {
 	return l.objs.PidFilter.Delete(k)
 }
 
+// AddCgroupID watches all tasks in a cgroup v2 (by inode / bpf cgroup id).
+func (l *Loader) AddCgroupID(id uint64) error {
+	if l.objs.CgroupFilter == nil {
+		return fmt.Errorf("cgroup_filter map not loaded")
+	}
+	var val uint8 = 1
+	return l.objs.CgroupFilter.Put(id, val)
+}
+
+// RemoveCgroupID stops watching a cgroup.
+func (l *Loader) RemoveCgroupID(id uint64) error {
+	if l.objs.CgroupFilter == nil {
+		return nil
+	}
+	return l.objs.CgroupFilter.Delete(id)
+}
+
 // DropCount returns kernel-side ring buffer reserve failures.
 func (l *Loader) DropCount() (uint64, error) {
 	if l.objs.DropCount == nil {
@@ -213,6 +280,33 @@ func (l *Loader) DropCount() (uint64, error) {
 		return 0, err
 	}
 	return val, nil
+}
+
+// FilterCounts returns the number of entries in pid_filter and cgroup_filter maps.
+func (l *Loader) FilterCounts() (pids, cgroups int, err error) {
+	if l.objs.PidFilter != nil {
+		iter := l.objs.PidFilter.Iterate()
+		var k uint32
+		var v uint8
+		for iter.Next(&k, &v) {
+			pids++
+		}
+		if e := iter.Err(); e != nil {
+			return 0, 0, e
+		}
+	}
+	if l.objs.CgroupFilter != nil {
+		iter := l.objs.CgroupFilter.Iterate()
+		var k uint64
+		var v uint8
+		for iter.Next(&k, &v) {
+			cgroups++
+		}
+		if e := iter.Err(); e != nil {
+			return 0, 0, e
+		}
+	}
+	return pids, cgroups, nil
 }
 
 // ReadEvent returns the next decoded ring-buffer event.
@@ -241,7 +335,8 @@ func (l *Loader) ReadEvent() (*RingEvent, error) {
 }
 
 func decodeConnect(raw []byte) (*RingEvent, error) {
-	const minLen = 46
+	// type+pad(8)+ts(8)+pid+tid(8)+ip(4)+port+pad(4)+cgroup(8)+comm(16) = 56
+	const minLen = 56
 	if len(raw) < minLen {
 		return nil, fmt.Errorf("short connect record: %d bytes", len(raw))
 	}
@@ -251,13 +346,15 @@ func decodeConnect(raw []byte) (*RingEvent, error) {
 		TID:      binary.LittleEndian.Uint32(raw[20:24]),
 		DestIP:   binary.LittleEndian.Uint32(raw[24:28]),
 		DestPort: binary.LittleEndian.Uint16(raw[28:30]),
+		CgroupID: binary.LittleEndian.Uint64(raw[32:40]),
 	}
-	copy(ev.Comm[:], raw[30:46])
+	copy(ev.Comm[:], raw[40:56])
 	return &RingEvent{Connect: ev}, nil
 }
 
 func decodeWrite(raw []byte) (*RingEvent, error) {
-	const header = 44
+	// type+len(8)+ts(8)+pid+tid(8)+fd+pad(8)+cgroup(8)+comm(16) = 56
+	const header = 56
 	if len(raw) < header {
 		return nil, fmt.Errorf("short write record: %d bytes", len(raw))
 	}
@@ -266,13 +363,14 @@ func decodeWrite(raw []byte) (*RingEvent, error) {
 		n = payloadMax
 	}
 	ev := &WriteEvent{
-		Len:  n,
-		TSNs: binary.LittleEndian.Uint64(raw[8:16]),
-		PID:  binary.LittleEndian.Uint32(raw[16:20]),
-		TID:  binary.LittleEndian.Uint32(raw[20:24]),
-		FD:   binary.LittleEndian.Uint32(raw[24:28]),
+		Len:      n,
+		TSNs:     binary.LittleEndian.Uint64(raw[8:16]),
+		PID:      binary.LittleEndian.Uint32(raw[16:20]),
+		TID:      binary.LittleEndian.Uint32(raw[20:24]),
+		FD:       binary.LittleEndian.Uint32(raw[24:28]),
+		CgroupID: binary.LittleEndian.Uint64(raw[32:40]),
 	}
-	copy(ev.Comm[:], raw[28:44])
+	copy(ev.Comm[:], raw[40:56])
 	if int(n) > 0 && len(raw) >= header+int(n) {
 		ev.Payload = append([]byte(nil), raw[header:header+int(n)]...)
 	}
@@ -280,8 +378,8 @@ func decodeWrite(raw []byte) (*RingEvent, error) {
 }
 
 func decodeSendto(raw []byte) (*RingEvent, error) {
-	// type(4)+len(4)+ts(8)+pid(4)+tid(4)+ip(4)+port(2)+pad(2)+comm(16)+payload(256) = 304
-	const header = 48
+	// type+len(8)+ts(8)+pid+tid(8)+ip(4)+port+pad(4)+cgroup(8)+comm(16) = 56
+	const header = 56
 	if len(raw) < header {
 		return nil, fmt.Errorf("short sendto record: %d bytes", len(raw))
 	}
@@ -296,8 +394,9 @@ func decodeSendto(raw []byte) (*RingEvent, error) {
 		TID:      binary.LittleEndian.Uint32(raw[20:24]),
 		DestIP:   binary.LittleEndian.Uint32(raw[24:28]),
 		DestPort: binary.LittleEndian.Uint16(raw[28:30]),
+		CgroupID: binary.LittleEndian.Uint64(raw[32:40]),
 	}
-	copy(ev.Comm[:], raw[32:48])
+	copy(ev.Comm[:], raw[40:56])
 	if int(n) > 0 && len(raw) >= header+int(n) {
 		ev.Payload = append([]byte(nil), raw[header:header+int(n)]...)
 	}
@@ -305,8 +404,8 @@ func decodeSendto(raw []byte) (*RingEvent, error) {
 }
 
 func decodeOpenat(raw []byte) (*RingEvent, error) {
-	// type(4)+path_len(4)+ts(8)+pid(4)+tid(4)+comm(16)+path(128) = 168
-	const header = 40
+	// type+path_len(8)+ts(8)+pid+tid(8)+cgroup(8)+comm(16) = 48
+	const header = 48
 	if len(raw) < header {
 		return nil, fmt.Errorf("short openat record: %d bytes", len(raw))
 	}
@@ -315,14 +414,14 @@ func decodeOpenat(raw []byte) (*RingEvent, error) {
 		n = pathMax
 	}
 	ev := &OpenatEvent{
-		PathLen: n,
-		TSNs:    binary.LittleEndian.Uint64(raw[8:16]),
-		PID:     binary.LittleEndian.Uint32(raw[16:20]),
-		TID:     binary.LittleEndian.Uint32(raw[20:24]),
+		PathLen:  n,
+		TSNs:     binary.LittleEndian.Uint64(raw[8:16]),
+		PID:      binary.LittleEndian.Uint32(raw[16:20]),
+		TID:      binary.LittleEndian.Uint32(raw[20:24]),
+		CgroupID: binary.LittleEndian.Uint64(raw[24:32]),
 	}
-	copy(ev.Comm[:], raw[24:40])
+	copy(ev.Comm[:], raw[32:48])
 	if int(n) > 0 && len(raw) >= header+int(n) {
-		// path includes trailing NUL from bpf_probe_read_user_str
 		p := raw[header : header+int(n)]
 		ev.Path = nullTerm(p)
 	}

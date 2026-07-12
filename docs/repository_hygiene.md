@@ -28,10 +28,13 @@ Keep the layout legible so a stranger can navigate without a guide. Interlock's 
 
 ```
 interlock/
-├── cmd/                  # entrypoints (interlock, demo, ebpf-test)
-├── internal/             # private packages (proxy, engine, ebpf, model, config)
+├── cmd/                  # entrypoints (interlock, demo, k8s-exfil-demo, ebpf-test)
+├── internal/             # private packages (proxy, engine, ebpf, k8s, observability,
+│                         #   alerting, siem, reload, model, config)
 ├── servers/              # toy MCP servers (tickets, messenger, exfil)
 ├── web/                  # evidence viewer
+├── deploy/k8s/           # DaemonSet, RBAC, ConfigMap, metrics Service, PRIVILEGE.md, eks/, gke/
+├── deploy/systemd/       # bare-metal/VM units, SIGHUP reload notes
 ├── docs/                 # architecture.md, project_overview.md, task_list.md
 ├── .github/              # workflows, templates
 ├── README.md
@@ -40,6 +43,7 @@ interlock/
 ├── SECURITY.md
 ├── CHANGELOG.md
 ├── ROADMAP.md
+├── Dockerfile
 ├── Makefile
 └── go.mod
 ```
@@ -97,7 +101,7 @@ Adopt the **Contributor Covenant** (the de facto standard — copy their templat
 - **How to report a vulnerability** — a private channel (email, or GitHub's private security advisories), *not* a public issue. Public disclosure of a bug in a root-privileged tool before a fix is dangerous.
 - **What's in scope** — the proxy, the engine, the eBPF probes, the privilege model.
 - **Response expectations** — a rough timeline for acknowledgment and fix. Even "best-effort, this is a solo v0.x project" is better than silence, and honest.
-- **A pointer to the tool's own threat model** (planned for v0.3). Until then, state plainly what Interlock does and does not defend against — the honest-limitations posture from the README, applied to the tool's own security.
+- **A pointer to the tool's own threat model** — [`docs/threat_model.md`](threat_model.md). Detection scope remains in [`detection_boundary.md`](detection_boundary.md).
 
 Enable **GitHub's private vulnerability reporting** in repo settings so researchers have a proper channel.
 
@@ -204,7 +208,7 @@ A green CI badge on the README is instant credibility with the audience that che
 - On every push and PR: `go build ./...`, `go vet ./...`, `go test ./...`.
 - The badge in the README proving it passes.
 
-**The eBPF caveat for CI:** the eBPF paths need a Linux runner with a suitable kernel and privileges, and GitHub's hosted runners may not load your probes. Realistic approach: run the full non-eBPF suite in CI (which is most of your ~73 tests), and either gate the eBPF integration tests behind a self-hosted runner or a build tag, or document them as "run locally on a BTF-enabled kernel." Don't claim CI covers the eBPF path if it can't — that's the honesty discipline applied to your own badges. A passing badge that quietly skips the kernel tests, unstated, is a small dishonesty a sharp reviewer will catch.
+**The eBPF caveat for CI:** the eBPF paths need a Linux runner with a suitable kernel and privileges, and GitHub's hosted runners may not load your probes. Realistic approach: run the full non-eBPF suite in CI (which is most of the current 178 tests — see `make test` for the live count), and either gate the eBPF integration tests behind a self-hosted runner or a build tag, or document them as "run locally on a BTF-enabled kernel." Don't claim CI covers the eBPF path if it can't — that's the honesty discipline applied to your own badges. A passing badge that quietly skips the kernel tests, unstated, is a small dishonesty a sharp reviewer will catch.
 
 Add later as the project matures: `golangci-lint`, race detector in CI (`go test -race`), release automation.
 

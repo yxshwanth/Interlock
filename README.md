@@ -20,7 +20,7 @@
 
 ## The problem
 
-AI agents wired to MCP tools can read private data, ingest attacker-controlled instructions, and reach the outside world — Simon Willison's **lethal trifecta** — while MCP implementations have faced a steady stream of high-severity CVEs through early 2026 ([OX Security](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/), [Cloud Security Alliance research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/)). Static scanners check what a tool *claims* before approval; they miss the attack that matters in production: a sequence of individually authorized calls that chains into exfiltration. [Read the full threat model →](docs/project_overview.md)
+AI agents wired to MCP tools can read private data, ingest attacker-controlled instructions, and reach the outside world — Simon Willison's **lethal trifecta** — while MCP implementations have faced a steady stream of high-severity CVEs through early 2026 ([OX Security](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/), [Cloud Security Alliance research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/)). Static scanners check what a tool *claims* before approval; they miss the attack that matters in production: a sequence of individually authorized calls that chains into exfiltration. [Threat framing →](docs/project_overview.md) · [Detection boundary →](docs/detection_boundary.md)
 
 ---
 
@@ -42,31 +42,34 @@ Interlock sits between an agent and its MCP servers on **two observation planes*
 flowchart TB
     Agent["AI Agent"]
 
-    subgraph TCB["Interlock"]
-      direction TB
-      Proxy["MCP Proxy — intercept + enforce"]
-      Engine["Correlation Engine — trifecta state machine"]
-      eBPF["eBPF Sensor — connect + write probes"]
-      Sink["Evidence Sink — JSONL default, SQLite opt-in"]
+    subgraph tcb [Interlock]
+      Proxy["MCP Proxy - intercept and enforce"]
+      Engine["Correlation Engine - trifecta state machine"]
+      Ebpf["eBPF Sensor - connect and write probes"]
+      Sink["Evidence Sink - JSONL default, SQLite opt-in"]
     end
 
-    subgraph Untrusted["Untrusted zone"]
-      T["tickets server — sensitive source"]
-      M["messenger server — external sink"]
-      E["exfil server — malicious side channel"]
+    subgraph untrusted [Untrusted zone]
+      Tickets["tickets server - sensitive source"]
+      Messenger["messenger server - external sink"]
+      Exfil["exfil server - malicious side channel"]
     end
 
     Attacker["Attacker host"]
 
-    Agent <-->|"MCP JSON-RPC"| Proxy
-    Proxy <-->|"spawns + pipes"| T
-    Proxy <-->|"spawns + pipes"| M
-    Proxy <-->|"spawns + pipes"| E
+    Agent -->|"MCP JSON-RPC"| Proxy
+    Proxy -->|"MCP JSON-RPC"| Agent
+    Proxy -->|"spawns and pipes"| Tickets
+    Tickets -->|"spawns and pipes"| Proxy
+    Proxy -->|"spawns and pipes"| Messenger
+    Messenger -->|"spawns and pipes"| Proxy
+    Proxy -->|"spawns and pipes"| Exfil
+    Exfil -->|"spawns and pipes"| Proxy
     Proxy -->|"InterceptedEvent"| Engine
-    eBPF -->|"SyscallEvent"| Engine
-    eBPF -.->|"watches PID subtree"| Proxy
-    eBPF -.->|"connect syscall"| E
-    E -.->|"TCP side channel — bypasses proxy"| Attacker
+    Ebpf -->|"SyscallEvent"| Engine
+    Ebpf -.->|"watches PID subtree"| Proxy
+    Ebpf -.->|"connect syscall"| Exfil
+    Exfil -.->|"TCP side channel - bypasses proxy"| Attacker
     Engine -->|"Decision"| Proxy
     Engine -->|"EvidenceRecord"| Sink
 ```
@@ -110,21 +113,23 @@ make demo                             # proxy-only, verbose
 
 ## Honest limitations
 
-These are design boundaries, not bugs. Naming them first is the point.
+These are design boundaries, not bugs. Naming them first is the point. Full detection-scope write-up: [`docs/detection_boundary.md`](docs/detection_boundary.md).
 
 1. **Value-overlap covers a closed transform set, not full dataflow analysis.** At taint registration: literal, base64, hex, URL-encoding, reversal, depth-2 nests (`base64_hex`, etc.), and `gzip_base64`. Same-call JSON string reassembly catches secrets split across fields in one `tools/call`. Still misses **cross-call** splits, depth-3+ nests, and other compressors — see known-gap skips in [`overlap_test.go`](internal/engine/overlap_test.go). Can false-positive on legitimate echoes of encoded forms.
 
-2. **Variant B is connect/sendto/write/openat/DNS, not full stream inspection.** Connect-only or DNS without overlap → `SUSPICIOUS` at 0.60. Correlated `write()` or self-contained `sendto` whose excerpt overlaps taint → `EXFIL` at 0.95. Openat of `sensitive_paths` → `SUSPICIOUS` only. Secrets past byte 256, IPv6, `sendmsg`, DoH/DoT, and writes before a suspicious connect are known gaps. Kill is deferred ~100 ms after connect/`sendto` SUSPICIOUS so a write can land.
+2. **Semantic / paraphrased exfil is out of scope for EXFIL.** If the agent describes or rewrites a secret in natural language without any registered byte/encoding form, Interlock will not prove EXFIL (`malicious_gap_semantic_paraphrase_exfil`). Soft SUSPICIOUS may still fire on long *literal* shared substrings with untrusted content — that is byte-bind, not understanding. Pair with outbound DLP / human review for meaning-level leaks.
 
-3. **eBPF containment is kill-after-connect (with deferred window), not first-packet prevention.** Variant A truly prevents; Variant B severs the channel after a short wait for payload proof. *v0.3: LSM/KRSI for in-kernel blocking before the packet leaves.*
+3. **Variant B is connect/sendto/write/openat/DNS, not full stream inspection.** Connect-only or DNS without overlap → soft `SUSPICIOUS` (no hard kill after ROADMAP §1). Correlated `write()` or self-contained `sendto` whose excerpt overlaps taint → `EXFIL` at 0.95. Secrets past byte 256, IPv6, `sendmsg`, and writes before a suspicious connect are known gaps. **DoH/DoT is out of scope** — mitigate with network-layer DNS controls. Prioritized gap list: [`docs/SUMMARY.md`](docs/SUMMARY.md).
 
-4. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens) and encoded taint variants; HTTP `Authorization` / `Cookie` headers are redacted in request metadata. JWTs, private URLs with embedded tokens, and customer PII in tool bodies still pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files.
+4. **eBPF containment is kill-after-connect (with deferred window), not first-packet prevention.** Variant A truly prevents on EXFIL; Variant B severs the channel after a short wait for payload proof. In-kernel blocking (LSM/KRSI) is Phase 2 of the v0.3 roadmap, gated on deployment demand — not required to close the milestone.
 
-5. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
+5. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens) and encoded taint variants; HTTP `Authorization` / `Cookie` headers are redacted in request metadata. JWTs, private URLs with embedded tokens, and customer PII in tool bodies still pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files.
 
-6. **Performance numbers include HTTP overhead (v0.2.1+).** [`docs/performance.md`](docs/performance.md) publishes engine-on vs passthrough delta: **~0.5 ms on sensitive reads (typical)** and **~0.1 ms on sink checks** — sub-millisecond. Read-path cost scales with secrets-per-result (snapshot uses a 2-secret fixture). Absolute end-to-end p99 is backend-dominated — do not quote ~12 ms `read_ticket` as Interlock's cost. Concurrent multi-session absolute latency is published via `TestHTTP_ConcurrentLoad_ReadTicket`.
+6. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
 
-7. **Tool shadowing is checked at registration time only.** Cross-server duplicate tool names use first-owner-wins: the first server keeps the route, the duplicate is omitted from aggregated `tools/list`, and a `tool_shadowing` security audit is emitted. A server that dynamically adds tools mid-session is not re-checked — see `TestToolShadowing_RuntimeReregistration_KnownGap`.
+7. **Performance numbers include HTTP overhead (v0.2.1+).** [`docs/performance.md`](docs/performance.md) publishes engine-on vs passthrough delta: **~0.5 ms on sensitive reads (typical)** and **~0.1 ms on sink checks** — sub-millisecond. Read-path cost scales with secrets-per-result (snapshot uses a 2-secret fixture). Absolute end-to-end p99 is backend-dominated — do not quote ~12 ms `read_ticket` as Interlock's cost. Concurrent multi-session absolute latency is published via `TestHTTP_ConcurrentLoad_ReadTicket`.
+
+8. **Tool shadowing is checked at registration time only.** Cross-server duplicate tool names use first-owner-wins: the first server keeps the route, the duplicate is omitted from aggregated `tools/list`, and a `tool_shadowing` security audit is emitted. A server that dynamically adds tools mid-session is not re-checked — see `TestToolShadowing_RuntimeReregistration_KnownGap`.
 
 ---
 
@@ -167,9 +172,9 @@ Full architecture spec: [`docs/architecture.md`](docs/architecture.md)
 
 ---
 
-## Project status — v0.2
+## Project status — v0.3 in progress
 
-**Latest release:** [`v0.2.2`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.2) — usable-tool milestone plus post-v0.2 detection/operability. Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
+**Latest tagged release:** [`v0.2.2`](https://github.com/yxshwanth/Interlock/releases/tag/v0.2.2). **This tree** additionally ships v0.3 Phase 1 (Kubernetes DaemonSet) and Phase 3 (operability: metrics, alerting, SIEM, systemd/hot-reload) — see [`CHANGELOG.md`](CHANGELOG.md#unreleased). Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
 
 v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operability. `v0.2.2` adds async evidence emit, Variant B payload-backed `EXFIL` (connect-only remains `SUSPICIOUS`), bounded overlap expansion, tool-shadowing, and the performance/operability backlog (concurrent HTTP p99, ringbuf DropCount tests, taint-registration opts). Evidence default is **JSONL by intention**; SQLite is opt-in for retention.
 
@@ -184,11 +189,28 @@ v0.2 extends the v0.1 proof with real MCP transport, concurrency, and operabilit
 - Local exfil fixture (`INTERLOCK_EXFIL_MODE=local`, `interlock-ebpf-local.yaml`)
 - Concurrent multi-session absolute latency (`TestHTTP_ConcurrentLoad_ReadTicket`); eBPF DropCount CI + root-gated ringbuf saturation
 - Startup tool-shadowing detection (first-owner-wins); mid-session re-registration remains a known gap
+- **v0.3 Phase 1:** sensor-only Kubernetes DaemonSet (`--mode=sensor`, label `interlock.io/monitor=true`, `make demo-k8s`); **EKS validated** (AL2023/containerd) — see [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md)
+- **v0.3 Phase 3:** Prometheus `/metrics` + `/healthz` (`internal/observability`); trip webhooks — generic/Slack/PagerDuty (`internal/alerting`); OCSF SIEM export to file/HTTP (`internal/siem`); SIGHUP hot-reload of allowlist/sensitive-paths/alerting/SIEM (`internal/reload`); systemd units for bare-metal (`deploy/systemd/`)
 
 **Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
 - **Current state:** [`docs/SUMMARY.md`](docs/SUMMARY.md)
-- **v0.3 — Adoptable product:** Kubernetes DaemonSet deployment, LSM/KRSI kernel blocking, daemon/metrics/SIEM integration, signed releases and published false-positive rates
+- **v0.3 — Adoptable product:** Phase 1 DaemonSet + Phase 3 operability shipped; next Phase 4 trust (signed releases, FP corpus). LSM/KRSI when deployment demand needs in-kernel prevent — not a hard gate on the milestone.
+
+### Kubernetes (sensor DaemonSet)
+
+Label agent/tool-server pods with `interlock.io/monitor: "true"`. Deploy the sensor (no proxy in the DaemonSet):
+
+```bash
+make image
+kubectl apply -f deploy/k8s/rbac.yaml
+kubectl apply -f deploy/k8s/daemonset.yaml          # privileged — kind / full EXFIL
+# or: deploy/k8s/daemonset-capabilities.yaml        # managed try-first
+# or: make demo-k8s
+# EKS: deploy/k8s/eks/push-image.sh → apply /tmp/interlock-daemonset*.yaml
+```
+
+Integrators keep their own MCP proxy/sidecar. The DaemonSet only loads eBPF, attributes host PIDs to pods, and contains non-allowlisted egress. On EKS, capabilities posture observes `connect`/`write`; sensor-seeded **EXFIL** currently needs the privileged manifest (or a future taint bridge). It also exposes `/metrics` + `/healthz`, trip webhooks, OCSF SIEM export, and SIGHUP reload. Details: [`deploy/k8s/README.md`](deploy/k8s/README.md), [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md), [`deploy/systemd/README.md`](deploy/systemd/README.md) for bare-metal hosts.
 
 Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
 
@@ -196,7 +218,7 @@ Every detection feature ships with explicit known-gap tests naming what it does 
 
 ## Tests
 
-**117 tests passing**, 10 known-gap skips — engine, proxy, config, HTTP integration, overhead benchmarks, evidence, async sink, backpressure, concurrent load. CI runs `test` + `race` jobs on every push to `main`; concurrent-load smoke uses `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`. eBPF probe load requires root and a BTF-enabled kernel — DropCount API is CI-tested; live saturation is root-gated locally.
+**178 tests** (including known-gap skips) — engine, proxy, config, k8s attribution, observability, alerting, SIEM, hot-reload, HTTP integration, overhead benchmarks, evidence, async sink, backpressure, concurrent load. CI runs `test` + `race` jobs on every push to `main`; concurrent-load smoke uses `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`. eBPF probe load requires root and a BTF-enabled kernel — DropCount API is CI-tested; live saturation is root-gated locally. Kind DaemonSet demo (`make demo-k8s`) is manual (needs docker/kind/BTF).
 
 ```bash
 make test
@@ -220,7 +242,9 @@ Interlock runs privileged and loads kernel probes. Do not report vulnerabilities
 ## Documentation
 
 - [Current summary](docs/SUMMARY.md)
-- [Project overview & threat model](docs/project_overview.md)
+- [Project overview & threat framing](docs/project_overview.md)
+- [Detection boundary — what we catch / do not](docs/detection_boundary.md)
+- [FP corpus report](docs/fp_corpus.md)
 - [Architecture spec](docs/architecture.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Task list](docs/task_list.md)

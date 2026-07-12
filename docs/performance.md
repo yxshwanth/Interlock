@@ -1,6 +1,6 @@
 # Performance
 
-Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+).
+Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+). For live production numbers (not benchmark snapshots), scrape `interlock_*` Prometheus metrics from `observability.listen` — see [`architecture.md` §14.1](architecture.md#141-metrics-and-health-internalobservability) and [`deploy/k8s/README.md`](../deploy/k8s/README.md#metrics-and-health-phase-3-slice-1).
 
 ## What these numbers are and are not
 
@@ -74,27 +74,46 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 | `BenchmarkCheckOverlap_1Tainted` | ~1.2µs | 840 | 14 | Sink scan; may reassemble JSON string leaves; more forms than v0.2 five-form set |
 | `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values (pre-expansion snapshot; re-run after form growth) |
 | `BenchmarkCheckOverlap_50Tainted` | 2146 | 80 | 1 | 50 tainted values |
+| `BenchmarkCheckOverlap_MissPath/100` | ~11µs | 832 | 14 | Full scan, no hit |
+| `BenchmarkCheckOverlap_MissPath/1000` | **~100µs** | 832 | 14 | **Gate:** comfortably sub-ms (decoder not entered on plain miss) |
+| `BenchmarkCheckOverlap_MissPath/10000` | ~1.1ms | 832 | 14 | Linear; only pathological sessions |
+| `BenchmarkCheckOverlap_HitPath/1000` | ~79ns | 144 | 2 | Early match independent of map size |
+| `BenchmarkCheckOverlap_DecodeMissPath` | **~320µs** | — | — | 1K tainted + base64-looking unrelated leaf (decoder runs, no hit) |
+| `BenchmarkCheckOverlap_DecodeHitPath` | **~5µs** | — | — | Depth-3 `b64(hex(b64(secret)))` unwrap hit |
+| `BenchmarkEvaluateRequest_Exfil_Scale/1000` | ~140µs | 64KB | 900 | Engine path with fat taint map (hit); evidence construction dominates when tripping |
 | `BenchmarkEngine_IngestResult_TaintExtract` | 8163 | 2305 | 38 | Sensitive source result ingest + taint (session legs warmed; tainted reset each iter) |
 | `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence **construction** (in-memory test sink) — rare trip only; production disk I/O is async via `AsyncEvidenceSink` |
 
+### Taint-map scaling curve (snapshot)
+
+`CheckOverlap` miss-path is **linear** in tainted count × ~10 canonical forms. At **1 000** tainted values the miss path is ~**100 µs** — well inside the sink overhead budget. On still-miss, a **bounded recursive decoder** (base64/hex, depth ≤ 3) may run on JSON string leaves; `DecodeMissPath` stays ~**320 µs** (inside the ~0.5 ms class). At 10 000 (~1.1 ms) sessions are pathological; operators should not retain that many live secrets.
+
+Reproduce: `go test -bench='BenchmarkCheckOverlap_(MissPath|HitPath|Scale|Decode)' -benchtime=50ms -benchmem ./internal/engine/`
+
+**50 concurrent sessions:** absolute HTTP latency under concurrency is **backend- and pool-dominated**, not overlap-scan dominated. `TestHTTP_ConcurrentLoad_ReadTicket` publishes absolute p99 at `CONCURRENT_SESSIONS` (default 4; raise to 50 for a local soak). Engine delta (C) remains the deployer-facing Interlock cost (~0.5 ms read / ~0.1 ms sink on the 2-secret fixture). Fat-taint miss-path above shows overlap itself stays cheap until thousands of registered secrets.
+
 ### Reading the engine numbers
 
-- **Overlap check** scales with tainted count × form count; same-call reassembly adds a JSON walk on miss.
+- **Overlap check** scales linearly with tainted count × form count (~100 µs miss-path at 1K tainted); same-call reassembly adds a JSON walk on miss; depth-3 recursive decode stays inside ~0.5 ms on decode-miss.
 - **CanonicalEncodings** grew after depth-2 + `gzip_base64` — registration cost is higher; gzip allocates a large flate window (expected).
 - **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks.
 - **EvaluateRequest exfil path** is dominated by evidence **construction** on trip. Disk persistence is async (`AsyncEvidenceSink`); further wins require moving `buildEvidence` off the hot path (deferred).
 
 ## Known gaps
 
-Each skip test names a **distinct** gap:
+Each skip test names a **distinct** gap. Full list lives in code; the performance-relevant subset:
 
 | Test | Package | Gap |
 |---|---|---|
-| `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: CI verifies `DropCount` API (`TestLoader_DropCount_Unloaded`); saturation flood requires root + BTF (`sudo go test`) |
+| `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: floods at capture sizes 256/512/1024; CI verifies `DropCount` API (`TestLoader_DropCount_Unloaded`); saturation flood requires root + BTF (`sudo go test`) |
 | `TestEventLogger_DiskFull_KnownGap` | `internal/proxy` | Disk-full logging behavior |
 | `TestEvidenceStore_CrossSessionQuery_KnownGap` | `internal/engine` | SQLite query API / viewer DB integration |
+| `TestCheckOverlap_CompressedOther_KnownGap` | `internal/engine` | Non-gzip compressors — encoding-check cost if closed; see [`SUMMARY.md`](SUMMARY.md) priority tiers |
+| `TestCheckOverlap_TripleEncoded` | `internal/engine` | Depth-3 nests **closed** via sink-path recursive decoder |
+| `TestCheckOverlap_PayloadTruncated_KnownGap` | `internal/engine` | Secrets past the eBPF `write()` capture window (`PAYLOAD_MAX` / `payload_capture_bytes`) |
+| `TestToolShadowing_RuntimeReregistration_KnownGap` | `internal/proxy` | Mid-session dynamic tool re-registration not re-checked |
 
-Concurrent multi-session HTTP load p99 is covered by `TestHTTP_ConcurrentLoad_ReadTicket` (CI smoke: `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`).
+Concurrent multi-session HTTP load p99 is covered by `TestHTTP_ConcurrentLoad_ReadTicket` (CI smoke: `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`) — it replaced the removed `TestHTTP_ConcurrentLoad_KnownGap` once that gap closed. `TestCheckOverlap_EncodedExfil_KnownGap` (`internal/engine`) is a stale name carried forward from v0.1: it now **passes** rather than skips — base64/hex/URL/reversal overlap is shipped — but the name wasn't renamed to avoid rewriting the ROADMAP history that cites it as the "done when" milestone for v0.2 Phase 3.
 
 ## Reproduce
 

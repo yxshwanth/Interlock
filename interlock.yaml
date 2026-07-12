@@ -40,6 +40,11 @@ untrusted_origins:
   tool_results: true
   web_fetches:  true
 
+# trifecta:                    # leg decay + SUSPICIOUS content-bind thresholds
+#   leg_ttl: 30m               # dim sticky legs after this idle-with-leg window
+#   decay_after_calls: 32      # dim after N subsequent tool events
+#   content_bind_min_len: 16   # min shared substring for SUSPICIOUS content-bind
+
 # evidence:
 #   backend: jsonl          # jsonl (intentional default) | sqlite (opt-in retention)
 #   path: evidence.jsonl    # or evidence.db for sqlite
