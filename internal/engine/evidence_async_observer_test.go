@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,11 +11,11 @@ import (
 )
 
 type countingObserver struct {
-	n int
+	n atomic.Int32
 }
 
 func (c *countingObserver) OnEvidenceEmitted(rec model.EvidenceRecord) {
-	c.n++
+	c.n.Add(1)
 }
 
 func TestAsyncEvidenceSink_EmitObserver(t *testing.T) {
@@ -40,13 +41,13 @@ func TestAsyncEvidenceSink_EmitObserver(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if obs.n == 1 {
+		if obs.n.Load() == 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if obs.n != 1 {
-		t.Fatalf("observer called %d times, want 1", obs.n)
+	if got := obs.n.Load(); got != 1 {
+		t.Fatalf("observer called %d times, want 1", got)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
