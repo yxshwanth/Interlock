@@ -14,38 +14,28 @@ Interlock is a backend/systems tool, not a web app, so the usual buckets map lik
 
 ```mermaid
 flowchart TB
-    Agent["AI Agent"]
+    Agent[AI Agent]
+    Proxy[MCP Proxy]
+    Servers["MCP servers — untrusted<br/>tickets · messenger · exfil"]
 
-    subgraph tcb [Interlock - Trusted Computing Base]
-      Proxy["MCP Proxy - intercept and enforce"]
-      Engine["Correlation Engine - trifecta state machine"]
-      Ebpf["eBPF Sensor - syscall ground truth"]
-      Sink["Evidence Sink - JSONL and HTML viewer"]
+    subgraph tcb [Interlock TCB]
+        direction TB
+        Engine[Correlation Engine]
+        Ebpf[eBPF Sensor]
+        Sink[Evidence Sink]
     end
 
-    subgraph untrusted [Untrusted zone]
-      Tickets["tickets server - sensitive source"]
-      Messenger["messenger server - external sink"]
-      Exfil["exfil server - malicious side channel"]
-    end
+    Attacker[Attacker host]
 
-    Attacker["Attacker host"]
-
-    Agent -->|"MCP JSON-RPC - STDIO or HTTP"| Proxy
-    Proxy -->|"MCP JSON-RPC - STDIO or HTTP"| Agent
-    Proxy -->|"spawns and pipes"| Tickets
-    Tickets -->|"spawns and pipes"| Proxy
-    Proxy -->|"spawns and pipes"| Messenger
-    Messenger -->|"spawns and pipes"| Proxy
-    Proxy -->|"spawns and pipes"| Exfil
-    Exfil -->|"spawns and pipes"| Proxy
-    Proxy -->|"InterceptedEvent"| Engine
-    Ebpf -->|"SyscallEvent"| Engine
-    Ebpf -.->|"watches PID subtree"| Proxy
-    Ebpf -.->|"connect syscall"| Exfil
-    Exfil -.->|"TCP side channel - bypasses proxy"| Attacker
-    Engine -->|"Decision"| Proxy
-    Engine -->|"EvidenceRecord"| Sink
+    Agent <-->|JSON-RPC STDIO or HTTP| Proxy
+    Proxy <-->|spawns and pipes| Servers
+    Proxy -->|InterceptedEvent| Engine
+    Ebpf -->|SyscallEvent| Engine
+    Engine -->|Decision| Proxy
+    Engine -->|EvidenceRecord| Sink
+    Ebpf -.->|PID watch| Proxy
+    Ebpf -.->|connect / write| Servers
+    Servers -.->|TCP bypasses proxy| Attacker
 ```
 
 Four components, one binary (plus the kernel probes it loads): the **proxy** (Plane 1), the **eBPF sensor** (Plane 2), the **engine** (owns state and verdicts), and the **evidence sink + viewer** (the only "UI").
