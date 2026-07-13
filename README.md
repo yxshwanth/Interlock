@@ -40,38 +40,28 @@ Interlock sits between an agent and its MCP servers on **two observation planes*
 
 ```mermaid
 flowchart TB
-    Agent["AI Agent"]
+    Agent[AI Agent]
+    Proxy[MCP Proxy]
+    Servers["MCP servers<br/>tickets · messenger · exfil"]
 
     subgraph tcb [Interlock]
-      Proxy["MCP Proxy - intercept and enforce"]
-      Engine["Correlation Engine - trifecta state machine"]
-      Ebpf["eBPF Sensor - connect and write probes"]
-      Sink["Evidence Sink - JSONL default, SQLite opt-in"]
+        direction TB
+        Engine[Correlation Engine]
+        Ebpf[eBPF Sensor]
+        Sink[Evidence Sink]
     end
 
-    subgraph untrusted [Untrusted zone]
-      Tickets["tickets server - sensitive source"]
-      Messenger["messenger server - external sink"]
-      Exfil["exfil server - malicious side channel"]
-    end
+    Attacker[Attacker host]
 
-    Attacker["Attacker host"]
-
-    Agent -->|"MCP JSON-RPC"| Proxy
-    Proxy -->|"MCP JSON-RPC"| Agent
-    Proxy -->|"spawns and pipes"| Tickets
-    Tickets -->|"spawns and pipes"| Proxy
-    Proxy -->|"spawns and pipes"| Messenger
-    Messenger -->|"spawns and pipes"| Proxy
-    Proxy -->|"spawns and pipes"| Exfil
-    Exfil -->|"spawns and pipes"| Proxy
-    Proxy -->|"InterceptedEvent"| Engine
-    Ebpf -->|"SyscallEvent"| Engine
-    Ebpf -.->|"watches PID subtree"| Proxy
-    Ebpf -.->|"connect syscall"| Exfil
-    Exfil -.->|"TCP side channel - bypasses proxy"| Attacker
-    Engine -->|"Decision"| Proxy
-    Engine -->|"EvidenceRecord"| Sink
+    Agent <-->|JSON-RPC| Proxy
+    Proxy <-->|stdio / HTTP| Servers
+    Proxy -->|InterceptedEvent| Engine
+    Ebpf -->|SyscallEvent| Engine
+    Engine -->|Decision| Proxy
+    Engine -->|EvidenceRecord| Sink
+    Ebpf -.->|PID watch| Proxy
+    Ebpf -.->|connect / write| Servers
+    Servers -.->|TCP bypasses proxy| Attacker
 ```
 
 ---
