@@ -2,10 +2,24 @@
 # The node-local sensor DaemonSet listens on hostPath /var/run/interlock/taint.sock.
 # Mount the same directory and set POD_UID via the Downward API.
 #
-# Proxy config snippet (in the proxy's interlock.yaml):
+# Peer auth is SO_PEERCRED: when taint_bridge.enabled, sensor config must set
+# allowed_uids and/or allowed_gids. For non-root proxies, share a GID:
+#   - sensor: socket_gid + allowed_gids (dir 0750, socket 0660 + chown)
+#   - proxy pod: securityContext.fsGroup / supplementalGroups with that GID
+#
+# Sensor ConfigMap snippet:
 #   taint_bridge:
 #     enabled: true
 #     socket_path: /var/run/interlock/taint.sock
+#     allowed_gids: [1500]
+#     socket_gid: 1500
+#
+# Proxy ConfigMap snippet (enabled still requires an allowlist for validation;
+# dial path does not enforce peercred — sensor does):
+#   taint_bridge:
+#     enabled: true
+#     socket_path: /var/run/interlock/taint.sock
+#     allowed_gids: [1500]
 #
 apiVersion: v1
 kind: Pod
@@ -14,6 +28,9 @@ metadata:
   labels:
     interlock.io/monitor: "true"
 spec:
+  securityContext:
+    fsGroup: 1500
+    supplementalGroups: [1500]
   containers:
     - name: mcp-proxy
       image: interlock:dev
@@ -39,4 +56,4 @@ spec:
         type: DirectoryOrCreate
     - name: proxy-config
       configMap:
-        name: interlock-proxy-config # operator-provided; must enable taint_bridge
+        name: interlock-proxy-config # operator-provided; must enable taint_bridge + allowlist

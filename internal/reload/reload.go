@@ -117,6 +117,9 @@ func DiffNonReloadable(old, new *config.Config) []string {
 	if old.Evidence.Backend != new.Evidence.Backend || old.Evidence.Path != new.Evidence.Path {
 		w = append(w, "evidence backend/path (restart required)")
 	}
+	if old.FailClosed.Enabled != new.FailClosed.Enabled {
+		w = append(w, "fail_closed.enabled (restart required)")
+	}
 	if len(old.Servers) != len(new.Servers) {
 		w = append(w, "servers (restart required)")
 	}

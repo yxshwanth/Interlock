@@ -15,10 +15,6 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
-// DeferredKillWindow is how long after a connect/sendto SUSPICIOUS trip we wait
-// for a write payload before SIGKILL.
-const DeferredKillWindow = 100 * time.Millisecond
-
 // SuspiciousConnectTTL is how long a non-allowlisted connect stays eligible
 // for write-payload correlation.
 const SuspiciousConnectTTL = 5 * time.Second
@@ -36,19 +32,14 @@ type pendingConnect struct {
 	at       time.Time
 }
 
-type pendingKill struct {
-	pid int
-	at  time.Time
-}
-
 // Sensor manages the eBPF probe lifecycle.
 type Sensor struct {
-	loader         *Loader
-	handler        SyscallHandler
-	killResolver   KillResolver
-	log            *log.Logger
-	stopCh         chan struct{}
-	wg             sync.WaitGroup
+	loader       *Loader
+	handler      SyscallHandler
+	killResolver KillResolver
+	log          *log.Logger
+	stopCh       chan struct{}
+	wg           sync.WaitGroup
 
 	cfgMu          sync.RWMutex
 	allowlist      map[string]bool
@@ -56,13 +47,25 @@ type Sensor struct {
 
 	mu              sync.Mutex
 	suspiciousByPID map[int]pendingConnect
-	deferredKills   map[int]pendingKill
+
+	// Fail-closed bookkeeping: entries this sensor added for fail-closed
+	// (not pre-existing EXFIL quarantines). Guarded by fcMu.
+	fcMu             sync.Mutex
+	failClosedActive bool
+	fcPIDs           map[int]bool
+	fcCgroups        map[uint64]bool
+
+	// Optional hook when the sensor handler panics (fail-closed wiring).
+	OnHandlerPanic func(recovered any)
 }
 
 // NewSensor creates a Sensor. allowedIPs are the egress allowlist.
 // sensitivePaths are pathname prefixes for openat trips (empty = ignore openat).
-func NewSensor(allowedIPs []string, sensitivePaths []string, handler SyscallHandler) (*Sensor, error) {
-	loader, err := NewLoader()
+// lsmEnforce opts into the kernel-level connect() quarantine (v0.3 Phase 2,
+// Slice 1) — see docs/ROADMAP.md. Attach failure there is non-fatal; the
+// sensor still runs tracepoint-only. Default false (ebpf.lsm_enforce).
+func NewSensor(allowedIPs []string, sensitivePaths []string, lsmEnforce bool, handler SyscallHandler) (*Sensor, error) {
+	loader, err := NewLoader(lsmEnforce)
 	if err != nil {
 		return nil, fmt.Errorf("sensor: %w", err)
 	}
@@ -80,7 +83,6 @@ func NewSensor(allowedIPs []string, sensitivePaths []string, handler SyscallHand
 		log:             log.New(os.Stderr, "[sensor] ", log.LstdFlags),
 		stopCh:          make(chan struct{}),
 		suspiciousByPID: make(map[int]pendingConnect),
-		deferredKills:   make(map[int]pendingKill),
 	}, nil
 }
 
@@ -140,20 +142,25 @@ func (s *Sensor) AddPIDs(pids ...int) error {
 			return err
 		}
 		s.log.Printf("watching PID %d", pid)
+		s.noteFailClosedWatch(pid, 0)
 	}
 	return nil
 }
 
 // RemovePIDs removes PIDs from the BPF filter map.
+// Also clears any kernel-level quarantine for the PID — otherwise a recycled
+// PID could inherit a stale quarantine entry (the same PID-reuse hazard
+// documented for the concurrency work in docs/ROADMAP.md).
 func (s *Sensor) RemovePIDs(pids ...int) error {
 	for _, pid := range pids {
 		if err := s.loader.RemovePID(pid); err != nil {
 			return err
 		}
+		_ = s.loader.Unquarantine(pid, 0)
+		s.clearFailClosedBookkeeping(pid, 0)
 		s.log.Printf("stopped watching PID %d", pid)
 		s.mu.Lock()
 		delete(s.suspiciousByPID, pid)
-		delete(s.deferredKills, pid)
 		s.mu.Unlock()
 	}
 	return nil
@@ -169,11 +176,13 @@ func (s *Sensor) AddCgroupIDs(ids ...uint64) error {
 			return err
 		}
 		s.log.Printf("watching cgroup id=%d", id)
+		s.noteFailClosedWatch(0, id)
 	}
 	return nil
 }
 
-// RemoveCgroupIDs stops watching cgroups.
+// RemoveCgroupIDs stops watching cgroups. Also clears any kernel-level
+// quarantine for the cgroup (see RemovePIDs).
 func (s *Sensor) RemoveCgroupIDs(ids ...uint64) error {
 	for _, id := range ids {
 		if id == 0 {
@@ -182,9 +191,144 @@ func (s *Sensor) RemoveCgroupIDs(ids ...uint64) error {
 		if err := s.loader.RemoveCgroupID(id); err != nil {
 			return err
 		}
+		_ = s.loader.Unquarantine(0, id)
+		s.clearFailClosedBookkeeping(0, id)
 		s.log.Printf("stopped watching cgroup id=%d", id)
 	}
 	return nil
+}
+
+// LSMEnforced reports whether the kernel-level connect() quarantine hook is
+// attached and active (ebpf.lsm_enforce requested it and attach succeeded).
+func (s *Sensor) LSMEnforced() bool {
+	return s.loader.LSMEnforced()
+}
+
+// Quarantine best-effort denies further connect() calls from pid/cgroupID at
+// the kernel level. No-op (logged once) if LSM enforcement isn't active.
+// Exported so tests (and other callers wanting to arm quarantine directly,
+// e.g. an admin API) don't need access to the unexported loader.
+func (s *Sensor) Quarantine(cgroupID uint64, pid int) error {
+	if !s.loader.LSMEnforced() {
+		return fmt.Errorf("lsm quarantine: hook not attached (ebpf.lsm_enforce not active or attach failed)")
+	}
+	if err := s.loader.Quarantine(pid, cgroupID); err != nil {
+		s.log.Printf("WARNING: LSM quarantine failed for pid=%d cgroup=%d: %v", pid, cgroupID, err)
+		return err
+	}
+	s.log.Printf("QUARANTINE: pid=%d cgroup=%d denied further connect() at kernel level (LSM)", pid, cgroupID)
+	return nil
+}
+
+// SetFailClosedActive toggles fail-closed quarantine of all currently watched
+// PIDs/cgroups. When activating, entries already under EXFIL quarantine are
+// left alone and not claimed by fail-closed bookkeeping so clearing fail-closed
+// does not lift a legitimate EXFIL block. While active, newly watched
+// PIDs/cgroups are quarantined immediately.
+func (s *Sensor) SetFailClosedActive(active bool) error {
+	s.fcMu.Lock()
+	defer s.fcMu.Unlock()
+	if active == s.failClosedActive {
+		return nil
+	}
+	if active {
+		if !s.loader.LSMEnforced() {
+			return fmt.Errorf("fail-closed: LSM hook not attached")
+		}
+		alreadyPID, alreadyCG, err := s.loader.ListQuarantined()
+		if err != nil {
+			return err
+		}
+		alreadyPIDSet := make(map[int]bool, len(alreadyPID))
+		for _, p := range alreadyPID {
+			alreadyPIDSet[p] = true
+		}
+		alreadyCGSet := make(map[uint64]bool, len(alreadyCG))
+		for _, c := range alreadyCG {
+			alreadyCGSet[c] = true
+		}
+		if err := s.loader.QuarantineAllWatched(); err != nil {
+			return err
+		}
+		pids, cgroups, err := s.loader.ListWatched()
+		if err != nil {
+			return err
+		}
+		s.fcPIDs = make(map[int]bool)
+		s.fcCgroups = make(map[uint64]bool)
+		for _, p := range pids {
+			if !alreadyPIDSet[p] {
+				s.fcPIDs[p] = true
+			}
+		}
+		for _, c := range cgroups {
+			if !alreadyCGSet[c] {
+				s.fcCgroups[c] = true
+			}
+		}
+		s.failClosedActive = true
+		s.log.Printf("FAIL-CLOSED: quarantined %d pid(s) / %d cgroup(s) (owned=%d/%d)",
+			len(pids), len(cgroups), len(s.fcPIDs), len(s.fcCgroups))
+		return nil
+	}
+
+	// Clear only fail-closed-owned entries.
+	var pids []int
+	for p := range s.fcPIDs {
+		pids = append(pids, p)
+	}
+	var cgs []uint64
+	for c := range s.fcCgroups {
+		cgs = append(cgs, c)
+	}
+	_ = s.loader.UnquarantineWatched(pids, cgs)
+	s.fcPIDs = nil
+	s.fcCgroups = nil
+	s.failClosedActive = false
+	s.log.Printf("FAIL-CLOSED: cleared quarantine for %d pid(s) / %d cgroup(s)", len(pids), len(cgs))
+	return nil
+}
+
+// FailClosedActive reports whether fail-closed quarantine is engaged.
+func (s *Sensor) FailClosedActive() bool {
+	s.fcMu.Lock()
+	defer s.fcMu.Unlock()
+	return s.failClosedActive
+}
+
+func (s *Sensor) noteFailClosedWatch(pid int, cgroupID uint64) {
+	s.fcMu.Lock()
+	defer s.fcMu.Unlock()
+	if !s.failClosedActive || !s.loader.LSMEnforced() {
+		return
+	}
+	if pid > 0 {
+		if err := s.loader.Quarantine(pid, 0); err == nil {
+			if s.fcPIDs == nil {
+				s.fcPIDs = make(map[int]bool)
+			}
+			s.fcPIDs[pid] = true
+		}
+	}
+	if cgroupID != 0 {
+		if err := s.loader.Quarantine(0, cgroupID); err == nil {
+			if s.fcCgroups == nil {
+				s.fcCgroups = make(map[uint64]bool)
+			}
+			s.fcCgroups[cgroupID] = true
+		}
+	}
+}
+
+func (s *Sensor) clearFailClosedBookkeeping(pid int, cgroupID uint64) {
+	s.fcMu.Lock()
+	defer s.fcMu.Unlock()
+	if pid > 0 && s.fcPIDs != nil {
+		delete(s.fcPIDs, pid)
+	}
+	if cgroupID != 0 && s.fcCgroups != nil {
+		delete(s.fcCgroups, cgroupID)
+	}
 }
 
 func (s *Sensor) containPIDs(cgroupID uint64, bpfPID int, reason string) {
@@ -196,45 +340,18 @@ func (s *Sensor) containPIDs(cgroupID uint64, bpfPID int, reason string) {
 	}
 	for _, pid := range targets {
 		s.log.Printf("KILL-ON-DETECT: SIGKILL pid %d (%s)", pid, reason)
-		s.cancelDeferredKill(pid)
 		KillProcess(pid)
 	}
 }
 
-func (s *Sensor) scheduleContain(cgroupID uint64, bpfPID int, comm string) {
-	targets := []int{bpfPID}
-	if s.killResolver != nil {
-		if resolved := s.killResolver(cgroupID, bpfPID); len(resolved) > 0 {
-			targets = resolved
-		}
-	}
-	for _, pid := range targets {
-		s.scheduleKill(pid, comm)
-	}
-}
-
-// Start begins the event-reading goroutine. Call Stop() to shut down.
+// Start begins the event-reading goroutines. Call Stop() to shut down.
 func (s *Sensor) Start() {
 	s.wg.Add(2)
-	go s.readLoop()
-	go s.killLoop()
+	go s.readLoopRoutine()
+	go s.readLoopCritical()
 }
 
-func (s *Sensor) killLoop() {
-	defer s.wg.Done()
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.flushDeferredKills()
-		}
-	}
-}
-
-func (s *Sensor) readLoop() {
+func (s *Sensor) readLoopRoutine() {
 	defer s.wg.Done()
 
 	for {
@@ -249,23 +366,72 @@ func (s *Sensor) readLoop() {
 			if err == ringbuf.ErrClosed || s.stopping() || errors.Is(err, os.ErrClosed) {
 				return
 			}
-			s.log.Printf("read event error: %v", err)
+			s.log.Printf("read routine event error: %v", err)
 			continue
 		}
 
 		if raw.Connect != nil {
 			s.handleConnect(raw.Connect)
 		}
-		if raw.Write != nil {
-			s.handleWrite(raw.Write)
-		}
-		if raw.Sendto != nil {
-			s.handleSendto(raw.Sendto)
-		}
 		if raw.Openat != nil {
 			s.handleOpenat(raw.Openat)
 		}
 	}
+}
+
+func (s *Sensor) readLoopCritical() {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		default:
+		}
+
+		raw, err := s.loader.ReadCriticalEvent()
+		if err != nil {
+			if err == ringbuf.ErrClosed || s.stopping() || errors.Is(err, os.ErrClosed) {
+				return
+			}
+			s.log.Printf("read critical event error: %v", err)
+			continue
+		}
+
+		if raw.Write != nil {
+			s.handleWrite(raw.Write)
+		}
+		if raw.Writev != nil {
+			s.handleWrite(raw.Writev)
+		}
+		if raw.Sendto != nil {
+			s.handleSendto(raw.Sendto)
+		}
+		if raw.Sendmsg != nil {
+			s.handleSendto(raw.Sendmsg)
+		}
+		if raw.LSMDeny != nil {
+			s.handleLSMDeny(raw.LSMDeny)
+		}
+	}
+}
+
+// callHandler invokes the SyscallHandler with panic recovery so a panic in
+// the evaluation path cannot take down the DaemonSet (fail-open window).
+func (s *Sensor) callHandler(ev model.SyscallEvent) (decision model.Decision) {
+	if s.handler == nil {
+		return model.Decision{}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Printf("[SECURITY] sensor handler panic — FAIL-OPEN for this event, notifying fail-closed breaker: %v", r)
+			if s.OnHandlerPanic != nil {
+				s.OnHandlerPanic(r)
+			}
+			decision = model.Decision{Allow: true}
+		}
+	}()
+	return s.handler(ev)
 }
 
 func (s *Sensor) handleConnect(raw *ConnectEvent) {
@@ -304,9 +470,18 @@ func (s *Sensor) handleConnect(raw *ConnectEvent) {
 	if s.handler == nil {
 		return
 	}
-	decision := s.handler(ev)
+	decision := s.callHandler(ev)
+	// connect() carries no payload at the eBPF level (ConnectEvent has no
+	// Payload field), so this can only be ActionContained if a future event
+	// type extension gives connect() an overlap-checkable channel — dead
+	// today, kept for shape-consistency with handleWrite/handleSendto.
+	// SUSPICIOUS-only connects (the common, intended case: an anomalous
+	// egress with every trifecta leg lit but no proven data movement) stay
+	// ActionDetectedOnly and are never contained — see docs/ROADMAP.md §1
+	// ("hard block/kill reserved for EXFIL") and docs/cve_corpus.md.
 	if decision.Action == model.ActionContained {
-		s.scheduleContain(raw.CgroupID, pid, raw.CommString())
+		s.containPIDs(raw.CgroupID, pid, "after connect EXFIL")
+		_ = s.Quarantine(raw.CgroupID, pid)
 	}
 }
 
@@ -323,12 +498,17 @@ func (s *Sensor) handleWrite(raw *WriteEvent) {
 		return
 	}
 
+	syscallName := raw.Syscall
+	if syscallName == "" {
+		syscallName = "write"
+	}
+
 	ev := model.SyscallEvent{
 		TSMono:         int64(raw.TSNs),
 		PID:            pid,
 		TID:            int(raw.TID),
 		Comm:           raw.CommString(),
-		Syscall:        "write",
+		Syscall:        syscallName,
 		DestIP:         pc.destIP,
 		DestPort:       pc.destPort,
 		Allowlisted:    false,
@@ -336,21 +516,22 @@ func (s *Sensor) handleWrite(raw *WriteEvent) {
 		CgroupID:       raw.CgroupID,
 	}
 
-	s.log.Printf("write payload captured: pid=%d fd=%d len=%d (correlated to %s:%d)",
-		ev.PID, raw.FD, raw.Len, pc.destIP, pc.destPort)
+	s.log.Printf("%s payload captured: pid=%d fd=%d len=%d (correlated to %s:%d)",
+		syscallName, ev.PID, raw.FD, raw.Len, pc.destIP, pc.destPort)
 
 	if s.handler == nil {
 		return
 	}
-	decision := s.handler(ev)
+	decision := s.callHandler(ev)
 	if decision.Action == model.ActionContained {
-		s.containPIDs(raw.CgroupID, pid, "after write")
+		s.containPIDs(raw.CgroupID, pid, "after "+syscallName)
+		_ = s.Quarantine(raw.CgroupID, pid)
 	}
 }
 
 func (s *Sensor) handleSendto(raw *SendtoEvent) {
 	destIP := raw.DestIPString()
-	if s.isAllowlisted(destIP) {
+	if destIP == "" || s.isAllowlisted(destIP) {
 		return
 	}
 
@@ -366,7 +547,10 @@ func (s *Sensor) handleSendto(raw *SendtoEvent) {
 	}
 	s.mu.Unlock()
 
-	syscallName := "sendto"
+	syscallName := raw.Syscall
+	if syscallName == "" {
+		syscallName = "sendto"
+	}
 	if port == 53 {
 		syscallName = "dns"
 	}
@@ -390,15 +574,36 @@ func (s *Sensor) handleSendto(raw *SendtoEvent) {
 	if s.handler == nil {
 		return
 	}
-	decision := s.handler(ev)
+	decision := s.callHandler(ev)
 	if decision.Action != model.ActionContained {
 		return
 	}
 	if decision.Verdict == model.VerdictExfil {
 		s.containPIDs(raw.CgroupID, pid, "after "+syscallName+" EXFIL")
+		_ = s.Quarantine(raw.CgroupID, pid)
 		return
 	}
 	// Only EXFIL hard-contains; SUSPICIOUS is detected_only (no deferred kill).
+}
+
+func (s *Sensor) handleLSMDeny(raw *LSMDenyEvent) {
+	pid := int(raw.PID)
+	ev := model.SyscallEvent{
+		TSMono:   int64(raw.TSNs),
+		PID:      pid,
+		TID:      int(raw.TID),
+		Comm:     raw.CommString(),
+		Syscall:  "lsm_deny",
+		CgroupID: raw.CgroupID,
+	}
+
+	s.log.Printf("LSM DENY: connect() blocked in-kernel for quarantined pid=%d comm=%s cgroup=%d",
+		ev.PID, ev.Comm, ev.CgroupID)
+
+	if s.handler == nil {
+		return
+	}
+	s.callHandler(ev)
 }
 
 func (s *Sensor) handleOpenat(raw *OpenatEvent) {
@@ -422,7 +627,7 @@ func (s *Sensor) handleOpenat(raw *OpenatEvent) {
 	if s.handler == nil {
 		return
 	}
-	decision := s.handler(ev)
+	decision := s.callHandler(ev)
 	if decision.Action == model.ActionContained {
 		s.containPIDs(raw.CgroupID, int(raw.PID), "after openat")
 	}
@@ -438,36 +643,6 @@ func pathMatchesSensitive(path string, prefixes []string) bool {
 		}
 	}
 	return false
-}
-
-func (s *Sensor) scheduleKill(pid int, comm string) {
-	s.mu.Lock()
-	s.deferredKills[pid] = pendingKill{pid: pid, at: time.Now()}
-	s.mu.Unlock()
-	s.log.Printf("KILL deferred %s: pid %d (%s) — waiting for write payload", DeferredKillWindow, pid, comm)
-}
-
-func (s *Sensor) cancelDeferredKill(pid int) {
-	s.mu.Lock()
-	delete(s.deferredKills, pid)
-	s.mu.Unlock()
-}
-
-func (s *Sensor) flushDeferredKills() {
-	now := time.Now()
-	var due []int
-	s.mu.Lock()
-	for pid, pk := range s.deferredKills {
-		if now.Sub(pk.at) >= DeferredKillWindow {
-			due = append(due, pid)
-			delete(s.deferredKills, pid)
-		}
-	}
-	s.mu.Unlock()
-	for _, pid := range due {
-		s.log.Printf("KILL-ON-DETECT: sending SIGKILL to pid %d (deferred window elapsed)", pid)
-		KillProcess(pid)
-	}
 }
 
 func (s *Sensor) stopping() bool {
@@ -488,15 +663,25 @@ func KillProcess(pid int) {
 // Stop shuts down the sensor.
 func (s *Sensor) Stop() {
 	close(s.stopCh)
-	s.loader.reader.Close()
+	if s.loader.criticalReader != nil {
+		s.loader.criticalReader.Close()
+	}
+	if s.loader.reader != nil {
+		s.loader.reader.Close()
+	}
 	s.wg.Wait()
 	s.loader.Close()
 	s.log.Println("sensor stopped")
 }
 
-// DropCount returns kernel-side ring buffer reserve failures.
+// DropCount returns kernel-side routine ring buffer reserve failures.
 func (s *Sensor) DropCount() (uint64, error) {
 	return s.loader.DropCount()
+}
+
+// CriticalDropCount returns kernel-side critical ring buffer reserve failures.
+func (s *Sensor) CriticalDropCount() (uint64, error) {
+	return s.loader.CriticalDropCount()
 }
 
 // FilterCounts returns watched PID and cgroup filter map sizes.

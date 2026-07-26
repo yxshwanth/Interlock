@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	maxUntrustedExcerpts = 8
-	maxUntrustedExcerpt  = 4096
+	maxUntrustedExcerpts  = 8
+	maxUntrustedExcerpt   = 4096
 	defaultFragmentChunks = 16
 	defaultFragmentBytes  = 64 * 1024
 )
@@ -35,6 +35,15 @@ type SecurityAuditSink interface {
 // TaintForwarder is invoked (outside Engine.mu) after new tainted values are
 // registered from a sensitive_source result. Used by the proxy→sensor bridge.
 type TaintForwarder func(tvs []model.TaintedValue)
+
+// UntrustedForwarder is invoked (outside Engine.mu) the first time a proxy
+// session lights untrusted_content_present, so a sensor-only session sharing
+// the same taint_bridge can light its own copy of the leg. Without this,
+// IngestSyscallSensor can never light untrusted_content_present at all —
+// AllLit() is permanently false in sensor-only mode, so the entire soft
+// SUSPICIOUS tier is inert there regardless of the connect-only classifyTrip
+// fix. See docs/cve_corpus.md and docs/architecture.md §13.
+type UntrustedForwarder func(source string, seq uint64)
 
 // Engine is the core trifecta policy engine. It evaluates tool calls against
 // the three-leg state machine and emits verdicts + evidence.
@@ -54,7 +63,8 @@ type Engine struct {
 	fragmentMaxChunks    int
 	fragmentMaxBytes     int
 
-	taintForwarder TaintForwarder
+	taintForwarder     TaintForwarder
+	untrustedForwarder UntrustedForwarder
 }
 
 // NewEngine creates an engine wired to the given store, tagger, and mode.
@@ -119,6 +129,15 @@ func (e *Engine) SetTaintForwarder(fn TaintForwarder) {
 	e.taintForwarder = fn
 }
 
+// SetUntrustedForwarder wires an optional callback fired the first time a
+// proxy session lights untrusted_content_present (proxy→sensor Unix-socket
+// bridge). Invoked outside Engine.mu. See RegisterRemoteUntrusted.
+func (e *Engine) SetUntrustedForwarder(fn UntrustedForwarder) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.untrustedForwarder = fn
+}
+
 // RegisterRemoteTaint seeds taint into a sensor session (typically k8s:<podUID>)
 // from the node-local taint bridge. Lights sensitive_source_touched like openat seed.
 func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
@@ -167,12 +186,52 @@ func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
 		sessionID, tv.Source, len(added))
 }
 
+// RegisterRemoteUntrusted lights untrusted_content_present in a sensor
+// session (typically k8s:<podUID>) from the node-local taint bridge, mirroring
+// RegisterRemoteTaint. Without this, IngestSyscallSensor can never light this
+// leg on its own — AllLit() would be permanently false in sensor-only mode,
+// making the entire soft SUSPICIOUS tier inert there (see docs/architecture.md
+// §13, docs/cve_corpus.md). Does not carry the excerpt text itself (bridge
+// stays a boolean "untrusted content was observed" signal, not a channel for
+// raw tool-result content) — content-bound SUSPICIOUS for payload-bearing
+// sensor-observed egress still requires a real excerpt, which is not
+// currently forwarded; the payload-less connect-only tripwire this restores
+// does not need one (classifyTrip fires on AllLit alone for those).
+func (e *Engine) RegisterRemoteUntrusted(sessionID string, source string, seq uint64) {
+	if sessionID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	state := e.store.GetOrCreate(sessionID)
+	e.touchSession(state, seq, "remote untrusted content registered")
+
+	if state.Legs.UntrustedContentPresent.Lit {
+		return
+	}
+	now := time.Now().UnixNano()
+	detail := "proxy taint bridge: untrusted content observed"
+	if source != "" {
+		detail = "proxy taint bridge: untrusted content observed (" + source + ")"
+	}
+	state.Legs.UntrustedContentPresent = model.Leg{
+		Lit:         true,
+		Detail:      detail,
+		LitAt:       now,
+		EventsAtLit: state.EventCount,
+	}
+	e.log.Printf("remote untrusted: session=%s source=%s leg lit", sessionID, source)
+}
+
 // IngestResult is called when a server→agent result arrives. It updates
 // the trifecta legs (sensitive_source_touched, untrusted_content_present),
 // extracts tainted values from sensitive sources, and appends to the timeline.
 func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 	var toForward []model.TaintedValue
 	var forwarder TaintForwarder
+	var newlyUntrusted bool
+	var untrustedForwarder UntrustedForwarder
 
 	e.mu.Lock()
 	state := e.store.GetOrCreate(ev.SessionID)
@@ -200,12 +259,19 @@ func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 			}
 		}
 	} else if e.untrustedToolResults {
+		if !state.Legs.UntrustedContentPresent.Lit {
+			newlyUntrusted = true
+			untrustedForwarder = e.untrustedForwarder
+		}
 		e.setUntrustedContentPresent(state, ev, extractResultText(ev.Result))
 	}
 	e.mu.Unlock()
 
 	if len(toForward) > 0 && forwarder != nil {
 		forwarder(toForward)
+	}
+	if newlyUntrusted && untrustedForwarder != nil {
+		untrustedForwarder(ev.ToolName, ev.Seq)
 	}
 }
 
@@ -225,7 +291,9 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 	e.setExternalSinkInvoked(state, ev)
 
 	overlap := CheckOverlap(state.Tainted, ev.ToolArgs)
-	verdict, confidence, ok := e.classifyTrip(state, overlap, string(ev.ToolArgs))
+	// A tools/call always has an args channel (even if this call's args are
+	// short/empty) — content-bind gates SUSPICIOUS here unconditionally.
+	verdict, confidence, ok := e.classifyTrip(state, overlap, string(ev.ToolArgs), true)
 	if !ok {
 		return model.Decision{Allow: true}
 	}
@@ -337,12 +405,35 @@ func (e *Engine) RewindLegClocks(sessionID string, d time.Duration) {
 
 // classifyTrip decides EXFIL / SUSPICIOUS / no-trip.
 // EXFIL: value overlap against registered taint (sensitive leg may have decayed).
-// SUSPICIOUS: AllLit + content bind between untrusted excerpts and sink.
-func (e *Engine) classifyTrip(state *model.SessionState, overlap *model.OverlapHit, sinkPayload string) (model.Verdict, float64, bool) {
+// SUSPICIOUS: AllLit, plus one of —
+//   - the sink event carries a payload/args channel at all, and that channel
+//     shares byte-level content with an untrusted excerpt (CheckContentBind);
+//   - the sink event has NO payload channel by construction (a bare
+//     connect() — TCP/UDP handshakes carry no application data, that's what
+//     the follow-up write()/sendto() is for). Content-bind cannot apply to
+//     "nothing"; requiring it here made the connect()-only tripwire
+//     structurally unreachable (an empty sink string always fails
+//     CheckContentBind's length check), silently deleting the signal a
+//     malicious subprocess opening its own raw socket is supposed to trip —
+//     see cve_2025_53967_figma_reverse_shell_connect_only_gap in
+//     internal/corpus/scenarios_cve.go and docs/cve_corpus.md.
+//
+// hasPayloadChannel is false only for events that structurally never carry
+// data (eBPF "connect"); true for anything that does (write/writev/sendto/
+// sendmsg/dns PayloadExcerpt, and Variant A tool-call args), even if this
+// particular instance's payload happens to be empty or unrelated — for
+// those, content-bind still gates SUSPICIOUS exactly as ROADMAP §1 intends.
+func (e *Engine) classifyTrip(state *model.SessionState, overlap *model.OverlapHit, sinkPayload string, hasPayloadChannel bool) (model.Verdict, float64, bool) {
 	if overlap != nil {
 		return model.VerdictExfil, 0.95, true
 	}
-	if state.Legs.AllLit() && CheckContentBind(state.UntrustedExcerpts, sinkPayload, e.contentBindMinLen) {
+	if !state.Legs.AllLit() {
+		return "", 0, false
+	}
+	if !hasPayloadChannel {
+		return model.VerdictSuspicious, 0.6, true
+	}
+	if CheckContentBind(state.UntrustedExcerpts, sinkPayload, e.contentBindMinLen) {
 		return model.VerdictSuspicious, 0.6, true
 	}
 	return "", 0, false
@@ -494,6 +585,10 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if ev.Syscall == "lsm_deny" {
+		return e.ingestLSMDeny(ev)
+	}
+
 	sessionID := ev.SessionID
 	if sessionID == "" {
 		e.recordUnattributedSyscall(ev, "no session attribution for monitored PID")
@@ -529,7 +624,11 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
 	}
 
-	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt)
+	// connect() is a bare TCP/UDP handshake — it never carries application
+	// data at the eBPF level (no Payload field on the raw event at all), so
+	// content-bind cannot apply to it; every other syscall type here
+	// (write/writev/sendto/sendmsg/dns) does carry a payload channel.
+	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt, ev.Syscall != "connect")
 	if !ok {
 		return model.Decision{Allow: true}
 	}
@@ -574,6 +673,10 @@ func (e *Engine) IngestSyscallSensor(ev model.SyscallEvent) model.Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if ev.Syscall == "lsm_deny" {
+		return e.ingestLSMDeny(ev)
+	}
+
 	sessionID := ev.SessionID
 	if sessionID == "" {
 		e.recordUnattributedSyscall(ev, "no pod attribution for monitored PID")
@@ -608,7 +711,9 @@ func (e *Engine) IngestSyscallSensor(ev model.SyscallEvent) model.Decision {
 		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
 	}
 
-	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt)
+	// See IngestSyscall's identical comment: connect() has no payload
+	// channel at all; every other syscall reaching this point does.
+	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt, ev.Syscall != "connect")
 	if !ok {
 		return model.Decision{Allow: true}
 	}
@@ -711,6 +816,25 @@ func (e *Engine) RecordToolShadowing(ev model.ShadowEvent) {
 	}
 }
 
+// RecordFailClosedTransition audit-logs fail-closed engage/clear transitions.
+func (e *Engine) RecordFailClosedTransition(engaged bool, reason string) {
+	kind := "fail_closed_cleared"
+	if engaged {
+		kind = "fail_closed_engaged"
+	}
+	if e.audit == nil {
+		return
+	}
+	rec := model.SecurityAuditEvent{
+		Kind:   kind,
+		Reason: reason,
+		TSWall: time.Now(),
+	}
+	if err := e.audit.EmitSecurityAudit(rec); err != nil {
+		e.log.Printf("[SECURITY] security audit write failed: %v", err)
+	}
+}
+
 func (e *Engine) buildEvidenceVariantB(
 	state *model.SessionState,
 	ev model.SyscallEvent,
@@ -780,6 +904,106 @@ func (e *Engine) buildEvidenceVariantB(
 		ValueOverlap: overlap,
 		Timeline:     timeline,
 		Pod:          ev.Pod,
+	}
+}
+
+// ingestLSMDeny handles a kernel-side connect() denial reported by the
+// opt-in LSM quarantine hook (v0.3 Phase 2, Slice 1 — ebpf.lsm_enforce).
+// The engine already confirmed EXFIL to arm the quarantine (see
+// internal/ebpf/sensor.go's Quarantine call alongside containPIDs); this is
+// purely a follow-up record that a *repeat* connection attempt from the same
+// PID/cgroup was denied in-kernel before the socket formed — no
+// leg/overlap re-classification, no new containment decision. Known gap:
+// the very first EXFIL-carrying packet is never caught here — it is always
+// contained_by_kill, since detection is payload-driven and necessarily lands
+// after connect() has already succeeded.
+func (e *Engine) ingestLSMDeny(ev model.SyscallEvent) model.Decision {
+	reason := fmt.Sprintf("lsm quarantine denied repeat connect() by pid %d (%s)", ev.PID, ev.Comm)
+
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		e.recordUnattributedSyscall(ev, "no session attribution for LSM-denied connect")
+		return model.Decision{Allow: true, Verdict: model.VerdictExfil, Action: model.ActionPrevented, Reason: reason}
+	}
+
+	state := e.store.Get(sessionID)
+	if state == nil || state.Status != model.Tripped {
+		e.log.Printf("[SECURITY] lsm_deny for session=%s pid=%d comm=%s but session not tripped locally — "+
+			"quarantine entry may be stale (kernel denied the connect regardless)", sessionID, ev.PID, ev.Comm)
+		return model.Decision{Allow: false, Verdict: model.VerdictExfil, Action: model.ActionPrevented, Reason: reason}
+	}
+
+	evidence := e.buildLSMDenyEvidence(state, ev)
+
+	if e.sink != nil {
+		if err := e.sink.Emit(evidence); err != nil {
+			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
+		}
+	}
+
+	e.log.Printf("LSM QUARANTINE HELD: session=%s pid=%d comm=%s — repeat connect() denied in-kernel",
+		sessionID, ev.PID, ev.Comm)
+
+	return model.Decision{
+		Allow:    false,
+		Verdict:  model.VerdictExfil,
+		Action:   model.ActionPrevented,
+		Reason:   reason,
+		Evidence: &evidence,
+	}
+}
+
+// buildLSMDenyEvidence builds a lightweight follow-up EvidenceRecord for an
+// already-tripped session, recording that the kernel denied a repeat
+// connect() attempt. Mirrors buildEvidenceVariantB's shape without
+// re-deriving legs/overlap (the session already tripped for those).
+func (e *Engine) buildLSMDenyEvidence(state *model.SessionState, ev model.SyscallEvent) model.EvidenceRecord {
+	sinkCall := map[string]any{
+		"syscall": "lsm_deny",
+		"pid":     ev.PID,
+		"comm":    ev.Comm,
+	}
+
+	timeline := make([]model.TimelineItem, 0, len(state.Timeline)+1)
+	for i, seq := range state.Timeline {
+		item := model.TimelineItem{
+			TimelineSeq: i + 1,
+			TSMono:      time.Now().UnixNano(),
+			Kind:        "intercepted",
+			Ref:         seq,
+		}
+		switch {
+		case seq == state.Legs.SensitiveSourceTouched.TriggerSeq:
+			item.Label = fmt.Sprintf("sensitive_source_touched: %s", state.Legs.SensitiveSourceTouched.Detail)
+		case seq == state.Legs.UntrustedContentPresent.TriggerSeq:
+			item.Label = fmt.Sprintf("untrusted_content_present: %s", state.Legs.UntrustedContentPresent.Detail)
+		default:
+			if label, ok := state.TimelineLabels[seq]; ok {
+				item.Label = label
+			} else {
+				item.Label = fmt.Sprintf("event #%d", seq)
+			}
+		}
+		timeline = append(timeline, item)
+	}
+	timeline = append(timeline, model.TimelineItem{
+		TimelineSeq: len(state.Timeline) + 1,
+		TSMono:      ev.TSMono,
+		Kind:        "syscall",
+		Label:       fmt.Sprintf("lsm_deny: kernel denied repeat connect() by %s (pid %d)", ev.Comm, ev.PID),
+	})
+
+	return model.EvidenceRecord{
+		SessionID:  state.SessionID,
+		TripTS:     time.Now().UnixNano(),
+		Verdict:    model.VerdictExfil,
+		Action:     model.ActionPrevented,
+		Variant:    model.VariantB,
+		Confidence: state.Confidence,
+		Legs:       state.Legs,
+		SinkCall:   sinkCall,
+		Timeline:   timeline,
+		Pod:        ev.Pod,
 	}
 }
 
