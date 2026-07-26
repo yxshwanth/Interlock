@@ -47,6 +47,9 @@ type AsyncEvidenceSink struct {
 	log          *log.Logger
 	done         chan struct{}
 
+	OnFailure func(error) // optional: evidence write failed (fail-closed)
+	OnSuccess func()      // optional: evidence write succeeded
+
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup
@@ -111,7 +114,13 @@ func (s *AsyncEvidenceSink) emitInner(rec model.EvidenceRecord) {
 	}
 	if err := s.inner.Emit(rec); err != nil {
 		s.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
+		if s.OnFailure != nil {
+			s.OnFailure(err)
+		}
 		return
+	}
+	if s.OnSuccess != nil {
+		s.OnSuccess()
 	}
 	s.mu.Lock()
 	obs := s.observer

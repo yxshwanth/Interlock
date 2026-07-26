@@ -5,7 +5,7 @@ This is the **detection-scope** document for adopters and reviewers — distinct
 from a full threat model *of Interlock itself* (least-privilege / tamper
 resistance of the TCB): [`threat_model.md`](threat_model.md).
 
-Measured rates and scenario inventory: [`fp_corpus.md`](fp_corpus.md).
+Measured rates and scenario inventory: [`fp_corpus.md`](fp_corpus.md) (self-authored corpus) and [`cve_corpus.md`](cve_corpus.md) (reconstructed from published, third-party-disclosed MCP CVEs — the same catches/gaps below, tested against attacks Interlock wasn't built to pass).
 Engine gates: [`architecture.md`](architecture.md) §7.
 
 ---
@@ -19,11 +19,15 @@ a session looks like Simon Willison's lethal trifecta turning into exfiltration.
 | Verdict | Meaning | Hard enforcement (`enforcement: block` / Variant B) |
 |---|---|---|
 | **EXFIL** (0.95) | A registered tainted secret appears in a sink call or egress payload (literal or canonical encoding) | Yes — `prevented` / `contained_by_kill` |
-| **SUSPICIOUS** (0.60) | All three trifecta legs lit **and** untrusted content shares a long byte substring with the sink | No — evidence + `allowed_monitor` / `detected_only` |
+| **SUSPICIOUS** (0.60) | All three trifecta legs lit, plus (if the sink event carries a payload/args channel) untrusted content shares a long byte substring with it — a bare `connect()` has no such channel, so `AllLit` alone is enough there | No — evidence + `allowed_monitor` / `detected_only` |
 
 EXFIL is the bar for "we proved a secret moved." SUSPICIOUS is a soft signal
-for "this session has the shape of risk and the sink is content-bound to
-untrusted input" — tuned for low uninstall-risk after ROADMAP §1.
+for "this session has the shape of risk" — content-bound to untrusted input
+when the sink has content to bind against, or a bare anomalous `connect()`
+when it doesn't. [`docs/cve_corpus.md`](cve_corpus.md) found the connect-only
+case had been silently deleted as a side effect of the ROADMAP §1
+content-binding fix (an empty sink string always failed the bind check,
+regardless of leg state) — now fixed.
 
 ---
 
@@ -38,7 +42,9 @@ Pinned by non-gap malicious corpus scenarios (must stay at 100% EXFIL-tier):
 - **Secrets outside `content[].text`** — bounded string-leaf walk (`malicious_proxy_a_secret_outside_content_text`)
 - **Alternate sink tools** on an `external_sink` server (`http_post` as well as `send_message`)
 - **Busy-session late exfil** — secret read early, many unrelated tool calls and benign sinks, then late overlap (`malicious_proxy_a_noisy_busy_session_late_exfil`); taint is retained even when sticky legs decay
-- **Variant B / sensor** — write/sendto/DNS payload overlap (including near end of 512-byte window); sensor `openat` seed + write EXFIL
+- **Variant B / sensor** — write/sendto/DNS payload overlap (including near end of the capture window; default 512 bytes); sensor `openat` seed + write EXFIL; dual ringbufs so connect floods cannot drop EXFIL/`lsm_deny` evidence
+- **Repeat connect() after EXFIL confirmed** (opt-in `ebpf.lsm_enforce`) — further `connect()` denied in-kernel (`prevented`)
+- **Fail-closed health trips** (opt-in `fail_closed.enabled`) — not a detection class, but blocks monitored egress when Interlock itself is degraded (ringbuf drop rate / sink failure / panic)
 
 Complementary soft signal (not hard-block):
 
@@ -80,6 +86,7 @@ Soft SUSPICIOUS may still fire if untrusted content and the sink share a long
 | eBPF payload past capture window | `malicious_gap_payload_truncated` |
 | Untagged write tool on a sensitive server | `malicious_gap_untagged_tool_on_sensitive_server` |
 | Semantic / paraphrased exfil | `malicious_gap_semantic_paraphrase_exfil` |
+| First EXFIL-carrying packet is never kernel-prevented — `connect()` has no payload, so even with `ebpf.lsm_enforce` on, detection lands after `connect()` succeeds; only *repeat* attempts get `prevented` | `TestIngestSyscall_FirstPacketStillContained_KnownGap` |
 
 Closing a gap means flipping the scenario out of KnownGap and keeping EXFIL-tier
 FP at 0% on the benign corpus.
@@ -95,8 +102,16 @@ FP at 0% on the benign corpus.
   hard-block that class.
 - **Semantic exfil** needs complementary controls; Interlock will not pretend to
   "understand" outbound prose.
+- **`ebpf.lsm_enforce` (opt-in, default off)** requires `CONFIG_BPF_LSM=y` and
+  `"bpf"` active in `/sys/kernel/security/lsm` — not on by default on stock
+  distro kernels; see [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md).
+  Attach failure fails soft (logged `[SECURITY]` warning); kill-on-detect is
+  unaffected either way. Sensor-mode `fail_closed.enabled` requires a live LSM
+  attach (config validation).
 - **Regenerate numbers** after detection changes: `make fp-corpus`,
   `go test ./internal/corpus/...`.
+- **Evidence integrity:** `make verify-evidence` checks the hash chain; ship
+  SIEM/webhook off-node for durability beyond local FS.
 
 ---
 
@@ -105,7 +120,8 @@ FP at 0% on the benign corpus.
 | Doc | Role |
 |---|---|
 | This file | Detection boundary — attack classes in/out of scope |
-| [`fp_corpus.md`](fp_corpus.md) | Measured detection / FP rates |
+| [`fp_corpus.md`](fp_corpus.md) | Measured detection / FP rates (self-authored corpus) |
+| [`cve_corpus.md`](cve_corpus.md) | Detection rate against reconstructed, published, third-party-disclosed CVEs |
 | [`architecture.md`](architecture.md) | Mechanisms (legs, overlap, bind, decay) |
 | [`SECURITY.md`](../SECURITY.md) | Vulnerability reporting; points here for defense scope |
 | [`threat_model.md`](threat_model.md) | Threats *against Interlock* (root, eBPF, RBAC, bridge, evidence integrity) |

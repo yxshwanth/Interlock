@@ -182,6 +182,16 @@ type EBPFConfig struct {
 	// copied into the ring buffer (default 512). Clamped to [64, 1024];
 	// raising above the compiled PAYLOAD_MAX requires rebuilding the BPF object.
 	PayloadCaptureBytes int `yaml:"payload_capture_bytes"`
+
+	// LSMEnforce opts into the kernel-level connect() quarantine hook
+	// (v0.3 Phase 2, Slice 1): once the existing write/sendto payload-overlap
+	// path confirms EXFIL for a PID/cgroup, any further connect() from it is
+	// denied in-kernel with -EPERM. Requires CONFIG_BPF_LSM=y and "bpf"
+	// active in /sys/kernel/security/lsm (see deploy/k8s/PRIVILEGE.md);
+	// attach failure fails soft with a logged warning. Default false — the
+	// existing SIGKILL-on-detect containment is unchanged either way.
+	// Required when fail_closed.enabled in sensor mode.
+	LSMEnforce bool `yaml:"lsm_enforce"`
 }
 
 // PayloadCaptureBytesOrDefault returns the runtime capture window (default 512).
@@ -190,6 +200,90 @@ func (e EBPFConfig) PayloadCaptureBytesOrDefault() int {
 		return 512
 	}
 	return e.PayloadCaptureBytes
+}
+
+// FailClosedConfig opts into blocking monitored egress when Interlock's own
+// health degrades (routine or critical ringbuf drop rate, evidence sink
+// failure, engine/sensor panic) instead of fail-open with [SECURITY] warnings.
+// Scope is always all currently watched PIDs/cgroups — drop counters are
+// severity-class globals, not per-pod. Sensor mode requires ebpf.lsm_enforce
+// (kernel -EPERM via quarantine maps).
+type FailClosedConfig struct {
+	Enabled                      bool    `yaml:"enabled"`
+	RingbufDropRateThreshold     float64 `yaml:"ringbuf_drop_rate_threshold"`     // drops/sec; default 50
+	RingbufRecoveryRateThreshold float64 `yaml:"ringbuf_recovery_rate_threshold"` // hysteresis low; default 10
+	SinkFailureThreshold         int     `yaml:"sink_failure_threshold"`          // consecutive write failures; default 3
+	PanicThreshold               int     `yaml:"panic_threshold"`                 // panics to trip; default 1
+	MinTripDuration              string  `yaml:"min_trip_duration"`               // default 30s
+	RecoveryWindow               string  `yaml:"recovery_window"`                 // default 30s
+	BackoffMultiplier            float64 `yaml:"backoff_multiplier"`              // default 2.0
+	MaxTripDuration              string  `yaml:"max_trip_duration"`               // default 10m
+}
+
+// RingbufDropRateThresholdOrDefault returns the high-water drop rate (default 50/s).
+func (f FailClosedConfig) RingbufDropRateThresholdOrDefault() float64 {
+	if f.RingbufDropRateThreshold <= 0 {
+		return 50
+	}
+	return f.RingbufDropRateThreshold
+}
+
+// RingbufRecoveryRateThresholdOrDefault returns the low-water drop rate (default 10/s).
+func (f FailClosedConfig) RingbufRecoveryRateThresholdOrDefault() float64 {
+	if f.RingbufRecoveryRateThreshold <= 0 {
+		return 10
+	}
+	return f.RingbufRecoveryRateThreshold
+}
+
+// SinkFailureThresholdOrDefault returns consecutive sink failures to trip (default 3).
+func (f FailClosedConfig) SinkFailureThresholdOrDefault() int {
+	if f.SinkFailureThreshold <= 0 {
+		return 3
+	}
+	return f.SinkFailureThreshold
+}
+
+// PanicThresholdOrDefault returns panics required to trip (default 1).
+func (f FailClosedConfig) PanicThresholdOrDefault() int {
+	if f.PanicThreshold <= 0 {
+		return 1
+	}
+	return f.PanicThreshold
+}
+
+// MinTripDurationOrDefault returns the minimum time spent tripped (default 30s).
+func (f FailClosedConfig) MinTripDurationOrDefault() time.Duration {
+	return parsePositiveDuration(f.MinTripDuration, 30*time.Second)
+}
+
+// RecoveryWindowOrDefault returns the sustained-clean window before clear (default 30s).
+func (f FailClosedConfig) RecoveryWindowOrDefault() time.Duration {
+	return parsePositiveDuration(f.RecoveryWindow, 30*time.Second)
+}
+
+// BackoffMultiplierOrDefault returns the re-trip backoff multiplier (default 2.0).
+func (f FailClosedConfig) BackoffMultiplierOrDefault() float64 {
+	if f.BackoffMultiplier <= 1 {
+		return 2.0
+	}
+	return f.BackoffMultiplier
+}
+
+// MaxTripDurationOrDefault returns the backoff ceiling (default 10m).
+func (f FailClosedConfig) MaxTripDurationOrDefault() time.Duration {
+	return parsePositiveDuration(f.MaxTripDuration, 10*time.Minute)
+}
+
+func parsePositiveDuration(s string, def time.Duration) time.Duration {
+	if s == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 // Config is the top-level Interlock configuration, loaded from interlock.yaml.
@@ -202,6 +296,7 @@ type Config struct {
 	Alerting         AlertingConfig      `yaml:"alerting"`
 	SIEM             SIEMConfig          `yaml:"siem"`
 	EBPF             EBPFConfig          `yaml:"ebpf"`
+	FailClosed       FailClosedConfig    `yaml:"fail_closed"`
 	Enforcement      string              `yaml:"enforcement"`
 	Trifecta         TrifectaConfig      `yaml:"trifecta"`
 	TaintBridge      TaintBridgeConfig   `yaml:"taint_bridge"`
@@ -217,9 +312,13 @@ type Config struct {
 
 // TaintBridgeConfig configures the node-local Unix-socket proxy↔sensor taint bridge.
 // Sensor listens when enabled; proxy dials the same socket_path when enabled.
+// When enabled, at least one of allowed_uids / allowed_gids is required (SO_PEERCRED).
 type TaintBridgeConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	SocketPath string `yaml:"socket_path"` // default /var/run/interlock/taint.sock
+	Enabled     bool   `yaml:"enabled"`
+	SocketPath  string `yaml:"socket_path"` // default /var/run/interlock/taint.sock
+	AllowedUIDs []int  `yaml:"allowed_uids"`
+	AllowedGIDs []int  `yaml:"allowed_gids"`
+	SocketGID   int    `yaml:"socket_gid"` // optional; chown socket after bind for non-root peers
 }
 
 // SocketPathOrDefault returns the bridge socket path.
@@ -351,6 +450,12 @@ func (c *Config) validate(sensorMode bool) error {
 	if err := c.validateSIEM(); err != nil {
 		return err
 	}
+	if err := c.validateFailClosed(sensorMode); err != nil {
+		return err
+	}
+	if err := c.validateTaintBridge(); err != nil {
+		return err
+	}
 
 	if len(c.Servers) == 0 {
 		if !sensorMode {
@@ -373,6 +478,59 @@ func (c *Config) validate(sensorMode bool) error {
 		seen[s.ID] = true
 	}
 
+	return nil
+}
+
+func (c *Config) validateFailClosed(sensorMode bool) error {
+	if !c.FailClosed.Enabled {
+		return nil
+	}
+	if sensorMode && !c.EBPF.LSMEnforce {
+		return fmt.Errorf("fail_closed.enabled in sensor mode requires ebpf.lsm_enforce: true (kernel quarantine is the only deny path for watched egress)")
+	}
+	hi := c.FailClosed.RingbufDropRateThresholdOrDefault()
+	lo := c.FailClosed.RingbufRecoveryRateThresholdOrDefault()
+	if lo >= hi {
+		return fmt.Errorf("fail_closed.ringbuf_recovery_rate_threshold (%g) must be < ringbuf_drop_rate_threshold (%g)", lo, hi)
+	}
+	if c.FailClosed.MinTripDuration != "" {
+		if _, err := time.ParseDuration(c.FailClosed.MinTripDuration); err != nil {
+			return fmt.Errorf("fail_closed.min_trip_duration: %w", err)
+		}
+	}
+	if c.FailClosed.RecoveryWindow != "" {
+		if _, err := time.ParseDuration(c.FailClosed.RecoveryWindow); err != nil {
+			return fmt.Errorf("fail_closed.recovery_window: %w", err)
+		}
+	}
+	if c.FailClosed.MaxTripDuration != "" {
+		if _, err := time.ParseDuration(c.FailClosed.MaxTripDuration); err != nil {
+			return fmt.Errorf("fail_closed.max_trip_duration: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateTaintBridge() error {
+	if !c.TaintBridge.Enabled {
+		return nil
+	}
+	if len(c.TaintBridge.AllowedUIDs) == 0 && len(c.TaintBridge.AllowedGIDs) == 0 {
+		return fmt.Errorf("taint_bridge.enabled requires allowed_uids and/or allowed_gids (SO_PEERCRED peer authentication)")
+	}
+	for _, u := range c.TaintBridge.AllowedUIDs {
+		if u < 0 {
+			return fmt.Errorf("taint_bridge.allowed_uids entries must be >= 0")
+		}
+	}
+	for _, g := range c.TaintBridge.AllowedGIDs {
+		if g < 0 {
+			return fmt.Errorf("taint_bridge.allowed_gids entries must be >= 0")
+		}
+	}
+	if c.TaintBridge.SocketGID < 0 {
+		return fmt.Errorf("taint_bridge.socket_gid must be >= 0")
+	}
 	return nil
 }
 

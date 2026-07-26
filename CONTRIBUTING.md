@@ -142,10 +142,11 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for v0.2 and v0.3 plans. Open an issue be
 
 High-value areas:
 
-- LSM/KRSI in-kernel blocking (v0.3 Phase 2 — demand-gated, highest risk/reward)
-- Fail-closed, CEF SIEM, cross-session evidence query (ROADMAP Next §5)
-- eBPF gaps: IPv6, `sendmsg`/`writev`, larger payload capture
+- `sendmsg` / `writev` probes (Variant B + LSM surface) — highest remaining kernel risk/reward
+- CEF SIEM export; cross-session evidence dashboard / query (ROADMAP Next §5)
+- eBPF gaps: IPv6, larger/dynamic payload capture, per-pod drop maps
 - Dataflow taint: depth-4+ nests, non-gzip compressors
+- Already shipped (do not re-open): LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge + SO_PEERCRED, writev/sendmsg/IPv6 — see [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/architecture.md`](docs/architecture.md) §13
 - Phase 4 Trust **met** — [`docs/threat_model.md`](docs/threat_model.md), [`docs/reproducible_builds.md`](docs/reproducible_builds.md), [`docs/fp_corpus.md`](docs/fp_corpus.md)
 ## Security
 
