@@ -131,12 +131,25 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 
 	ev := sess.CreateEvent(frame, model.AgentToServer, sc.proc.ID, sc.proc.PID)
 
+	if active, reason := p.FailClosed(); active {
+		blockReason := "fail_closed: " + reason
+		ev.Decision = "blocked"
+		ev.BlockReason = blockReason
+		p.logEvent(ev)
+		data := p.buildErrorResponse(msg.ID, -32000,
+			fmt.Sprintf("call blocked by Interlock: %s", blockReason))
+		return &DispatchResult{Response: data, Blocked: true}, nil
+	}
+
 	if p.engine != nil {
 		var decision model.Decision
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — FAIL-OPEN, call forwarded: %v", r)
+					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — FAIL-OPEN for this call, notifying fail-closed breaker: %v", r)
+					if p.onEnginePanic != nil {
+						p.onEnginePanic(r)
+					}
 					decision = model.Decision{Allow: true}
 				}
 			}()

@@ -1,4 +1,4 @@
-.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent demo-k8s image clean bench bench-http race readme-gif fp-corpus release bpf-generate
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent demo-k8s image clean bench bench-http race readme-gif fp-corpus cve-corpus verify-evidence release bpf-generate lsm-vm-up lsm-vm-ssh lsm-vm-sync lsm-vm-down
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
@@ -43,6 +43,20 @@ bench-http: build
 # corpus. No root/BTF/kind required — drives internal/engine directly.
 fp-corpus: build
 	$(GO) run ./cmd/fp-corpus
+
+# Regenerates docs/cve_corpus.md from the internal/corpus CVE-derived
+# corpus (reconstructed, third-party-disclosed MCP CVEs, not self-authored
+# scenarios). No root/BTF/kind required — drives internal/engine directly.
+cve-corpus: build
+	$(GO) run ./cmd/cve-corpus
+
+# Verify the on-disk evidence hash chain (tamper-evident). Override:
+#   make verify-evidence EVIDENCE_PATH=evidence.jsonl BACKEND=jsonl
+#   make verify-evidence EVIDENCE_PATH=evidence.db BACKEND=sqlite
+BACKEND ?= jsonl
+EVIDENCE_PATH ?= evidence.jsonl
+verify-evidence: build
+	$(GO) run ./cmd/verify-evidence -backend=$(BACKEND) -path=$(EVIDENCE_PATH)
 
 # Convert media/ReadmeGif.mp4 → media/ReadmeGif.gif for the README hero (requires ffmpeg).
 readme-gif: media/ReadmeGif.gif
@@ -110,6 +124,23 @@ demo-quiet-http-ebpf: clean-evidence build
 demo-k8s:
 	chmod +x scripts/demo-k8s.sh
 	INTERLOCK_IMAGE=$(IMAGE) ./scripts/demo-k8s.sh
+
+# Throwaway EC2 VM for LSM/KRSI prototyping (v0.3 Phase 2). See deploy/ec2/README.md.
+lsm-vm-up:
+	chmod +x deploy/ec2/setup-instance.sh deploy/ec2/bootstrap.sh
+	./deploy/ec2/setup-instance.sh
+
+lsm-vm-ssh:
+	chmod +x deploy/ec2/ssh.sh
+	./deploy/ec2/ssh.sh
+
+lsm-vm-sync:
+	chmod +x deploy/ec2/sync.sh
+	./deploy/ec2/sync.sh
+
+lsm-vm-down:
+	chmod +x deploy/ec2/destroy-instance.sh
+	./deploy/ec2/destroy-instance.sh
 
 clean-evidence:
 	rm -f evidence.jsonl evidence.json events.jsonl
