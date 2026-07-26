@@ -46,10 +46,10 @@ func testConfig(mode string) *config.Config {
 			{ID: "web", Command: "./web", ProvidesTags: []string{}},
 		},
 		ToolTags: map[string][]string{
-			"read_ticket":   {"sensitive_source"},
-			"send_message":  {"external_sink"},
-			"http_post":     {"external_sink"},
-			"fetch_page":    {},
+			"read_ticket":  {"sensitive_source"},
+			"send_message": {"external_sink"},
+			"http_post":    {"external_sink"},
+			"fetch_page":   {},
 			// Untagged override on the sensitive tickets server — neither
 			// sensitive_source nor external_sink (covers intra-server relay gap).
 			"internal_note": {},
@@ -63,11 +63,20 @@ func testConfig(mode string) *config.Config {
 
 // Run replays every scenario against a fresh Engine + SessionStore
 // (one session per scenario, no shared state across scenarios) and scores
-// the outcome.
+// the outcome, using the shared fp-corpus fixture config (testConfig).
 func Run(scenarios []Scenario) []Result {
+	return RunWithConfig(scenarios, testConfig)
+}
+
+// RunWithConfig is Run with a caller-supplied config builder, so a
+// differently-shaped corpus (e.g. the CVE corpus's git/figma-flavored
+// servers and tools) can drive the same engine/scoring machinery without
+// polluting the fp-corpus fixture shared by scenarios_malicious.go /
+// scenarios_benign.go.
+func RunWithConfig(scenarios []Scenario, cfg func(mode string) *config.Config) []Result {
 	results := make([]Result, 0, len(scenarios))
 	for _, sc := range scenarios {
-		results = append(results, runOne(sc))
+		results = append(results, runOne(sc, cfg))
 	}
 	return results
 }
@@ -77,14 +86,14 @@ func All() []Scenario {
 	return append(MaliciousScenarios(), BenignScenarios()...)
 }
 
-func runOne(sc Scenario) Result {
+func runOne(sc Scenario, cfgFn func(mode string) *config.Config) Result {
 	mode := sc.Enforcement
 	if mode == "" {
 		mode = "block"
 	}
 
 	store := engine.NewSessionStore()
-	cfg := testConfig(mode)
+	cfg := cfgFn(mode)
 	tagger := engine.NewTagger(cfg)
 	eng := engine.NewEngine(store, tagger, mode, nil)
 	eng.Configure(cfg)

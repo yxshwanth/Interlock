@@ -127,12 +127,28 @@ func (n *WebhookNotifier) buildBody(rec model.EvidenceRecord) ([]byte, string, e
 		payload := map[string]any{
 			"routing_key":  n.cfg.PagerDutyRoutingKey,
 			"event_action": "trigger",
-			"dedup_key":    fmt.Sprintf("%s-%d", rec.SessionID, rec.TripTS),
+			// Session-scoped AND verdict-scoped — deliberately NOT
+			// session-only. Session-only was tried and reverted: PagerDuty
+			// sets severity/urgency from the triggering event and a
+			// still-open, already-acknowledged incident does not generally
+			// re-escalate on a later dedup'd trigger, so a session-only key
+			// let a later, higher-confidence EXFIL silently merge into an
+			// already-acked, lower-severity SUSPICIOUS incident instead of
+			// paging at the severity it deserves — the highest-confidence
+			// detection landing as a quiet update on a medium ticket. Keying
+			// on verdict too means: repeated SUSPICIOUS trips in one session
+			// (e.g. a chatty pod making several non-allowlisted connects,
+			// see docs/cve_corpus.md's volume finding) still merge into one
+			// incident — the noise case this exists to fix — but an
+			// escalation to EXFIL always gets its own fresh, correctly
+			// `critical`-severity incident that cannot be absorbed into a
+			// stale, already-acked one.
+			"dedup_key": rec.SessionID + ":" + string(rec.Verdict),
 			"payload": map[string]any{
-				"summary":   formatSummary(rec),
-				"severity": pdSeverity(rec.Verdict),
-				"source":    "interlock",
-				"timestamp": time.Unix(0, rec.TripTS).UTC().Format(time.RFC3339),
+				"summary":        formatSummary(rec),
+				"severity":       pdSeverity(rec.Verdict),
+				"source":         "interlock",
+				"timestamp":      time.Unix(0, rec.TripTS).UTC().Format(time.RFC3339),
 				"custom_details": compactDetails(rec),
 			},
 		}

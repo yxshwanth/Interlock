@@ -94,6 +94,19 @@ type Scenario struct {
 	// exists in internal/engine.
 	GapNote string
 
+	// PreExistingGap (KnownGap scenarios only) marks a miss that was
+	// entailed before the scenario ever ran, because it lands on a gap
+	// already catalogued in docs/architecture.md (e.g. the depth-4+
+	// recursive-decode KnownGap, the non-gzip-compressor KnownGap) rather
+	// than one this scenario itself surfaced. This matters for
+	// docs/cve_corpus.md: a CVE reconstruction that reproduces a
+	// pre-catalogued gap confirms the gap catalogue predicts real-world
+	// attack shapes — a real but different claim from a reconstruction
+	// that probed open ground and told us something new. Leave false
+	// (the default) for a scenario whose miss was not already documented
+	// as a KnownGap prior to being authored.
+	PreExistingGap bool
+
 	// ExpectTripByDesign (benign only) pins whether this benign scenario is
 	// expected to trip SUSPICIOUS (TrippedAny) under the CURRENT trifecta
 	// design, even though no exfiltration occurred — e.g. the sticky,
@@ -107,5 +120,21 @@ type Scenario struct {
 	// DesignNote explains why ExpectTripByDesign is true, when set.
 	DesignNote string
 
+	// CVERef, when non-nil, marks this scenario as reconstructed from a
+	// specific published, third-party-disclosed CVE (see
+	// internal/corpus/scenarios_cve.go and docs/cve_corpus.md) rather than
+	// self-authored. Nil on every scenario in scenarios_malicious.go /
+	// scenarios_benign.go.
+	CVERef *CVERef
+
 	Steps []Step
+}
+
+// CVERef cites the real-world disclosure a scenario reconstructs, so the
+// published report can link each scenario back to its source rather than
+// asserting "this is what CVE-X looked like" from memory.
+type CVERef struct {
+	ID        string // e.g. "CVE-2025-68143"
+	Source    string // canonical disclosure/writeup URL
+	RealWorld string // one-line description of the actual exploited product/mechanism
 }

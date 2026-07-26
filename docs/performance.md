@@ -1,6 +1,6 @@
 # Performance
 
-Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+). For live production numbers (not benchmark snapshots), scrape `interlock_*` Prometheus metrics from `observability.listen` — see [`architecture.md` §14.1](architecture.md#141-metrics-and-health-internalobservability) and [`deploy/k8s/README.md`](../deploy/k8s/README.md#metrics-and-health-phase-3-slice-1).
+Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+). For live production numbers (not benchmark snapshots), scrape `interlock_*` Prometheus metrics from `observability.listen` — including `interlock_ebpf_ringbuf_drops_total` (routine) and `interlock_ebpf_critical_ringbuf_drops_total` (critical) — see [`architecture.md` §14.1](architecture.md#141-metrics-and-health-internalobservability) and [`deploy/k8s/README.md`](../deploy/k8s/README.md#metrics-and-health-phase-3-slice-1).
 
 ## What these numbers are and are not
 
@@ -10,7 +10,7 @@ Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP p
 
 Do **not** quote `BenchmarkEngine_EvaluateRequest_Exfil` (~0.56 ms) as steady-state overhead. Do **not** quote absolute `read_ticket` p99 (~12 ms) as "Interlock's cost" — that is mostly the demo tickets server's I/O.
 
-**Headline (engine delta, snapshot machine):** Interlock adds **sub-millisecond engine overhead** — **~0.5 ms on sensitive reads (typical agent traffic)** and **~0.1 ms on sink checks**. Agents read sensitive data constantly; the common path is the higher number, not the lower.
+**Headline (engine delta, snapshot machine):** Interlock adds **sub-millisecond engine overhead** — **~0.5 ms on sensitive reads (typical agent traffic)** and **~0.1 ms on sink checks**. Agents read sensitive data constantly; the common path is the higher number, not the lower. This headline is measured on short (~40-byte) token-shaped secrets; it does **not** hold for a session that reads PEM/PuTTY-shaped keyfiles — see "Read-path scaling by value size" below.
 
 ## End-to-end HTTP overhead
 
@@ -54,6 +54,8 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 **Read-path scaling:** the ~536 µs / +63 allocs delta is for a demo ticket with **2 tainted values**. `IngestResult` registers each secret plus five canonical encodings — cost scales **linearly with secrets-per-result**. A payload returning 50 secrets would be roughly 25× that ingestion work; "~0.5 ms" means "~0.5 ms for a 2-secret read," not a universal ceiling. Same caveat class as the absolute-latency backend-I/O note: measured on a toy fixture; scaling behavior is documented so you can extrapolate.
 
+**Read-path scaling by VALUE size, not just count — the "~0.5 ms" headline does not hold for a keyfile read.** Every prior number on this page is measured against short (~40-byte) token-shaped secrets. `internal/engine/taint.go`'s PEM/PuTTY patterns register a whole private-key block (~1.7-3.2KB for a real RSA-2048+ key) as one tainted value — a materially different size class. `BenchmarkCanonicalEncodings_PEMSized` (~111 µs vs. ~68-88 µs token-sized) shows registration itself only grows modestly. The bigger effect is in `IngestResult`'s reassembly path: `appendFragment`'s rolling FIFO caps at 16 chunks / 64KB (`defaultFragmentChunks`, `defaultFragmentBytes`), and `ExtractTaintedValues` re-runs its full pattern set (6 regexes) over `strings.Join(state.FragmentChunks, "")` on **every** sensitive-source read, not just the fresh chunk. With ~40-byte tokens, 16 chunks reassemble to under 1KB; with ~1.7KB PEM chunks, the same 16-chunk cap reassembles to **~28KB**, scanned by every pattern on every read. Measured: `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` — **~4.1-4.3 ms/op**, ~1.8MB/op, 189-196 allocs, against the token-fixture baseline's ~345 µs/op — **roughly 12x**, not the 1.5x `CanonicalEncodings` alone would predict. A session that reads keyfiles/PEM-shaped secrets repeatedly reaches this steady-state reassembly cost within ~16 reads (vs. ~1600 reads for 40-byte tokens before the FIFO fills at its byte cap) and pays it on every subsequent sensitive read, not just once.
+
 **Two optimization levers (different hot spots):**
 
 1. **Block path:** evidence construction (~563 µs / 6.3K allocs on trip with in-memory sink). **Async evidence emit (shipped):** `AsyncEvidenceSink` enqueues under `Emit` so JSONL/SQLite/`evidence.json` I/O no longer runs under `Engine.mu` before `Decision` returns. Construction still dominates allocs; sink I/O is off the hot path. Config: `evidence.backpressure: block | drop`, `evidence.queue_size`.
@@ -83,6 +85,8 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 | `BenchmarkEvaluateRequest_Exfil_Scale/1000` | ~140µs | 64KB | 900 | Engine path with fat taint map (hit); evidence construction dominates when tripping |
 | `BenchmarkEngine_IngestResult_TaintExtract` | 8163 | 2305 | 38 | Sensitive source result ingest + taint (session legs warmed; tainted reset each iter) |
 | `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence **construction** (in-memory test sink) — rare trip only; production disk I/O is async via `AsyncEvidenceSink` |
+| `BenchmarkCanonicalEncodings_PEMSized` | ~111µs | ~869KB | 42 | Registration cost for one ~1.7KB PEM-sized value vs. `BenchmarkCanonicalEncodings`'s ~40-byte token — only ~1.5x, not the dominant PEM cost |
+| `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` | **~4.1-4.3ms** | ~1.8MB | ~190 | Same fixture as `BenchmarkEngine_IngestResult_TaintExtract` but with a PEM-sized value — **~12x** the token baseline; dominated by the fragment-reassembly regex pass, see "Read-path scaling by value size" above |
 
 ### Taint-map scaling curve (snapshot)
 
@@ -105,10 +109,10 @@ Each skip test names a **distinct** gap. Full list lives in code; the performanc
 
 | Test | Package | Gap |
 |---|---|---|
-| `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: floods at capture sizes 256/512/1024; CI verifies `DropCount` API (`TestLoader_DropCount_Unloaded`); saturation flood requires root + BTF (`sudo go test`) |
+| `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: connect flood → routine drops (critical drained, no connect events there); write flood → critical drops; mixed floods at capture 256/512/1024; CI verifies DropCount/CriticalDropCount APIs (`TestLoader_DropCount_Unloaded`); `TestLSM_DenySurvivesConnectFlood` on BPF-LSM hosts |
 | `TestEventLogger_DiskFull_KnownGap` | `internal/proxy` | Disk-full logging behavior |
 | `TestEvidenceStore_CrossSessionQuery_KnownGap` | `internal/engine` | SQLite query API / viewer DB integration |
-| `TestCheckOverlap_CompressedOther_KnownGap` | `internal/engine` | Non-gzip compressors — encoding-check cost if closed; see [`SUMMARY.md`](SUMMARY.md) priority tiers |
+| `TestCheckOverlap_CompressedOther_KnownGap` | `internal/engine` | Non-gzip compressors — encoding-check cost if closed; see [`architecture.md`](architecture.md) §13 priority tiers |
 | `TestCheckOverlap_TripleEncoded` | `internal/engine` | Depth-3 nests **closed** via sink-path recursive decoder |
 | `TestCheckOverlap_PayloadTruncated_KnownGap` | `internal/engine` | Secrets past the eBPF `write()` capture window (`PAYLOAD_MAX` / `payload_capture_bytes`) |
 | `TestToolShadowing_RuntimeReregistration_KnownGap` | `internal/proxy` | Mid-session dynamic tool re-registration not re-checked |

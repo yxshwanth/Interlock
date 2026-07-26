@@ -119,7 +119,10 @@ No auth on the metrics port — restrict with NetworkPolicy in production. No Se
 
 Key series: `interlock_up`, `interlock_detections_total{verdict,variant,action}`,
 `interlock_evidence_dropped_total`, `interlock_events_dropped_total`,
-`interlock_ebpf_ringbuf_drops_total`, `interlock_watched_pids`, `interlock_watched_cgroups`,
+`interlock_ebpf_ringbuf_drops_total` (routine: connect/openat),
+`interlock_ebpf_critical_ringbuf_drops_total` (critical: write/sendto/lsm_deny),
+`interlock_watched_pids`, `interlock_watched_cgroups`,
+`interlock_fail_closed_active`, `interlock_fail_closed_transitions_total{direction,reason}`,
 `interlock_alert_deliveries_total{kind,result}`.
 
 Bare-metal hosts: see [`../systemd/README.md`](../systemd/README.md) for systemd units and SIGHUP config reload.
