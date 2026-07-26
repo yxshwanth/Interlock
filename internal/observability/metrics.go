@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"strings"
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -31,7 +32,12 @@ var (
 
 	ebpfRingbufDrops = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "interlock_ebpf_ringbuf_drops_total",
-		Help: "Kernel eBPF ring buffer reserve failures (current total from drop_count map)",
+		Help: "Kernel eBPF routine ring buffer reserve failures (connect/openat drop_count)",
+	})
+
+	ebpfCriticalRingbufDrops = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "interlock_ebpf_critical_ringbuf_drops_total",
+		Help: "Kernel eBPF critical ring buffer reserve failures (write/sendto/lsm_deny critical_drop_count)",
 	})
 
 	watchedPIDs = promauto.NewGauge(prometheus.GaugeOpts{
@@ -48,6 +54,16 @@ var (
 		Name: "interlock_alert_deliveries_total",
 		Help: "Outbound alert/SIEM delivery attempts",
 	}, []string{"kind", "result"})
+
+	failClosedActive = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "interlock_fail_closed_active",
+		Help: "1 while fail-closed is engaged (monitored egress blocked)",
+	})
+
+	failClosedTransitionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "interlock_fail_closed_transitions_total",
+		Help: "Fail-closed engage/clear transitions",
+	}, []string{"direction", "reason"})
 )
 
 // Metrics records detection and drop counters for Prometheus.
@@ -95,9 +111,14 @@ func (m *Metrics) SyncDrops(evidenceDropped, eventsDropped uint64) {
 	}
 }
 
-// SetEBPFRingbufDrops sets the live kernel drop_count gauge.
+// SetEBPFRingbufDrops sets the live routine drop_count gauge.
 func (m *Metrics) SetEBPFRingbufDrops(n uint64) {
 	ebpfRingbufDrops.Set(float64(n))
+}
+
+// SetEBPFCriticalRingbufDrops sets the live critical_drop_count gauge.
+func (m *Metrics) SetEBPFCriticalRingbufDrops(n uint64) {
+	ebpfCriticalRingbufDrops.Set(float64(n))
 }
 
 // SetWatchedFilters sets PID/cgroup filter map size gauges.
@@ -120,4 +141,32 @@ func (m *Metrics) RecordAlertDelivery(kind, result string) {
 		result = "unknown"
 	}
 	alertDeliveriesTotal.WithLabelValues(kind, result).Inc()
+}
+
+// SetFailClosedActive sets interlock_fail_closed_active to 1 or 0.
+func (m *Metrics) SetFailClosedActive(active bool) {
+	if active {
+		failClosedActive.Set(1)
+	} else {
+		failClosedActive.Set(0)
+	}
+}
+
+// RecordFailClosedTransition increments the engage/clear counter.
+// direction is "engaged" or "cleared"; reason is coarsened to a low-cardinality label.
+func (m *Metrics) RecordFailClosedTransition(engaged bool, reason string) {
+	dir := "cleared"
+	if engaged {
+		dir = "engaged"
+	}
+	label := "unknown"
+	switch {
+	case strings.Contains(reason, "ringbuf"):
+		label = "ringbuf_drop_rate"
+	case strings.Contains(reason, "sink"):
+		label = "sink_failure"
+	case strings.Contains(reason, "panic"):
+		label = "panic"
+	}
+	failClosedTransitionsTotal.WithLabelValues(dir, label).Inc()
 }

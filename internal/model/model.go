@@ -96,7 +96,7 @@ type SyscallEvent struct {
 	PID            int         `json:"pid"`
 	TID            int         `json:"tid"`
 	Comm           string      `json:"comm"`
-	Syscall        string      `json:"syscall"` // connect | sendto | write | openat | dns
+	Syscall        string      `json:"syscall"` // connect | sendto | sendmsg | write | writev | openat | dns | lsm_deny
 	DestIP         string      `json:"dest_ip,omitempty"`
 	DestPort       int         `json:"dest_port,omitempty"`
 	Allowlisted    bool        `json:"allowlisted,omitempty"`
@@ -216,7 +216,7 @@ type Verdict string
 
 const (
 	VerdictExfil      Verdict = "EXFIL"      // high confidence: all legs + value overlap
-	VerdictSuspicious Verdict = "SUSPICIOUS"  // lower confidence: all legs, no overlap
+	VerdictSuspicious Verdict = "SUSPICIOUS" // lower confidence: all legs, no overlap
 )
 
 // Action describes what was done about a detected trifecta. Verdict says
@@ -224,9 +224,16 @@ const (
 type Action string
 
 const (
-	ActionPrevented    Action = "prevented"        // Variant A block mode: call never forwarded
+	// ActionPrevented covers two enforcement paths that both mean "the call
+	// never reached its destination": Variant A block mode (proxy never
+	// forwards the call), and Variant B's opt-in LSM kernel quarantine
+	// (v0.3 Phase 2, Slice 1 — ebpf.lsm_enforce), where a repeat connect()
+	// from a PID/cgroup already confirmed EXFIL is denied in-kernel with
+	// -EPERM before the socket forms. The *first* EXFIL-carrying packet is
+	// never "prevented" this way — see ActionContained.
+	ActionPrevented    Action = "prevented"         // Variant A block mode, or Variant B LSM quarantine (repeat attempt)
 	ActionAllowed      Action = "allowed_monitor"   // monitor mode: call went through, evidence logged
-	ActionContained    Action = "contained_by_kill" // Variant B: child process killed (Week 3)
+	ActionContained    Action = "contained_by_kill" // Variant B: child process killed (Week 3); always the outcome for the first EXFIL packet
 	ActionDetectedOnly Action = "detected_only"     // detected but no enforcement (e.g. SUSPICIOUS via eBPF, kill too aggressive)
 )
 
@@ -234,11 +241,14 @@ const (
 type Variant string
 
 const (
-	VariantA Variant = "A_chained_tool"  // caught by proxy hold-before-forward
+	VariantA Variant = "A_chained_tool"   // caught by proxy hold-before-forward
 	VariantB Variant = "B_server_channel" // caught by eBPF sensor
 )
 
 // EvidenceRecord is the full forensic record emitted when a trifecta trips.
+// ChainSeq / PrevHash / Hash form an append-only hash chain: each record
+// includes the hex SHA-256 of the previous one so edit/delete/truncate-mid-
+// chain is detectable via cmd/verify-evidence (see architecture.md §8).
 type EvidenceRecord struct {
 	SessionID    string         `json:"session_id"`
 	TripTS       int64          `json:"trip_ts_ns"`
@@ -251,13 +261,16 @@ type EvidenceRecord struct {
 	ValueOverlap *OverlapHit    `json:"value_overlap,omitempty"`
 	Timeline     []TimelineItem `json:"timeline"`
 	Pod          *PodContext    `json:"pod_context,omitempty"`
+	ChainSeq     uint64         `json:"chain_seq"` // 0-indexed position in this evidence stream
+	PrevHash     string         `json:"prev_hash"` // hex sha256 of previous record (empty when ChainSeq==0)
+	Hash         string         `json:"hash"`      // hex sha256 over this record with Hash==""
 }
 
 // OverlapHit records a tainted value found in sink arguments or egress payload.
 type OverlapHit struct {
 	TaintedHash string `json:"tainted_hash"`
 	Preview     string `json:"preview"`
-	WhereFound  string `json:"where_found"` // "sink args" | "egress payload"
+	WhereFound  string `json:"where_found"`          // "sink args" | "egress payload"
 	MatchForm   string `json:"match_form,omitempty"` // literal | base64 | hex | … | decoded_base64_hex_…
 }
 
