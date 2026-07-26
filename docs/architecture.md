@@ -1,4 +1,4 @@
-# Interlock — Architecture (v0.2.2 + v0.3 Phase 1/3)
+# Interlock — Architecture (v0.2.2 + v0.3 Phase 1/2 Slice 1/3/4)
 
 ## 0. Reading note
 
@@ -62,7 +62,7 @@ The proxy is **protocol-aware**, not a transparent byte pipe. It terminates `ini
 4. Otherwise the proxy **forwards** the raw frame to the resolved child server over its STDIN.
 5. Server executes and returns a result on its STDOUT → **proxy intercepts the result frame** → `InterceptedEvent` (direction = server→agent), attributed to the specific server and forwarded to the agent.
 6. Engine **ingests the result**: if the tool is a `sensitive_source`, it **registers tainted values** and lights `sensitive_source_touched`; if the tool is **not** a sensitive source and `untrusted_origins.tool_results` is true, it lights `untrusted_content_present` and stores a bounded excerpt for content-binding.
-7. In parallel, the **eBPF sensor** streams `SyscallEvent`s from the proxy's PID subtree. A `connect()` from a *server child* to a non-allowlisted destination → `external_sink_invoked` candidate. If the other legs are lit → **trip** (Variant B): emit evidence + **kill the offending child** (containment).
+7. In parallel, the **eBPF sensor** streams `SyscallEvent`s from the proxy's PID subtree. A `connect()` from a *server child* to a non-allowlisted destination → `external_sink_invoked` candidate. If the other legs are lit → **`SUSPICIOUS`** (Variant B): emit evidence only, `detected_only` — no kill. If a corroborating `write`/`writev`/`sendto`/`sendmsg` payload overlaps a tainted value → **`EXFIL`**: emit evidence and **kill the offending child** (containment); hard containment is reserved for `EXFIL` (§5, §7).
 8. On any trip, the engine writes an `EvidenceRecord` to the sink; the viewer renders it.
 
 ---
@@ -110,25 +110,25 @@ HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an
 
 **Attachment.** Probes are scoped to the proxy's **process subtree** — the proxy PID plus every server child PID. Userspace maintains the live PID set and pushes it to a **BPF hash map** (`BPF_MAP_TYPE_HASH`) so the probe checks membership cheaply in-kernel before emitting events.
 
-**Probe: `connect()` + `write()` + `sendto()` + `openat()` (Variant B).**
-- Tracepoints: `sys_enter_connect`, `sys_enter_write`, `sys_enter_sendto`, `sys_enter_openat`.
-- Connect: destination IP/port from `sockaddr_in`, PID, TID, and comm (IPv4 only).
-- Write: first **N** bytes via `bpf_probe_read_user` (fd ≥ 3; compiled `PAYLOAD_MAX=1024`, runtime `ebpf.payload_capture_bytes` default **512**); correlated in userspace to a recent non-allowlisted connect/`sendto` from the same PID.
-- Sendto: **self-contained** IPv4 dest + first-N payload; allowlist on dest IP; port **53** tagged as `dns` in userspace. No prior `connect()` required.
+**Probe: `connect()` + `write()` / `writev()` + `sendto()` / `sendmsg()` + `openat()` (Variant B).**
+- Tracepoints: `sys_enter_connect`, `sys_enter_write`, `sys_enter_writev`, `sys_enter_sendto`, `sys_enter_sendmsg`, `sys_enter_openat`.
+- Connect: destination family + 16-byte addr + port from `sockaddr_in` / `sockaddr_in6`, PID, TID, and comm (`AF_INET` / `AF_INET6`).
+- Write / writev: first **N** bytes via `bpf_probe_read_user` (fd ≥ 3; compiled `PAYLOAD_MAX=1024`, runtime `ebpf.payload_capture_bytes` default **512**); writev probes the **first iovec only** (verifier-bounded). Correlated in userspace to a recent non-allowlisted connect/`sendto`/`sendmsg` from the same PID.
+- Sendto / named sendmsg: **self-contained** dest (family+16B+port) + first-N payload (sendmsg: first iov); allowlist on dest IP; port **53** tagged as `dns` in userspace. No prior `connect()` required. Unnamed sendmsg (`msg_name` NULL) correlates like write.
 - Openat: pathname (≤128 bytes); userspace matches `sensitive_paths` prefixes (empty list = ignore).
-- Events pushed to a **ring buffer** (`BPF_MAP_TYPE_RINGBUF`, 256KB). Reserve failures increment a `drop_count` map surfaced via `Sensor.DropCount()`.
+- Events pushed to **two ring buffers** (`BPF_MAP_TYPE_RINGBUF`, 256KB each): **routine** `events` for `connect`/`openat`, **critical** `critical_events` for `write`/`writev`/`sendto`/`sendmsg`/`lsm_deny` (EXFIL carriers + kernel-deny evidence). Reserve failures increment `drop_count` or `critical_drop_count` respectively, surfaced via `Sensor.DropCount()` / `Sensor.CriticalDropCount()`.
 - Compiled from BPF C via `bpf2go` (cilium/ebpf), loaded by Go at runtime. CO-RE via BTF at `/sys/kernel/btf/vmlinux`.
-- **Still deferred:** IPv6, `sendmsg`/`writev`. Depth-3 nests closed by sink-path recursive decoder. **Out of scope:** DoH/DoT (network-layer DNS controls).
+- **Still deferred on this plane:** larger/dynamic capture / `tcp_sendmsg` before segmentation; connected sendto/sendmsg with NULL name stays “correlate like write.” **Out of scope:** DoH/DoT (network-layer DNS controls).
 
-**Detect-only at the kernel.** The sensor **observes**; it does not block at the kernel. Containment happens in **userspace via kill-on-detect**, with a **~100 ms deferred kill window** after connect/`sendto` SUSPICIOUS so a correlated write can land for payload overlap. `sendto`/`write` EXFIL and `openat` trips kill promptly. Kernel-level *blocking* (LSM/KRSI) is deferred to v0.3. **Honest consequence:** for Variant B the first packet (and possibly a short write) may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment.
+**Mostly detect-only at the kernel, plus an opt-in quarantine (v0.3 Phase 2, Slice 1).** The sensor **observes**; the eBPF tracepoints do not block anything. Containment happens in **userspace via kill-on-detect**, and it is **immediate**: `sendto`/`sendmsg`/`write`/`writev` `EXFIL` (payload overlap) and `openat` trips kill promptly, with no waiting window. A bare `connect()` never triggers a kill on its own, at any tier — hard containment is reserved for `EXFIL` (ROADMAP §1), and `connect()` carries no payload at the kernel level so it can never itself prove `EXFIL`. What a payload-less, non-allowlisted `connect()` *can* still do, on a proxy-tied session with every other trifecta leg lit, is trip soft `SUSPICIOUS` (evidence/alert, `detected_only`, no containment) — a real tripwire that a self-authored corpus never exercised and a CVE-derived reconstruction (`cve_2025_53967_figma_reverse_shell_connect_only_gap`, [`docs/cve_corpus.md`](cve_corpus.md)) found had been silently deleted as an unintended side effect of the ROADMAP §1 content-binding fix (`CheckContentBind` rejected an empty sink string before any comparison) — now fixed in `classifyTrip` (`internal/engine/engine.go`). Pure sensor-only DaemonSet mode never lights `untrusted_content_present`, so it can only ever reach `EXFIL`, never this `SUSPICIOUS` tier. An earlier "wait ~100 ms after a suspicious connect for a corroborating write, then kill regardless" design predates ROADMAP §1's "hard block only on `EXFIL`" doctrine and has been removed — it could never legitimately fire under that doctrine (SUSPICIOUS never maps to a containment action), and its removal changes no observable timing: `EXFIL` containment was always immediate, never routed through it. `ebpf.lsm_enforce` (default `false`) additionally attaches a `BPF_PROG_TYPE_LSM` hook on `security_socket_connect`: the instant the existing write/`sendto`/`sendmsg`/`writev` payload-overlap path confirms EXFIL for a PID/cgroup, the sensor writes that PID/cgroup into a BPF map, and **any further `connect()`** from it is denied in-kernel with `-EPERM` before the socket forms — no reliance on the kill racing the process. **This does not move detection earlier.** `connect()` carries no payload, so the hook cannot distinguish a merely non-allowlisted destination from actual exfiltration at connect-time — that determination still requires the payload-bearing syscall. **Honest consequence, unchanged for the first packet:** for Variant B the first packet (and possibly a short write) may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte; the resulting evidence is `contained_by_kill`, never `prevented`. Only *repeat* connection attempts from the already-flagged PID/cgroup — forked children sharing the cgroup, a kill that races, or a respawned process — get `prevented`. Requires `CONFIG_BPF_LSM=y` and `"bpf"` active in `/sys/kernel/security/lsm` (see [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md)); attach failure fails soft with a `[SECURITY]` warning and the sensor keeps running tracepoint-only. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment, with this quarantine as defense-in-depth on top.
 
-**Verdicts.** Connect-only or DNS/`sendto` without overlap → `SUSPICIOUS` at 0.60. Write/`sendto` excerpt overlapping a tainted secret → `EXFIL` at 0.95 with `value_overlap.where_found: egress payload`. Openat of a sensitive path → `SUSPICIOUS` only (open ≠ proven exfil). Writes without a recent suspicious connect/`sendto` are ignored (noise filter).
+**Verdicts.** A bare `connect()` (no payload channel at all) → `SUSPICIOUS` at 0.60 on `AllLit` alone — there's no payload to content-bind against. `write`/`writev`/`sendto`/`sendmsg`/`dns` (all payload-bearing) → `SUSPICIOUS` at 0.60 only if the payload excerpt content-binds against a stored untrusted excerpt (`CheckContentBind`); the same events overlapping a tainted secret's exact bytes → `EXFIL` at 0.95 with `value_overlap.where_found: egress payload`. A payload-bearing event with neither content-bind nor overlap does not trip at all. Openat of a sensitive path → `SUSPICIOUS` only (open ≠ proven exfil). Writes without a recent suspicious connect/`sendto`/`sendmsg` are ignored (noise filter).
 
-**Transport to userspace.** Ring buffer → Go decoder in `internal/ebpf/loader.go` → `model.SyscallEvent` structs → engine's `IngestSyscall` method.
+**Transport to userspace.** Dual ring buffers → Go decoders in `internal/ebpf/loader.go` (`ReadEvent` / `ReadCriticalEvent`) → sensor drain loops → `model.SyscallEvent` structs → engine's `IngestSyscall` method.
 
-**Allowlist check.** The sensor checks each `connect()`/`sendto()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg and arm write-payload correlation for that PID.
+**Allowlist check.** The sensor checks each `connect()`/`sendto()`/named-`sendmsg()` destination against the config's `egress_allowlist`. Allowlisted IPs are silently dropped; non-allowlisted destinations light the `external_sink_invoked` leg and arm write-payload correlation for that PID.
 
-**False-positive surface (stated plainly).** Connect-only Variant B no longer hard-kills on `SUSPICIOUS`: after ROADMAP §1, hard contain is EXFIL-only (payload overlap). Soft `SUSPICIOUS` requires AllLit plus content-bind and uses `detected_only`.
+**False-positive surface (stated plainly).** Connect-only Variant B no longer hard-kills on `SUSPICIOUS`: after ROADMAP §1, hard contain is EXFIL-only (payload overlap). Soft `SUSPICIOUS` trips two ways: a bare `connect()` on `AllLit` alone (no payload channel to content-bind against), or a payload-bearing `write`/`sendto`/`sendmsg`/`writev` via `AllLit` plus content-bind. Either way it uses `detected_only`, never containment.
 
 **Prototype-first.** The `connect()` probe was validated with a `bpftrace` one-liner before writing compiled eBPF. This de-risked the hardest part of the week.
 
@@ -158,7 +158,7 @@ One state machine **per session**.
 
 **Value overlap.** At sink time, `CheckOverlap` scans sink args for any tainted value in any canonical form, then (if needed) **same-call JSON string reassembly** (concat of string leaves). Forms: literal, base64, hex, URL-encoding, reversal, closed depth-2 nests (`base64_hex`, `hex_base64`, `base64_url`, `base64_reversed`), and `gzip_base64`. On still-miss, a **bounded recursive decoder** (base64 then hex, depth ≤ 3) unwraps JSON string leaves / payloads and rematches against single-layer forms — `match_form` records `decoded_*`. **Cross-call / paginated abutting splits** are closed by the session **fragment buffer** (reassembly-first taint registration). Still out of scope: depth-4+ nests, other compressors — each has a skip / KnownGap. `RedactJSON` scrubs all variant strings from logs.
 
-**Content-binding.** `CheckContentBind` requires a shared contiguous substring (default ≥ 16 bytes; `trifecta.content_bind_min_len`) between stored untrusted excerpts and the sink args/payload before `SUSPICIOUS` can fire. Separate from EXFIL overlap. Soft `SUSPICIOUS` is evidence + `allowed_monitor` / `detected_only` — never hard block/kill.
+**Content-binding.** `CheckContentBind` requires a shared contiguous substring (default ≥ 16 bytes; `trifecta.content_bind_min_len`) between stored untrusted excerpts and the sink args/payload before `SUSPICIOUS` can fire — **when the sink event has a payload/args channel at all.** A bare `connect()` structurally never carries one (no `Payload` field on the raw eBPF event), so requiring content-bind there would make the connect-only tripwire permanently unreachable — an empty sink string always fails the length check regardless of taint or leg state. `classifyTrip` (`internal/engine/engine.go`) accounts for this explicitly: `AllLit` alone is sufficient for `SUSPICIOUS` on a payload-less event; content-bind still gates every event type that *does* carry a payload/args channel (write/sendto/sendmsg/tool-call args), exactly as originally intended. This distinction was missing for one release and silently deleted the connect-only tripwire entirely — found by [`docs/cve_corpus.md`](cve_corpus.md)'s `cve_2025_53967_figma_reverse_shell_connect_only_gap`, fixed, and pinned by `TestEngine_IngestSyscall_ConnectOnly_AllLit_Suspicious`. Soft `SUSPICIOUS` is evidence + `allowed_monitor` / `detected_only` — never hard block/kill.
 
 Operators running fetch-heavy agents (web fetch → quote/summarize into a sink) will see soft-SUSPICIOUS noise whenever a long product blurb or doc excerpt is echoed outbound. That is correct system behavior for the current bind threshold, not a sticky-leg false block. To reduce operator noise: raise `trifecta.content_bind_min_len`, or avoid treating high-chatter servers as untrusted (leave `untrusted_origins.tool_results` false for those paths / omit them from untrusted lighting). Do **not** widen hard enforcement to cover this class.
 
@@ -171,7 +171,8 @@ Operators running fetch-heavy agents (web fetch → quote/summarize into a sink)
 | Condition at sink time | Verdict | Confidence |
 |---|---|---|
 | Tainted value appears in the sink's args/payload (`CheckOverlap`) | `EXFIL` | 0.95 |
-| All three legs lit **and** untrusted↔sink content-bind, no value overlap | `SUSPICIOUS` | 0.60 |
+| All three legs lit, sink event has no payload channel at all (bare `connect()`) | `SUSPICIOUS` | 0.60 |
+| All three legs lit, sink event has a payload/args channel **and** untrusted↔sink content-bind, no value overlap | `SUSPICIOUS` | 0.60 |
 | Otherwise | — (no trip) | — |
 
 | Action | When | Effect |
@@ -236,7 +237,7 @@ type SyscallEvent struct {
     PID            int         `json:"pid"`
     TID            int         `json:"tid"`
     Comm           string      `json:"comm"`
-    Syscall        string      `json:"syscall"`      // connect | sendto | write | openat | dns
+    Syscall        string      `json:"syscall"`      // connect | sendto | sendmsg | write | writev | openat | dns
     DestIP         string      `json:"dest_ip,omitempty"`
     DestPort       int         `json:"dest_port,omitempty"`
     Allowlisted    bool        `json:"allowlisted,omitempty"`
@@ -319,6 +320,9 @@ type EvidenceRecord struct {
     ValueOverlap *OverlapHit    `json:"value_overlap,omitempty"`
     Timeline     []TimelineItem `json:"timeline"`              // full ordered story
     Pod          *PodContext    `json:"pod_context,omitempty"` // sensor mode (v0.3 Phase 1) only
+    ChainSeq     uint64         `json:"chain_seq"`             // 0-indexed position in this evidence stream
+    PrevHash     string         `json:"prev_hash"`             // hex sha256 of previous record (empty when ChainSeq==0)
+    Hash         string         `json:"hash"`                  // hex sha256 over this record with Hash==""
 }
 
 type OverlapHit struct {
@@ -369,7 +373,9 @@ untrusted_origins:
 
 ## 10. The evidence viewer ("frontend")
 
-A **self-contained local HTML file** that reads one `EvidenceRecord` JSON and renders the timeline: a horizontal time axis, the three legs lighting up in sequence, the tainted-value highlight where it surfaces in the sink, and a verdict badge (`EXFIL`/`SUSPICIOUS`) plus action label (`prevented`/`allowed_monitor`/`contained_by_kill`). **Read-only, no framework, no server.** "State" on the frontend is just the single evidence file — this is the money-shot visual, not an app.
+A **self-contained local HTML file** (`web/viewer.html`) that reads one `EvidenceRecord` JSON and renders the timeline: a horizontal time axis, the three legs lighting up in sequence, the tainted-value highlight where it surfaces in the sink, and a verdict badge (`EXFIL`/`SUSPICIOUS`) plus action label. The action label renders `ev.action` verbatim as text — `prevented`, `allowed_monitor`, `contained_by_kill`, and `detected_only` (now the most common action Variant B emits, since ROADMAP §1) all display the same way; the badge's color comes from `ev.verdict`, not `ev.action`, so no action string needs special-casing to render correctly. **Read-only, no framework, no server.** "State" on the frontend is just the single evidence file — this is the money-shot visual, not an app. Unknown JSON fields (including the hash-chain fields `chain_seq` / `prev_hash` / `hash`) are ignored.
+
+**Tamper-evident chain.** JSONL and SQLite sinks seal each record into an append-only hash chain (`sha256` → lowercase hex, same encoding as `TaintedValue.Hash`). Verify with `make verify-evidence` / `go run ./cmd/verify-evidence -path evidence.jsonl` (exit 0 = intact; exit 1 names the first broken record). SIEM/webhook fan-out remains the off-node durability path; the chain is on-node integrity — both, not either.
 
 ---
 
@@ -420,41 +426,72 @@ Full TCB threat model (blind sensor, poison bridge, fail-open, misattribution, e
 
 - **Runs privileged** (loading eBPF, managing child processes). Prefer the capabilities DaemonSet; residual `SYS_ADMIN` documented in the threat model / PRIVILEGE.md. Drop further capabilities post-attach remains iterative.
 - **Never leaks the secrets it's protecting.** Tainted values are stored **hashed + masked** (`sk-...a9f2`), never raw. The value-overlap check compares raw values in memory only; evidence stores only the masked preview. All output files (`evidence.jsonl`, `evidence.json`, `events.jsonl`) are scrubbed by `RedactJSON` before writing — any known tainted value is replaced with its masked preview. Interlock writing the token in plaintext to a log would make the tool *itself* an exfil path — forbidden.
-- **Fail-open vs. fail-closed.** Current default is **fail-open with loud `[SECURITY]` warnings** on stderr. This is a conscious tradeoff; production `fail_closed` is ROADMAP §5. The `[SECURITY]` prefix fires in scenarios including: (1) engine not configured, (2) engine panics mid-evaluation, (3) evidence sink write failure, (4) missing tool tags, (5) **unattributed eBPF syscalls**, (6) **event log backpressure drops**, (7) **eBPF ring-buffer reserve failures**. Deployers should monitor for `[SECURITY]` in stderr output and ringbuf drop metrics.
+- **Fail-open vs. fail-closed.** Current default is **fail-open with loud `[SECURITY]` warnings** on stderr. Opt-in `fail_closed.enabled` (see `internal/failclosed`) trips on routine or critical ringbuf drop rate (hysteresis high/low watermarks), consecutive evidence sink write failures, or engine/sensor panics. Policy includes `min_trip_duration`, `recovery_window`, and exponential backoff on flap so engage/clear cannot oscillate. **Scope is always all currently watched PIDs/cgroups** — drop counters are severity-class globals, not per-pod (named limitation). Sensor mode requires `ebpf.lsm_enforce` and reuses `lsm_blocklist_*` via `Sensor.SetFailClosedActive` (fail-closed-owned entries are tracked separately from EXFIL quarantines). Proxy mode denies `tools/call` before `EvaluateRequest`. Metrics: `interlock_fail_closed_active`, `interlock_fail_closed_transitions_total`. The `[SECURITY]` prefix also fires for: (1) engine not configured, (2) engine panics mid-evaluation, (3) evidence sink write failure, (4) missing tool tags, (5) **unattributed eBPF syscalls**, (6) **event log backpressure drops**, (7) **eBPF routine/critical ring-buffer reserve failures**, (8) **`ebpf.lsm_enforce` requested but the LSM hook failed to attach** — the sensor keeps running tracepoint-only rather than refusing to start. Deployers should monitor for `[SECURITY]` in stderr output and ringbuf / fail-closed metrics.
 
 **Evidence persistence (v0.2 Phase 4).** **Intentional default:** JSONL append (`evidence.jsonl`) + standalone `evidence.json` for the viewer — demo/dev-friendly, no extra deps. **Opt-in retention:** SQLite (`evidence.backend: sqlite`) with `max_records` — survives restart, prunes oldest records. Bounded growth is available when operators enable SQLite; leaving JSONL as default is a posture choice, not an unfinished gap. See [`performance.md`](performance.md) for engine microbenchmarks and end-to-end HTTP overhead (v0.2.1).
 
 **Event log backpressure.** `logging.backpressure: block` (default) — synchronous writes, caller blocks. `drop` — bounded queue; overflow increments `DroppedEvents` and logs `[SECURITY]` at shutdown.
 
-**eBPF ring-buffer drops.** When `bpf_ringbuf_reserve` fails in [`connect.c`](../internal/ebpf/bpf/connect.c), the kernel increments `drop_count`. Userspace reads via `Sensor.DropCount()` at shutdown.
+**eBPF ring-buffer drops.** When `bpf_ringbuf_reserve` fails in [`connect.c`](../internal/ebpf/bpf/connect.c), the kernel increments `drop_count` (routine: connect/openat) or `critical_drop_count` (critical: write/writev/sendto/sendmsg/lsm_deny). Userspace reads via `Sensor.DropCount()` / `Sensor.CriticalDropCount()`; Prometheus gauges `interlock_ebpf_ringbuf_drops_total` and `interlock_ebpf_critical_ringbuf_drops_total` are polled every 5s. Fail-closed watches both drop rates.
 
 ---
 
 ## 13. Known gaps and deferred work
 
-**Priority tiers** (will cover / eventually / never): [`SUMMARY.md`](SUMMARY.md).
+Priority tiers below are the design SoT for what Interlock does *not* catch yet (or never will). Execution queue: [`ROADMAP.md`](ROADMAP.md) **Next build order**. A tool that claims no gaps is lying; a tool that names them is honest.
 
-**Still deferred (see [`ROADMAP.md`](ROADMAP.md) and SUMMARY tiers):**
+### Will cover — real detection value, tractable
 
-- **eBPF remaining gaps** — IPv6, `sendmsg`/`writev` (write+sendto+openat+DNS-via-53 shipped)
-- **Full dataflow taint** — same-call reassembly + depth-2 + gzip_base64 + cross-call fragment buffer + depth-3 recursive decoder shipped; other compressors / depth-4+ still deferred
-- **Operability layer** — metrics/health + trip webhook + OCSF SIEM **met** (v0.3 Phase 3); systemd + SIGHUP cleanup shipped ([`deploy/systemd/`](../deploy/systemd/))
-- **Kernel-level blocking** (LSM/KRSI) — prevent before first packet leaves (v0.3 Phase 2; demand-gated, not a hard exit gate)
-- **HTTP upstream backends**, TLS termination / MITM, GET `/mcp` listen streams
-- **Dashboard / query API** — cross-session evidence search (`TestEvidenceStore_CrossSessionQuery_KnownGap`)
-- **Sensor↔proxy taint bridge** — **met**: Unix NDJSON `/var/run/interlock/taint.sock`; capabilities DaemonSet + proxy can EXFIL without privileged `/proc` seed. openat seed remains privileged-demo fallback.
+| Gap | Trigger / why deferred |
+|---|---|
+| Secrets past capture window | Runtime cap default 512 / max 1024; measure dual-ring drops under load; larger/dynamic / pre-segmentation capture longer-term |
+| Tamper-evident evidence (WORM / external signing) | Hash chain shipped; WORM volume and external signing still deferred |
+| CEF SIEM / cross-session evidence query | OCSF + single-record viewer shipped; enterprise ingest + dashboard open |
+| **Content-bound `SUSPICIOUS` on payload-bearing sensor egress** | The connect-only tripwire is fixed (below), but a sensor-observed `write`/`sendto` whose payload is merely unrelated (not overlapping taint) still can't reach `SUSPICIOUS` on the sensor plane, because `register_untrusted` (below) deliberately forwards no excerpt text — `CheckContentBind` has nothing to compare against. Would need the bridge to also carry a bounded excerpt, raising its own size/sensitivity questions; not attempted. |
+| **Egress-side fragment reassembly** | `state.FragmentChunks` / `appendFragment` (`internal/engine/engine.go`) are wired only into `IngestResult` — the proxy-ingress path for paginated tool RESULTS split across calls. `IngestSyscall`'s `CheckOverlapPayload` checks each syscall's `PayloadExcerpt` independently against `state.Tainted`, with no mechanism to concatenate several `dns`/`sendto`/`sendmsg` events from one session into a single candidate. A secret split across N small egress writes (the standard DNS-tunneling shape) never proves `EXFIL` even though it fully leaves the host, one fragment at a time. Found via [`docs/cve_corpus.md`](cve_corpus.md)'s `cve_2025_65720_gpt_researcher_dns_fragmented_exfil_gap` — the shell's initial `connect()` still soft-trips `SUSPICIOUS`, so the anomaly is flagged; only the byte-level proof step is defeated. |
 
-**Out of scope:** **DoH/DoT** — encrypted DNS needs TLS interception or shifting resolver allowlists; mitigate with network-layer DNS controls, not inside Interlock.
+### Will cover eventually — diminishing returns, real gaps
 
-**Shipped (v0.2 + post-v0.2 + v0.3 Phase 1):** Streamable HTTP, multi-session, encoding-aware + bounded overlap expansion, write/sendto/openat/DNS probes, async evidence, JSONL default (intentional) with opt-in SQLite, published overhead, **sensor-only Kubernetes DaemonSet** (`--mode=sensor`, PID→pod attribution, `deploy/k8s/`). Current summary: [`SUMMARY.md`](SUMMARY.md).
+| Gap | Trigger / why deferred |
+|---|---|
+| Depth-4+ / other compressors (zstd, deflate-raw) | Depth-3 + gzip covers common cases; add when a real bypass shows up |
+| Write before suspicious connect | Correlation assumes connect→write (or self-contained sendto/sendmsg) |
+| Tool-shadowing runtime re-registration | Startup detection shipped |
+| Per-pod ringbuf drop maps | Dual severity-class counters shipped; per-cgroup attribution is a larger BPF change |
+| Critical-ring write/sendto/writev/sendmsg flood | Named residual after segregation — harder than connect storm; accepted KnownGap |
+| **Non-token-shaped taint extraction** | `secretPatterns` (`internal/engine/taint.go`) is shape-based, not a general secret detector: PEM/PuTTY private keys are closed ([`docs/cve_corpus.md`](cve_corpus.md)'s `cve_2025_53109_filesystem_escaperoute_pem_exfil`), but X.509 certs, database connection strings (`postgres://user:pass@host/db`), and binary key containers (PKCS#12 `.p12`/`.pfx`) still register zero taint for the same underlying reason PEM did — no textual marker to anchor on. PKCS#12 specifically can't be closed with a content regex at all (binary DER, no fixed anchor); would need tainting driven by the *file path* observed at read time (`openat` pathname / `read_file` tool args), a materially different mechanism from pattern matching on result text. Add shapes as real disclosures name them, same discipline as the encoding-form list above. |
+
+### Probably never / out of scope — wrong trade-off
+
+| Gap | Why |
+|---|---|
+| **DoH/DoT** | Encrypted DNS needs TLS interception; mitigate with **network-layer DNS controls** |
+| Exotic/custom multi-layer compressors | Attacker has infinite encodings; Variant B raw-byte overlap is encoding-agnostic when capture works |
+| First EXFIL-carrying packet kernel-prevented | Architectural: `connect()` has no payload — always `contained_by_kill` for the first packet |
+
+**Also deferred (not tier tables):** HTTP upstream backends, TLS termination / MITM, GET `/mcp` listen streams; optional sink-suspicion inheritance for untagged write-shaped tools on sensitive servers ([`ROADMAP.md`](ROADMAP.md)).
+
+**Recently closed on this plane (do not re-open as “open gaps”):**
+- **`writev` / `sendmsg` / IPv6 dest layout** — critical-ring probes + family+16B addr on connect/sendto/named-sendmsg (§5)
+- **LSM Slice 1** — opt-in `ebpf.lsm_enforce` repeat-connect quarantine; first packet remains `contained_by_kill`
+- **`fail_closed`** + **dual ringbufs** — opt-in breaker; connect floods cannot starve EXFIL/`lsm_deny` evidence
+- **Sensor↔proxy taint bridge** — Unix NDJSON + **SO_PEERCRED** allowlists (`allowed_uids` / `allowed_gids`, optional `socket_gid`); residual: node root / shared-GID / allowed peer forging `pod_uid` ([`threat_model.md`](threat_model.md) T2)
+- **Evidence hash chain** — `chain_seq`/`prev_hash`/`hash` + `make verify-evidence`
+- **Sensor-only mode's `SUSPICIOUS` tier, opt-in** — `IngestSyscallSensor` still never lights `untrusted_content_present` on its own; there is genuinely no MCP untrusted-content plane inside a privileged, proxy-less DaemonSet pod, and that has not changed. What shipped: `Engine.RegisterRemoteUntrusted` + the taint bridge's new `register_untrusted` message let an **unprivileged proxy sidecar that already observes MCP traffic** (the same deployment shape `taint_bridge` was built for) forward "untrusted content observed" alongside taint, so a sensor session sharing that bridge connection CAN light the leg and reach the connect-only tripwire. Requires `taint_bridge.enabled` and a proxy on the other end; a true no-proxy-anywhere sensor-only deployment still cannot reach `SUSPICIOUS` — that combination has no untrusted-content observer at all, by construction, not by omission. See the "Sensor-only DaemonSet" paragraph below, `TestEngine_RegisterRemoteUntrusted_ClosesSensorSuspiciousGap`, `TestBridge_ClientToEngine_UntrustedClosesSensorSuspiciousGap`.
 
 ### Sensor-only DaemonSet (v0.3 Phase 1)
 
 `--mode=sensor --ebpf` runs without the MCP proxy. A node-local watcher (`internal/k8s`) lists pods with label `interlock.io/monitor=true` on `NODE_NAME`, maps host PIDs via `/proc/<pid>/cgroup` → container ID → pod, and feeds `Sensor.AddPIDs`. Evidence includes `pod_context`.
 
-`IngestSyscallSensor`: sensitive `openat` seeds legs + taint (via `/proc/<pid>/root` file read; no kill); egress `connect`/`write`/`sendto`/`dns` contain. Payload overlap → **EXFIL 0.95** with redacted `payload_excerpt`. Without taint contents, egress stays SUSPICIOUS. Untrusted leg detail: *monitored agent pod accessed sensitive path; no MCP untrusted-content plane*. Privilege story: [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md); demo: [`deploy/k8s/README.md`](../deploy/k8s/README.md).
+`IngestSyscallSensor`: sensitive `openat` seeds `sensitive_source_touched` + taint (via `/proc/<pid>/root` file read; no kill); egress `connect`/`write`/`writev`/`sendto`/`sendmsg`/`dns` contain. Payload overlap → **EXFIL 0.95** with redacted `payload_excerpt`.
 
-**Managed-cluster note (EKS 2026-07-12):** capabilities DaemonSet loads probes and observes cross-pod `connect`/`write`; `/proc/<pid>/root` seed was permission-denied on AL2023/containerd. Privileged DaemonSet completed seed → EXFIL → kill. **Production EXFIL without privileged root reads:** enable `taint_bridge` (proxy → Unix socket → `RegisterRemoteTaint`).
+**Corrected (previously wrong on this exact point — see [`docs/cve_corpus.md`](cve_corpus.md)):** without a value-overlap-proving payload, egress in sensor-only mode reaches **no verdict at all**, not `SUSPICIOUS` — **unless** an unprivileged proxy sidecar is also forwarding an untrusted-content signal over the taint bridge (see next paragraph). `IngestSyscallSensor` on its own never lights `untrusted_content_present` — a privileged, proxy-less DaemonSet pod genuinely has no MCP untrusted-content plane to observe — so `AllLit()` (`sensitive_source_touched` + `untrusted_content_present` + `external_sink_invoked`) is permanently false in that specific deployment shape, and `SUSPICIOUS` requires it (§7). This was never implemented, not a regression: the code has explicitly not lit `untrusted_content_present` since sensor-only mode's introduction (v0.3.0), and this doc line describing an "untrusted leg detail" string was aspirational from the same commit, not a description of a seed that was later removed. Confirmed empirically, pinned by `TestEngine_IngestSyscallSensor_NeverReachesSuspicious_KnownGap` (`internal/engine/engine_test.go`).
+
+**Shipped remediation, opt-in:** `Engine.RegisterRemoteUntrusted` + the taint bridge's `register_untrusted` message let a proxy that *does* observe MCP traffic (the same sidecar deployment `taint_bridge` was already built for — see the EKS note below) forward "untrusted content observed" alongside taint, closing this specific gap for that shape: `TestEngine_RegisterRemoteUntrusted_ClosesSensorSuspiciousGap`, `TestBridge_ClientToEngine_UntrustedClosesSensorSuspiciousGap`. It deliberately forwards no excerpt text (a boolean signal, not a content channel), so it restores the payload-less connect-only tripwire specifically — content-bound `SUSPICIOUS` on a payload-*bearing* sensor-observed write/sendto still isn't reachable (see the gap tier above). A genuinely proxy-less sensor-only deployment (no sidecar anywhere) still cannot reach `SUSPICIOUS` at all — there is no untrusted-content observer to forward from, by construction. Operators on that path get `EXFIL`-tier detection (hard, proven) but no soft tripwire; do not read the absence of a `SUSPICIOUS` trip there as "nothing anomalous happened," only as "nothing was proven."
+
+Privilege story: [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md); demo: [`deploy/k8s/README.md`](../deploy/k8s/README.md).
+
+**Managed-cluster note (EKS 2026-07-12):** capabilities DaemonSet loads probes and observes cross-pod `connect`/`write`; `/proc/<pid>/root` seed was permission-denied on AL2023/containerd. Privileged DaemonSet completed seed → EXFIL → kill. **Production EXFIL without privileged root reads:** enable `taint_bridge` (proxy → Unix socket → `RegisterRemoteTaint`; SO_PEERCRED allowlist required) — the same bridge connection now also carries `RegisterRemoteUntrusted`, so this deployment shape gets both tiers, not just `EXFIL`.
 
 ---
 
@@ -479,7 +516,7 @@ Starts an HTTP server on `observability.listen` (disabled when empty) serving:
 | `metrics_path` (default `/metrics`) | Standard Prometheus exposition via `promhttp.Handler()` |
 | `health_path` (default `/healthz`) | `200 ok` when ready, `503` otherwise |
 
-Metrics: `interlock_up` (gauge), `interlock_detections_total{verdict,variant,action}` (counter, incremented on every evidence emit), `interlock_evidence_dropped_total` / `interlock_events_dropped_total` (async backpressure drops), `interlock_ebpf_ringbuf_drops_total` / `interlock_watched_pids` / `interlock_watched_cgroups` (polled from the live sensor every 5s via `observability.PollRuntime`), `interlock_alert_deliveries_total{kind,result}` (webhook/SIEM delivery outcomes, `kind` ∈ `webhook|siem`, `result` ∈ `ok|error|skipped`).
+Metrics: `interlock_up` (gauge), `interlock_detections_total{verdict,variant,action}` (counter, incremented on every evidence emit), `interlock_evidence_dropped_total` / `interlock_events_dropped_total` (async backpressure drops), `interlock_ebpf_ringbuf_drops_total` / `interlock_ebpf_critical_ringbuf_drops_total` / `interlock_watched_pids` / `interlock_watched_cgroups` (polled from the live sensor every 5s via `observability.PollRuntime`), `interlock_fail_closed_active` / `interlock_fail_closed_transitions_total{direction,reason}` (opt-in fail-closed breaker), `interlock_alert_deliveries_total{kind,result}` (webhook/SIEM delivery outcomes, `kind` ∈ `webhook|siem`, `result` ∈ `ok|error|skipped`).
 
 The DaemonSet wires `/healthz` as the liveness/readiness probe and exposes `/metrics` via a headless Service for Prometheus scrape (`deploy/k8s/service-metrics.yaml`).
 

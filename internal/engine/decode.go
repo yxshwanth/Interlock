@@ -17,6 +17,14 @@ const (
 	minDecodeCandidate = 4
 )
 
+// MaxDecodeDepth is the exported form of maxDecodeDepth, for cross-package
+// tests (internal/corpus) that assert a scenario's premise about this budget
+// still holds, rather than hand-maintaining a duplicate number that can
+// silently drift out of sync when this constant changes. See
+// docs/cve_corpus.md's cve_2025_65513_fetch_ssrf_cloud_metadata_depth5_nest_gap
+// and Scenario.PreExistingGap (internal/corpus/scenario.go).
+const MaxDecodeDepth = maxDecodeDepth
+
 // singleLayerForms are the forms matched against after each decode step.
 // Depth-2 nests are intentionally excluded — the recursive decoder unwraps instead.
 var singleLayerForms = []EncodingForm{

@@ -22,7 +22,7 @@ func main() {
 	logger := log.New(os.Stderr, "[ebpf-test] ", log.LstdFlags)
 	logger.Println("loading BPF connect() probe...")
 
-	loader, err := interlockebpf.NewLoader()
+	loader, err := interlockebpf.NewLoader(false)
 	if err != nil {
 		logger.Fatalf("failed to load: %v", err)
 	}

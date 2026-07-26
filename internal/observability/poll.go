@@ -14,8 +14,8 @@ type DropCountFunc func() (uint64, error)
 type FilterCountFunc func() (pids, cgroups int, err error)
 
 // PollRuntime syncs RuntimeStats, eBPF drops, and filter sizes into Prometheus gauges/counters.
-// Stops when ctx is cancelled.
-func PollRuntime(ctx context.Context, m *Metrics, stats *proxy.RuntimeStats, dropCount DropCountFunc, filters FilterCountFunc, every time.Duration) {
+// Stops when ctx is cancelled. criticalDropCount may be nil.
+func PollRuntime(ctx context.Context, m *Metrics, stats *proxy.RuntimeStats, dropCount, criticalDropCount DropCountFunc, filters FilterCountFunc, every time.Duration) {
 	if m == nil || every <= 0 {
 		return
 	}
@@ -28,6 +28,11 @@ func PollRuntime(ctx context.Context, m *Metrics, stats *proxy.RuntimeStats, dro
 		if dropCount != nil {
 			if n, err := dropCount(); err == nil {
 				m.SetEBPFRingbufDrops(n)
+			}
+		}
+		if criticalDropCount != nil {
+			if n, err := criticalDropCount(); err == nil {
+				m.SetEBPFCriticalRingbufDrops(n)
 			}
 		}
 		if filters != nil {

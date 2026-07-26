@@ -491,3 +491,121 @@ tool_tags:
 		t.Errorf("content_bind_min_len = %d", cfg.Trifecta.ContentBindMinLenOrDefault())
 	}
 }
+
+func TestLoadFailClosedRequiresLSMInSensorMode(t *testing.T) {
+	yaml := `
+enforcement: block
+fail_closed:
+  enabled: true
+`
+	_, err := LoadSensor(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected error when fail_closed.enabled without ebpf.lsm_enforce")
+	}
+}
+
+func TestLoadFailClosedOKWithLSMInSensorMode(t *testing.T) {
+	yaml := `
+enforcement: block
+ebpf:
+  lsm_enforce: true
+fail_closed:
+  enabled: true
+  ringbuf_drop_rate_threshold: 100
+  ringbuf_recovery_rate_threshold: 20
+`
+	cfg, err := LoadSensor(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !cfg.FailClosed.Enabled || !cfg.EBPF.LSMEnforce {
+		t.Fatal("expected fail_closed + lsm_enforce")
+	}
+}
+
+func TestLoadFailClosedOKInProxyWithoutLSM(t *testing.T) {
+	yaml := `
+enforcement: block
+fail_closed:
+  enabled: true
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !cfg.FailClosed.Enabled {
+		t.Fatal("expected fail_closed enabled")
+	}
+}
+
+func TestLoadFailClosedHysteresisInvalid(t *testing.T) {
+	yaml := `
+enforcement: block
+fail_closed:
+  enabled: true
+  ringbuf_drop_rate_threshold: 10
+  ringbuf_recovery_rate_threshold: 20
+servers:
+  - id: s1
+    command: echo
+`
+	_, err := Load(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected hysteresis validation error")
+	}
+}
+
+func TestLoadTaintBridgeRequiresAllowlist(t *testing.T) {
+	yaml := `
+enforcement: block
+taint_bridge:
+  enabled: true
+servers:
+  - id: s1
+    command: echo
+`
+	_, err := Load(writeTemp(t, yaml))
+	if err == nil {
+		t.Fatal("expected error when taint_bridge.enabled without allowlist")
+	}
+}
+
+func TestLoadTaintBridgeOKWithUIDs(t *testing.T) {
+	yaml := `
+enforcement: block
+taint_bridge:
+  enabled: true
+  allowed_uids: [1000]
+  socket_gid: 1500
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !cfg.TaintBridge.Enabled || len(cfg.TaintBridge.AllowedUIDs) != 1 || cfg.TaintBridge.SocketGID != 1500 {
+		t.Fatalf("cfg=%+v", cfg.TaintBridge)
+	}
+}
+
+func TestLoadTaintBridgeOKWithGIDsSensor(t *testing.T) {
+	yaml := `
+enforcement: block
+taint_bridge:
+  enabled: true
+  allowed_gids: [1500]
+  socket_gid: 1500
+`
+	cfg, err := LoadSensor(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(cfg.TaintBridge.AllowedGIDs) != 1 {
+		t.Fatalf("gids=%v", cfg.TaintBridge.AllowedGIDs)
+	}
+}

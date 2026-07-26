@@ -135,6 +135,68 @@ func TestWebhook_PagerDuty(t *testing.T) {
 	}
 }
 
+// TestWebhook_PagerDuty_EscalationGetsFreshIncident pins the fix for a
+// finding surfaced reviewing docs/cve_corpus.md's own dedup_key fix: a
+// SessionID-only dedup_key let a later, higher-confidence EXFIL merge into
+// an already-acknowledged, lower-severity SUSPICIOUS incident instead of
+// paging fresh at the severity it deserves. Keying on SessionID *and*
+// Verdict means same-tier repeats (the noise case dedup exists to solve)
+// still share a key, but an escalation to a different verdict always gets
+// its own dedup_key — PagerDuty cannot silently absorb it into a stale one.
+func TestWebhook_PagerDuty_EscalationGetsFreshIncident(t *testing.T) {
+	var mu sync.Mutex
+	var got []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		got = append(got, body)
+		mu.Unlock()
+		w.WriteHeader(202)
+	}))
+	defer srv.Close()
+
+	n := alerting.NewWebhookNotifier(config.WebhookConfig{
+		URL:                 srv.URL,
+		Format:              "pagerduty",
+		MinVerdict:          "SUSPICIOUS",
+		PagerDutyRoutingKey: "rkey",
+	}, nil)
+	n.OnEvidenceEmitted(sampleRec(model.VerdictSuspicious))
+	n.OnEvidenceEmitted(sampleRec(model.VerdictSuspicious)) // same-tier repeat
+	n.OnEvidenceEmitted(sampleRec(model.VerdictExfil))      // escalation
+	n.Close()
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 deliveries, got %d", len(got))
+	}
+	// Deliveries are async (OnEvidenceEmitted spawns a goroutine per call),
+	// so group by the payload's own verdict rather than assuming send order
+	// survived to arrival order.
+	var suspiciousKeys, exfilKeys []string
+	for _, body := range got {
+		payload, _ := body["payload"].(map[string]any)
+		key, _ := body["dedup_key"].(string)
+		switch payload["severity"] {
+		case "warning":
+			suspiciousKeys = append(suspiciousKeys, key)
+		case "critical":
+			exfilKeys = append(exfilKeys, key)
+		}
+	}
+	if len(suspiciousKeys) != 2 || len(exfilKeys) != 1 {
+		t.Fatalf("expected 2 SUSPICIOUS + 1 EXFIL delivery, got suspicious=%v exfil=%v", suspiciousKeys, exfilKeys)
+	}
+	if suspiciousKeys[0] != suspiciousKeys[1] {
+		t.Fatalf("same-tier repeats must share a dedup_key: %q vs %q", suspiciousKeys[0], suspiciousKeys[1])
+	}
+	if exfilKeys[0] == suspiciousKeys[0] {
+		t.Fatalf("escalation to EXFIL must NOT share the SUSPICIOUS dedup_key (would let it merge into an already-acked, lower-severity incident): both were %q", exfilKeys[0])
+	}
+	// The len(exfilKeys)==1 grouped-by-severity=="critical" check above
+	// already confirms the EXFIL delivery carries critical severity.
+}
+
 func TestWebhook_MinVerdictEXFIL(t *testing.T) {
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
