@@ -8,7 +8,7 @@ import (
 
 func TestSensor_UpdateAllowlistAndSensitivePaths(t *testing.T) {
 	// NewSensor requires BPF load — skip if not root / no BTF.
-	s, err := interlockebpf.NewSensor([]string{"10.0.0.1"}, []string{"/secrets"}, nil)
+	s, err := interlockebpf.NewSensor([]string{"10.0.0.1"}, []string{"/secrets"}, false, nil)
 	if err != nil {
 		t.Skipf("eBPF unavailable: %v", err)
 	}

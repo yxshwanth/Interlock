@@ -53,8 +53,8 @@ STDIO single-session was a demo simplification. Real deployment means many concu
 Closes the detection-credibility gap for Variant A: encoded exfil in sink args is now caught.
 
 - **Shipped (encoding overlap):** canonical transforms at taint registration — base64, hex, URL-encoding, reversal; depth-2 nests; `gzip_base64`; same-call JSON string reassembly; `CheckOverlap` / `CheckOverlapPayload`; evidence records `match_form`; `RedactJSON` scrubs encoded variants
-- **Known gaps (skip tests):** cross-call splits (**met** via fragment buffer), depth-3 nests (**met** via recursive decoder), non-gzip compressors — priority tiers in [`SUMMARY.md`](SUMMARY.md)
-- **Shipped (post-v0.2):** eBPF `write()` + `sendto()` first-256 → Variant B `EXFIL` on overlap; connect/DNS/`openat` without overlap → `SUSPICIOUS`. DNS = sendto port 53; openat uses `sensitive_paths`
+- **Known gaps (skip tests):** cross-call splits (**met** via fragment buffer), depth-3 nests (**met** via recursive decoder), non-gzip compressors — priority tiers in [`architecture.md`](architecture.md) §13
+- **Shipped (post-v0.2):** eBPF `write()` + `sendto()` payload capture (runtime `payload_capture_bytes`, default 512 / max 1024) → Variant B `EXFIL` on overlap; connect/DNS/`openat` without overlap → `SUSPICIOUS`. DNS = sendto port 53; openat uses `sensitive_paths`
 
 **Done when:** `TestCheckOverlap_EncodedExfil_KnownGap` passes — **met**.
 
@@ -69,7 +69,7 @@ The "is this operable" gate — **shipped**.
 - **Benchmarks:** engine hot-path suite + [`performance.md`](performance.md) with published snapshot (`make bench`)
 - **Evidence posture:** JSONL append is the **intentional default** (demo/dev-friendly). SQLite is **opt-in** (`evidence.backend: sqlite` + `max_records`) for bounded restart-safe retention — not a deferred half-feature
 - **Backpressure:** `logging.backpressure: block | drop` with runtime stats at shutdown
-- **eBPF drops:** kernel `drop_count` map when ring buffer reserve fails; surfaced via `Sensor.DropCount()`
+- **eBPF drops:** dual kernel maps — `drop_count` (routine: connect/openat) and `critical_drop_count` (write/sendto/lsm_deny); surfaced via `Sensor.DropCount()` / `Sensor.CriticalDropCount()`
 
 **Done when:** published overhead numbers + evidence always persists; bounded growth available via SQLite — **met** (JSONL default by design; SQLite opt-in).
 
@@ -80,14 +80,14 @@ The "is this operable" gate — **shipped**.
 1. **End-to-end HTTP overhead (A + C)** — **met** (v0.2.1): `TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`, `make bench-http`, [`performance.md`](performance.md) snapshot. Passthrough via `proxy.New(..., nil)`. Concurrent multi-session p99 — **met**: `TestHTTP_ConcurrentLoad_ReadTicket` (`CONCURRENT_SESSIONS`, CI smoke).
 2. **Async evidence emit** — **met**: `AsyncEvidenceSink` decorator; `evidence.backpressure: block | drop`; trip path no longer waits on JSONL/SQLite I/O under `Engine.mu`. Construction still dominates allocs.
 3. **Taint ingestion on sensitive reads** — **met** (mechanical): direct `TaintedVariant` builder, cheaper `HashValue`, `strings.Builder` in `extractResultText`; isolated `IngestResult` ~8.2 µs / 38 allocs. HTTP delta still ~0.5 ms class (backend+proxy); further encoding/extract opts if sub-ms must shrink more.
-4. **eBPF ringbuf drop observability** — **met**: CI `TestLoader_DropCount_Unloaded`; root-gated idle + saturation flood (`TestEBPF_RingbufSaturation_UnderLoad`).
+4. **eBPF ringbuf drop observability** — **met**: CI unloaded DropCount/CriticalDropCount; root-gated idle + segregated saturation floods (`TestEBPF_RingbufSaturation_UnderLoad`); dual rings so connect floods cannot starve EXFIL/`lsm_deny` (`TestLSM_DenySurvivesConnectFlood`).
 
 **Post-v0.2 detection:**
 
-5. **eBPF write payload capture** — **met**: `sys_enter_write` first-256 bytes; deferred kill ~100 ms; `CheckOverlapPayload` → Variant B `EXFIL` 0.95 when overlap hits. Connect-only stays `SUSPICIOUS` 0.60.
+5. **eBPF write payload capture** — **met**: `sys_enter_write` / `sendto` payload excerpts; `CheckOverlapPayload` → Variant B `EXFIL` 0.95 when overlap hits, killed immediately (no deferred window — the pre-§1 "wait then kill on suspicion" design was retired; see §1 below). Runtime `ebpf.payload_capture_bytes` (default 512, compiled max 1024). Connect-only stays `SUSPICIOUS` 0.60 on a proxy-tied session — sensor-only mode has no untrusted-content leg and can only reach `EXFIL`.
 6. **eBPF sendto + openat + DNS** — **met**: self-contained `sendto` (IPv4); DNS via port 53; `openat` + `sensitive_paths` → `SUSPICIOUS` only.
 
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (JSONL default intentional; SQLite opt-in for retention). **All four phases merged**. Tagged **`v0.2.0`** / **`v0.2.1`**. Current product state (including post-v0.2): [`SUMMARY.md`](SUMMARY.md).
+**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (JSONL default intentional; SQLite opt-in for retention). **All four phases merged**. Tagged **`v0.2.0`** / **`v0.2.1`**. Status / next work: [`ROADMAP.md`](ROADMAP.md) (this file) **Next build order**; gap tiers: [`architecture.md`](architecture.md) §13.
 
 ---
 
@@ -121,7 +121,7 @@ Turns the tool into something a team deploys, operates, and trusts at scale. **A
 The unglamorous layer that decides whether a team keeps it running. **Done when** met: exports metrics and fires a real alert on detection (DaemonSet is the managed deploy path).
 
 **Shipped:**
-- **Slice 1:** Prometheus `/metrics` + `/healthz` via `observability.listen` (`internal/observability`); detection counter on async evidence emit; live eBPF `drop_count` + filter gauges; DaemonSet probes + headless `interlock-sensor-metrics` Service. See [`deploy/k8s/README.md`](../deploy/k8s/README.md).
+- **Slice 1:** Prometheus `/metrics` + `/healthz` via `observability.listen` (`internal/observability`); detection counter on async evidence emit; live eBPF routine + critical ringbuf drop gauges + filter gauges; DaemonSet probes + headless `interlock-sensor-metrics` Service. See [`deploy/k8s/README.md`](../deploy/k8s/README.md).
 - **Slice 2:** Trip webhooks (`alerting.webhook`) — `generic` | `slack` | `pagerduty`; fan-out via `MultiEmitObserver` after evidence persist.
 - **Slice 3:** OCSF Detection Finding export (`siem`, class_uid 2004) to JSONL file and/or HTTP. CEF deferred.
 
@@ -132,19 +132,26 @@ The unglamorous layer that decides whether a team keeps it running. **Done when*
 
 ### Phase 2 — Kernel-Level Blocking (LSM/KRSI) and Graceful Enforcement
 
-Upgrades detection from detect-and-kill to actual prevention, closing the honest v0.1 limitation ("contained, not prevented" for Variant B). **Build after the operational FP remediation** (Next build order §1) and when deployment demand requires in-kernel prevention — Phase 3 operability is already met. Detail under **Next build order §3**.
+Upgrades detection from detect-and-kill to actual prevention, closing the honest v0.1 limitation ("contained, not prevented" for Variant B).
 
-- LSM/KRSI hook on `socket_connect` → `-EPERM` (or equivalent) before the packet leaves; kernel 5.7+.
+**Slice 1 — shipped, opt-in (`ebpf.lsm_enforce`, default `false`):**
+- `BPF_PROG_TYPE_LSM` hook on `security_socket_connect` (`SEC("lsm/socket_connect")`, `internal/ebpf/bpf/connect.c`) → `-EPERM` before the socket forms. Validated on kernel 6.8 (Ubuntu 24.04) on a throwaway EC2 VM.
+- **Honest scope:** `connect()` carries no payload, so this hook cannot decide EXFIL itself — it enforces a quarantine flag that userspace sets *only after* the existing write/`sendto` payload-overlap path has already confirmed EXFIL for a PID/cgroup. Concretely: the *first* EXFIL-carrying packet is still `contained_by_kill` (unchanged, no regression risk); any *further* `connect()` from that PID/cgroup — a forked child sharing the cgroup, a kill that races, or a respawned process — is denied in-kernel and recorded as `prevented`.
+- Fails soft: missing `CONFIG_BPF_LSM` / `"bpf"` LSM / capabilities → logged `[SECURITY]` warning, sensor keeps running tracepoint-only (never blocks startup).
+- Dual-keyed (PID + cgroup) `lsm_blocklist`, cleared on `RemovePID`/`RemoveCgroupID` to avoid a PID-reuse hazard.
+
+**Still open (separate follow-ups, unchanged scope from before Slice 1):**
 - Graceful responses beyond SIGKILL: block-the-call, quarantine-the-session, alert-only — configurable per verdict tier (pairs with relevance-aware blocking in §1).
-- Fail-closed option (v0.1 was fail-open for the demo; production wants the choice — also listed under Next build order §5).
-- Companion: `sendmsg` / `writev` probes so scatter-gather I/O cannot bypass `write`/`sendto`.
+- Larger/dynamic payload capture or pre-segmentation `tcp_sendmsg` (first-iov `writev`/`sendmsg` + IPv6 dest layout are shipped).
 
-**Done when:** Variant B is upgraded — the packet never leaves, and the record reads `prevented`, not `contained_by_kill`.
+**Shipped elsewhere (do not re-open here):** fail-closed (`fail_closed.enabled`, Next build order §5); dual ringbufs (routine vs critical, §5); evidence hash chain (§6).
+
+**Done when:** Variant B is upgraded — the packet never leaves, and the record reads `prevented`, not `contained_by_kill`. **Partially met:** true for *repeat* connection attempts after an EXFIL trip (Slice 1); the *first* EXFIL-carrying packet remains `contained_by_kill` by construction (connect() precedes the payload that proves EXFIL) — not a target for a future slice, an architectural boundary.
 
 **Watch out:**
-- This is the **highest-risk work in either arc.** Kernel-level blocking via LSM/KRSI is more constrained than tracepoints, more kernel-version-sensitive, and a bug can break the host's networking or deadlock processes. Prototype in a throwaway VM you can destroy, not your main machine.
+- This is the **highest-risk work in either arc.** Kernel-level blocking via LSM/KRSI is more constrained than tracepoints, more kernel-version-sensitive, and a bug can break the host's networking or deadlock processes. Prototype in a throwaway VM you can destroy, not your main machine. (Slice 1 followed this discipline — see [`deploy/ec2/README.md`](../deploy/ec2/README.md).)
 - **The blast radius inverts.** Once you block in-kernel, you're in the critical path of every connection. A bug no longer means a missed attack — it means broken legitimate traffic, or a downed host. Testing rigor has to level up at exactly this boundary.
-- **Do not ship hard in-kernel prevent on top of soft `SUSPICIOUS` signals** — hard prevent belongs on EXFIL-tier (value-overlap) only; §1 made that the enforcement rule.
+- **Do not ship hard in-kernel prevent on top of soft `SUSPICIOUS` signals** — hard prevent belongs on EXFIL-tier (value-overlap) only; §1 made that the enforcement rule. Slice 1 honors this: the quarantine flag is only ever set after an EXFIL confirmation, never on a bare `SUSPICIOUS` connect.
 
 ### Phase 4 — Trust: Self-Security, Validation Corpus, Hardening
 
@@ -153,14 +160,16 @@ What makes senior engineers willing to run privileged kernel code in production.
 - [x] Least-privilege audit (documented residual caps) + tamper-resistance threat model for Interlock itself — [`threat_model.md`](threat_model.md)
 - [x] Signed, reproducible releases — signed tags (since v0.2.0) + `make release` / checksummed GitHub Release assets — [`reproducible_builds.md`](reproducible_builds.md)
 - [x] A real attack-scenario corpus (dozens of trifecta and evasion variants, not one fixture) and a **published false-positive rate** on realistic benign traffic — [`internal/corpus`](../internal/corpus), run in CI via `go test ./internal/corpus/...`, published at [`docs/fp_corpus.md`](fp_corpus.md). **Detection rate 100.0%** (EXFIL-tier, non-gap). Operational any-trip FP remediated in Next build order §1; EXFIL-tier FP stays 0.0%. Detection scope (incl. semantic paraphrase gap): [`detection_boundary.md`](detection_boundary.md).
+- [x] **A second corpus reconstructed from published, third-party-disclosed MCP CVEs** (not self-authored) — [`internal/corpus/scenarios_cve.go`](../internal/corpus/scenarios_cve.go), run in CI via `go test ./internal/corpus/... -run TestCVECorpus`, published at [`docs/cve_corpus.md`](cve_corpus.md). **7 CVE families reconstructed** (`mcp-server-git`, Figma MCP, GPT Researcher, Fetch MCP, Apache Doris MCP, excel-mcp-server, Anthropic Filesystem MCP), each with **both** an exfil-shaped variant (7/7 reach `EXFIL`) and an escape-shaped variant (no family contributes more than 2 of the 14 genuine reconstructions) — five escape variants are genuine full misses (git wire protocol, unregistered ZIP compression, recursive-decode-depth exhaustion, blind-SQLi/PEM taint-never-registered x2), one is a partial soft-catch (DNS-fragmented exfil still trips the connect-only tripwire on the shell's arrival, just never proves `EXFIL`), and one is a fix-demonstration scenario explicitly excluded from the count. Reported per-family, not as a single rate — the denominator (which families/variants got authored) is itself a choice, and the report says so plainly; still smaller than Endor Labs/CSA's catalogued shapes, so it keeps growing rather than being treated as settled. A separately-tallied out-of-scope list (7 disclosure groups) of CVEs whose mechanism (spawn-time config injection, transport downgrade, registry poisoning, browser-reachable dev tooling) sits entirely outside a post-session behavioral monitor's remit. This is the credibility move the self-authored 100.0% number can't make on its own, and it partially answers the still-deferred "third-party security audit and red-team results" backlog item without needing a red-team budget.
+- **It found a live bug on the first run, same shape as §1's 46.7% finding — and a second, deeper, still-open one alongside it.** The corpus's connect-only reverse-shell reconstruction (`cve_2025_53967_figma_reverse_shell_connect_only_gap`) proved that §1's content-binding fix had an unintended side effect: `CheckContentBind` rejects an empty sink string before any comparison, so a bare `connect()` — the exact case Variant B exists for — could never reach `SUSPICIOUS` at all on a proxy-tied session, regardless of how many legs were genuinely lit. Fixed: `classifyTrip` (`internal/engine/engine.go`) now distinguishes "no payload channel at all" from "payload channel present but unrelated," restoring the soft tripwire without reopening any hard-block-on-suspicion path; the independently-dead ~100 ms deferred-kill subsystem (`scheduleContain`/`scheduleKill`/`flushDeferredKills`/`killLoop`, `internal/ebpf/sensor.go`) was removed rather than left describing a mechanism that could never fire post-§1. `TestEngine_IngestSyscall_ConnectOnly_AllLit_Suspicious` pins it. **But the fix does not change the CVE reconstruction's own outcome**, because that reconstruction is faithfully sensor-only (matching the CVE's own shape, and the DaemonSet's deploy shape) — and sensor-only mode (`IngestSyscallSensor`) never lights `untrusted_content_present` at all, so `AllLit()` is permanently false there regardless. **The entire soft-`SUSPICIOUS` tier is inert on the sensor-only DaemonSet path** — a second, deeper, catalogued-not-fixed gap (`docs/architecture.md` §13, `TestEngine_IngestSyscallSensor_NeverReachesSuspicious_KnownGap`) found while investigating the first. Three further consequences, all disclosed rather than absorbed quietly: the fix creates **double emission** on the connect-then-write EXFIL path (no session-level dedup exists; `min_verdict` defaults to `SUSPICIOUS` so both records pass through by default — a PagerDuty-specific mitigation shipped, session-scoped `dedup_key` merges an escalating verdict into the same still-open incident instead of opening a second one; the general session+PID dedup design remains a tracked follow-up, not fixed here); it **measurably widened** the operational FP rate below (13.3% → 18.8%, measured with new benign scenarios, not assumed unchanged); and the published rate itself **understates real per-incident alert volume** — a chatty benign session making several different non-allowlisted connects trips the soft tripwire independently on each one (measured: one scenario, 5 connects, 5 evidence records — `fp_corpus.md`'s false-positive table now reports a verdict count per row, not just a tripped/not-tripped flag). Full writeup, including a published correction to this report's own first-draft gap note: [`docs/cve_corpus.md`](cve_corpus.md).
 
 **Done when:** there's a signed release, a documented threat model, and detection/false-positive numbers on a corpus rather than a single demo. — **met** (corpus + threat model + checksummed release artifacts; cut a signed `v*` tag to publish assets via `.github/workflows/release.yml`).
 
 **Watch out:**
 - The **false-positive rate** is where the product lives or dies. A tool that kills legitimate processes gets uninstalled on day one. If the FP rate on realistic traffic is bad, that is the single most important finding in the project, and it should reshape the detection logic — not get buried to protect a launch narrative. This is the v0.1 honesty discipline at product scale.
-- **It was bad, and the corpus found it — then §1 fixed it.** The any-trip (operational) false-positive rate previously came back at 46.7%, driven by sticky content-blind legs. Relevance-aware blocking, content-binding, and leg decay closed that. The EXFIL-tier (value-overlap proven) false-positive rate remains 0.0%. See [`docs/fp_corpus.md`](fp_corpus.md).
+- **It was bad, and the corpus found it — then §1 fixed it.** The any-trip (operational) false-positive rate previously came back at 46.7%, driven by sticky content-blind legs. Relevance-aware blocking, content-binding, and leg decay closed that. The EXFIL-tier (value-overlap proven) false-positive rate remains 0.0%. See [`docs/fp_corpus.md`](fp_corpus.md). **Update:** restoring the connect-only tripwire (above) moved the any-trip rate again, from 13.3% to **18.8%** — measured via new benign scenarios built to exercise it (including a volume-shaped one showing the per-scenario metric undercounts per-incident alert volume), not assumed unchanged. Still soft (`detected_only`, never a hard block/kill), so still not an uninstall-risk regression, but the number is real and published, not rounded away.
 
-**v0.3 exit state:** deploys as a Kubernetes DaemonSet, runs as an operable service with metrics and SIEM integration, and ships signed with a threat model and a published false-positive rate. In-kernel prevention (LSM/KRSI) ships when deployment demand requires it — not a hard gate on closing the milestone. An adoptable product.
+**v0.3 exit state:** deploys as a Kubernetes DaemonSet, runs as an operable service with metrics and SIEM integration, and ships signed with a threat model and a published false-positive rate. In-kernel prevention (LSM/KRSI) shipped opt-in as Phase 2 Slice 1 (repeat-connect quarantine). Fail-closed, dual ringbufs, taint bridge, and evidence hash chain shipped under Next build order §4–§6. An adoptable product.
 
 ---
 
@@ -180,7 +189,7 @@ The corpus finding: sticky, content-blind trifecta legs. Three complementary fix
 
 ### 2. Close "will cover" detection gaps `[x]` — **done**
 
-Catalogued in [`SUMMARY.md`](SUMMARY.md) and pinned by `*_KnownGap` / corpus known-gap scenarios:
+Catalogued in [`architecture.md`](architecture.md) §13 and pinned by `*_KnownGap` / corpus known-gap scenarios:
 
 - **Session-level fragment buffer** — **met**: rolling FIFO (`trifecta.fragment_max_chunks` / `fragment_max_bytes`); reassembly-first taint registration; `malicious_proxy_a_cross_call_split` is detection (not KnownGap).
 - **Fat taint-map scaling benches** — **met**: `BenchmarkCheckOverlap_MissPath` at 100/1K/10K; ~100 µs miss-path at 1K ([`performance.md`](performance.md)) — gated simple concat before fragment buffer.
@@ -191,22 +200,28 @@ Catalogued in [`SUMMARY.md`](SUMMARY.md) and pinned by `*_KnownGap` / corpus kno
 
 Managed-K8s readiness (capabilities DaemonSet + PRIVILEGE checklist + EKS/GKE scripts) — **EKS validated 2026-07-12** (AL2023/containerd: caps load+observe; privileged full EXFIL). GKE still optional/unvalidated.
 
-### 3. Strengthen Variant B — kernel prevention + syscall coverage `[ ]`
+### 3. Strengthen Variant B — kernel prevention + syscall coverage `[x]` — **done**
 
-- **LSM/KRSI blocking** (Phase 2) — upgrade from tracepoints to LSM BPF (`socket_connect` → `-EPERM` before the packet forms). Verdict/action becomes true `prevented`, not `contained_by_kill`. Kernel 5.7+, throwaway-VM prototype first.
-- **`sendmsg` / `writev` probes** — close scatter-gather egress evasion (today: `write` / `sendto` only).
+- **LSM/KRSI blocking** (Phase 2 Slice 1) `[x]` — **done, opt-in** (`ebpf.lsm_enforce`): LSM BPF hook on `socket_connect` → `-EPERM` before the packet forms, for *repeat* connects after an EXFIL confirmation. Verdict/action for those repeats reads true `prevented`, not `contained_by_kill`. Validated on a throwaway-VM prototype (kernel 6.8). The *first* EXFIL packet remains `contained_by_kill` — see Phase 2 above.
+- **`sendmsg` / `writev` probes** `[x]` — **done:** `sys_enter_writev` / `sys_enter_sendmsg` on the critical ring (first iovec; named sendmsg carries dest); correlate unnamed sendmsg like write.
+- **IPv6 dest layout** `[x]` — **done:** family + 16-byte addr + port on connect/sendto/named-sendmsg; `AF_INET` / `AF_INET6`.
 
 ### 4. Sensor↔proxy taint bridge (K8s) `[x]` — **done**
 
-Sensor-only `openat` + `/proc/<pid>/root` seeding is brittle (misses env, stdin, REST; on EKS capabilities posture the root read is permission-denied). **Shipped:** unprivileged MCP proxy forwards `TaintedValue` (value+variants on the node-local Unix socket; evidence still hash+preview) to the DaemonSet sensor via `taint_bridge` (`internal/bridge`, `Engine.RegisterRemoteTaint`, session `k8s:<podUID>` from `POD_UID`). openat `/proc` seed remains as privileged-demo fallback. See [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md) and [`proxy-taint-bridge-example.yaml`](../deploy/k8s/proxy-taint-bridge-example.yaml).
+Sensor-only `openat` + `/proc/<pid>/root` seeding is brittle (misses env, stdin, REST; on EKS capabilities posture the root read is permission-denied). **Shipped:** unprivileged MCP proxy forwards `TaintedValue` (value+variants on the node-local Unix socket; evidence still hash+preview) to the DaemonSet sensor via `taint_bridge` (`internal/bridge`, `Engine.RegisterRemoteTaint`, session `k8s:<podUID>` from `POD_UID`). **SO_PEERCRED:** when enabled, `allowed_uids` and/or `allowed_gids` required; optional `socket_gid` + dir `0750` for non-root dialers. openat `/proc` seed remains as privileged-demo fallback. See [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md) and [`proxy-taint-bridge-example.yaml`](../deploy/k8s/proxy-taint-bridge-example.yaml).
 
-### 5. Operability & enterprise readiness `[ ]`
+### 5. Operability & enterprise readiness `[~]` — fail-closed done; CEF / dashboard open
 
-- **Fail-closed mode** — config `fail_closed: true`: ringbuf drops, async sink failure, or engine panic → block egress from monitored pods rather than fail-open with `[SECURITY]` warnings.
-- **CEF SIEM export** — extend `internal/siem` beyond OCSF for Splunk/QRadar/ArcSight-class ingest.
-- **Cross-session evidence dashboard / query** — beyond the single-record HTML viewer: query by `session_id`, verdict, `pod_name` (SQLite or JSONL index; closes `TestEvidenceStore_CrossSessionQuery_KnownGap`).
+- **Fail-closed mode** `[x]` — **done:** config `fail_closed.enabled` with hysteresis / min-trip / recovery / flap backoff (`internal/failclosed`). Routine or critical ringbuf drop rate, async sink failure, or engine/sensor panic → block monitored egress (sensor: LSM quarantine of **all** watched PIDs/cgroups — named limitation: drop counters are severity-class globals, not per-pod; proxy: deny `tools/call` before EvaluateRequest). Sensor mode requires `ebpf.lsm_enforce`. Validated on throwaway EC2 VM (`TestSensor_FailClosedQuarantineAll`).
+- **Ring-buffer event segregation** `[x]` — **done:** routine (`events`/`drop_count`: connect/openat) vs critical (`critical_events`/`critical_drop_count`: write/writev/sendto/sendmsg/lsm_deny); dual drain loops; fail-closed watches both rates; metrics `interlock_ebpf_critical_ringbuf_drops_total`. Residual: critical-ring flood (KnownGap).
+- **CEF SIEM export** `[ ]` — extend `internal/siem` beyond OCSF for Splunk/QRadar/ArcSight-class ingest.
+- **Cross-session evidence dashboard / query** `[ ]` — beyond the single-record HTML viewer: query by `session_id`, verdict, `pod_name` (SQLite or JSONL index; closes `TestEvidenceStore_CrossSessionQuery_KnownGap`).
 
-**Also still open under Phase 4 Trust:** (none for the Trust “done when” gate — threat model + reproducible release path **met**). Remaining enterprise items live under Next build order §5 (fail-closed, CEF, cross-session query). Capability drop post-attach and bridge peer-auth remain documented residual risks in [`threat_model.md`](threat_model.md).
+### 6. Tamper-evident evidence `[x]` — **done**
+
+- **Hash-chained evidence records** — each `EvidenceRecord` includes `chain_seq` / `prev_hash` / `hash` (hex SHA-256); JSONL and SQLite sinks seal on emit; chain tip survives restart; `cmd/verify-evidence` / `make verify-evidence` detects mid-chain edit/delete. Complements SIEM/webhook off-node durability (threat model T5). No WORM / external signing — full-file forge with node root remains a residual risk.
+
+**Also still open under Phase 4 Trust:** (none for the Trust “done when” gate — threat model + reproducible release path **met**). Remaining enterprise items live under Next build order §5 (CEF, cross-session query). Capability drop post-attach remains a documented residual in [`threat_model.md`](threat_model.md); bridge peer-auth is SO_PEERCRED allowlists (T2 residual: node root / shared GID / forged `pod_uid`).
 
 ---
 
@@ -223,10 +238,10 @@ Four things span both arcs and are the most likely to cause real damage:
 
 ## Backlog (Beyond v0.3)
 
-Pulled forward into **Next build order** above (do not duplicate as "someday"): operational FP remediation; cross-call fragment buffer; `PAYLOAD_MAX` / deeper capture; depth-3 decoder; LSM/KRSI; `sendmsg`/`writev`; proxy↔sensor taint bridge; fail-closed; CEF; cross-session evidence query.
+Pulled forward into **Next build order** above (do not duplicate as "someday"): operational FP remediation; cross-call fragment buffer; `PAYLOAD_MAX` / deeper capture; depth-3 decoder; LSM/KRSI (Slice 1 shipped opt-in); `sendmsg`/`writev`/IPv6 (**met**); proxy↔sensor taint bridge + SO_PEERCRED (**met**); fail-closed (**met**); tamper-evident hash chain (**met**); CEF; cross-session evidence query.
 
-Still deferred until demand justifies them: IPv6; Unix-socket and file-based exfil paths; role-based access and operator audit logs; ARM support and cross-distro/CO-RE portability; a managed cloud offering; third-party security audit and red-team results; comparison benchmarks against static scanners.
+Still deferred until demand justifies them: Unix-socket and file-based exfil paths; role-based access and operator audit logs; ARM support and cross-distro/CO-RE portability; a managed cloud offering; third-party security audit and red-team results; comparison benchmarks against static scanners.
 
-**Out of scope (not backlog):** DoH/DoT — mitigate with network-layer DNS controls; see [`SUMMARY.md`](SUMMARY.md).
+**Out of scope (not backlog):** DoH/DoT — mitigate with network-layer DNS controls; see [`architecture.md`](architecture.md) §13.
 
-Detection gap priorities also live in [`SUMMARY.md`](SUMMARY.md); the Next build order is the execution queue.
+Detection gap priorities live in [`architecture.md`](architecture.md) §13; the Next build order is the execution queue.

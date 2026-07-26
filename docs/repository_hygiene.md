@@ -35,7 +35,7 @@ interlock/
 ├── web/                  # evidence viewer
 ├── deploy/k8s/           # DaemonSet, RBAC, ConfigMap, metrics Service, PRIVILEGE.md, eks/, gke/
 ├── deploy/systemd/       # bare-metal/VM units, SIGHUP reload notes
-├── docs/                 # architecture.md, project_overview.md, task_list.md
+├── docs/                 # project_overview.md, architecture.md, ROADMAP.md
 ├── .github/              # workflows, templates
 ├── README.md
 ├── LICENSE

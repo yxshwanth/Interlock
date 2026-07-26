@@ -21,13 +21,14 @@ Include:
 
 - MCP proxy (`internal/proxy/`) — framing, routing, enforcement gate, child process lifecycle
 - Correlation engine (`internal/engine/`) — trifecta state machine, taint/overlap, evidence emission
-- eBPF sensor (`internal/ebpf/`, `internal/ebpf/bpf/connect.c`) — probe logic, PID filter, ring buffer handling
+- eBPF sensor (`internal/ebpf/`, `internal/ebpf/bpf/connect.c`) — probe logic, PID/cgroup filter, dual ring buffers, LSM quarantine hook
+- Fail-closed breaker (`internal/failclosed/`) — ringbuf/sink/panic trips → mass quarantine / proxy deny
 - Kubernetes attribution (`internal/k8s/`) — cgroup→container→pod resolution, RBAC surface (`deploy/k8s/rbac.yaml`)
 - Operability (`internal/observability/`, `internal/alerting/`, `internal/siem/`, `internal/reload/`) — metrics/health exposure, outbound webhook/SIEM delivery, `SIGHUP` config reload
-- Demo and CLI entrypoints (`cmd/interlock/`, `cmd/demo/`, `cmd/k8s-exfil-demo/`)
-- Deployment manifests (`deploy/k8s/`, `deploy/systemd/`) — privilege/capability requests, RBAC scope
-- Privilege model — what runs as root, what capabilities are held, fail-open behavior
-- Secret handling — redaction, evidence sink, log output
+- Demo and CLI entrypoints (`cmd/interlock/`, `cmd/demo/`, `cmd/k8s-exfil-demo/`, `cmd/verify-evidence/`)
+- Deployment manifests (`deploy/k8s/`, `deploy/systemd/`, `deploy/ec2/`) — privilege/capability requests, RBAC scope, LSM throwaway VM
+- Privilege model — what runs as root, what capabilities are held, fail-open default vs opt-in `fail_closed`
+- Secret handling — redaction, evidence sink, hash-chain integrity, log output
 
 **Out of scope (for now):**
 
@@ -51,17 +52,18 @@ Critical issues (remote code execution, privilege escalation via Interlock) get 
 
 Interlock detects **programmatic** runtime exfiltration (lethal trifecta + value overlap across MCP and eBPF). See **[`docs/detection_boundary.md`](docs/detection_boundary.md)** for what it catches, what it does not (including **semantic / paraphrased exfil**), and why.
 
-As of this tree (v0.2.2 + v0.3 Phase 1/3/4):
+As of this tree (v0.3.0 + Unreleased robustness):
 
 - Published detection / FP corpus: [`docs/fp_corpus.md`](docs/fp_corpus.md)
-- Signed tags (since `v0.2.0`); reproducible build path + release workflow ready — checksummed GitHub Release *assets* publish on the next signed `v*` tag ([`docs/reproducible_builds.md`](docs/reproducible_builds.md))
+- Signed tags (since `v0.2.0`); reproducible build path + release workflow — [`docs/reproducible_builds.md`](docs/reproducible_builds.md)
 - Threat model *of Interlock itself* (TCB / tamper-resistance): [`docs/threat_model.md`](docs/threat_model.md)
-- Kernel-level blocking (LSM/KRSI) — Variant B is detect-and-contain, not prevent; Phase 2, demand-gated
+- Kernel-level quarantine — opt-in `ebpf.lsm_enforce` (repeat-connect `prevented` after EXFIL); first EXFIL packet remains `contained_by_kill`
+- Opt-in `fail_closed.enabled`; dual ringbufs; evidence hash chain (`make verify-evidence`)
 - No protection against a compromised kernel or a malicious operator with root on the host
 
 ## eBPF probe transparency
 
-The only kernel code Interlock loads is [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c) (connect / write / sendto / openat probes, ring buffer, `drop_count`). Precompiled objects are committed and embedded — read the C source before trusting it. Regen: [`docs/reproducible_builds.md`](docs/reproducible_builds.md).
+The only kernel code Interlock loads is [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c) (connect / write / sendto / openat probes; dual ringbufs `events` + `critical_events`; `drop_count` / `critical_drop_count`; opt-in LSM `socket_connect`). Precompiled objects are committed and embedded — read the C source before trusting it. Regen: [`docs/reproducible_builds.md`](docs/reproducible_builds.md).
 
 ## Signed releases
 
