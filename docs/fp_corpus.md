@@ -17,10 +17,10 @@ Two outcome dimensions are scored per scenario, and they answer different questi
 
 | Metric | Value |
 |---|---|
-| Corpus size | 55 scenarios (25 malicious, 30 benign) |
+| Corpus size | 58 scenarios (25 malicious, 33 benign) |
 | **Detection rate** (EXFIL-tier, non-gap malicious) | **100.0%** (21/21) |
-| **False-positive rate** (any trip, benign) | **13.3%** (4/30) |
-| False-positive rate (EXFIL-tier only, benign) | 0.0% (0/30) |
+| **False-positive rate** (any trip, benign) | **21.2%** (7/33) |
+| False-positive rate (EXFIL-tier only, benign) | 0.0% (0/33) |
 | Known-gap misses (expected, catalogued) | 4 |
 | Bonus catches (gap unexpectedly closed) | 0 |
 
@@ -33,15 +33,15 @@ Two outcome dimensions are scored per scenario, and they answer different questi
 | Known-gap miss (EXFIL missed, documented gap) | 4 |
 | Bonus catch (EXFIL achieved, documented gap) | 0 |
 | True negative (benign, no trip) | 26 |
-| False positive — tripwire (benign, SUSPICIOUS only) | 4 |
+| False positive — tripwire (benign, SUSPICIOUS only) | 7 |
 | False positive — EXFIL (benign, severe) | 0 |
 
 ## Breakdown by detection plane
 
 | Variant | TP | FN | GapMiss | Bonus | TN | FP (tripwire) | FP (EXFIL) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `ebpf_variant_b` | 4 | 0 | 1 | 0 | 2 | 0 | 0 |
-| `proxy_variant_a` | 16 | 0 | 3 | 0 | 22 | 4 | 0 |
+| `ebpf_variant_b` | 4 | 0 | 1 | 0 | 2 | 2 | 0 |
+| `proxy_variant_a` | 16 | 0 | 3 | 0 | 22 | 5 | 0 |
 | `sensor_variant_b` | 1 | 0 | 0 | 0 | 2 | 0 | 0 |
 
 ## Known-gap misses (expected)
@@ -57,12 +57,17 @@ Each corresponds to a `*_KnownGap` unit test in `internal/engine` — the corpus
 
 ## False positives (benign scenarios that tripped)
 
-| Scenario | Tier | Why (design note) |
-|---|---|---|
-| `benign_proxy_a_content_bound_untrusted_sink` | tripwire (SUSPICIOUS) | correct soft SUSPICIOUS: AllLit + CheckContentBind; action is allowed_monitor (relevance-aware) — not an operational hard-block FP |
-| `benign_proxy_a_leg_ttl_still_lit_under_boundary` | tripwire (SUSPICIOUS) | soft SUSPICIOUS: StepAdvanceTime 29m59s leaves LitAt inside TTL; contrasts with benign_proxy_a_leg_ttl_decay_then_sink at 31m |
-| `benign_proxy_a_multiserver_b_content_in_sink` | tripwire (SUSPICIOUS) | soft SUSPICIOUS: AllLit + content-bind on B's blurb in C's sink; A's secret never overlaps — relevance-aware allowed_monitor, not hard-block FP |
-| `benign_proxy_a_natural_product_quote_bind` | tripwire (SUSPICIOUS) | soft SUSPICIOUS from natural long shared substring; allowed_monitor — documents operator-visible soft noise, not hard-block FP |
+"Verdicts emitted" is the count of independent evidence records / OCSF findings this ONE scenario produces — there is no "already tripped, don't re-evaluate" gate anywhere in the engine, so a scenario with multiple tripping events produces multiple independent alerts. PagerDuty specifically dedupes same-session-same-verdict repeats (`SessionID:Verdict`), so its incident count can be lower than this column for a row where every trip lands on the same tier — see the design note on any row with verdicts > 1. Each row still counts as exactly **one** false positive toward the headline any-trip rate above; a row with verdicts > 1 means that rate understates real per-incident alert volume for this pattern, on the sinks that don't dedupe.
+
+| Scenario | Tier | Verdicts emitted | Why (design note) |
+|---|---|---:|---|
+| `benign_proxy_a_content_bound_untrusted_sink` | tripwire (SUSPICIOUS) | 1 | correct soft SUSPICIOUS: AllLit + CheckContentBind; action is allowed_monitor (relevance-aware) — not an operational hard-block FP |
+| `benign_proxy_a_pem_header_universal_collision` | tripwire (SUSPICIOUS) | 1 | deterministic content-bind collision on a universal constant: -----BEGIN PRIVATE KEY----- (27 bytes) alone exceeds content_bind_min_len (16) whenever an untrusted excerpt and a sink both merely reference PEM format — see docs/cve_corpus.md's Filesystem PEM accident (the same ceiling found by one-off coincidence) and docs/fp_corpus.md's Discussion |
+| `benign_ebpf_b_connect_only_alllit_unlisted_endpoint` | tripwire (SUSPICIOUS) | 1 | correct soft SUSPICIOUS: AllLit, connect() has no payload channel at all so classifyTrip fires on AllLit alone (see internal/engine/engine.go); action is detected_only (Variant B never hard-blocks on SUSPICIOUS) — an operator-visible soft flag on ordinary egress-allowlist drift, not an operational hard-block FP. This is exactly the tripwire docs/cve_corpus.md found silently missing and fixed; this scenario measures its FP surface rather than leaving it unmeasured. |
+| `benign_proxy_a_leg_ttl_still_lit_under_boundary` | tripwire (SUSPICIOUS) | 1 | soft SUSPICIOUS: StepAdvanceTime 29m59s leaves LitAt inside TTL; contrasts with benign_proxy_a_leg_ttl_decay_then_sink at 31m |
+| `benign_proxy_a_multiserver_b_content_in_sink` | tripwire (SUSPICIOUS) | 1 | soft SUSPICIOUS: AllLit + content-bind on B's blurb in C's sink; A's secret never overlaps — relevance-aware allowed_monitor, not hard-block FP |
+| `benign_proxy_a_natural_product_quote_bind` | tripwire (SUSPICIOUS) | 1 | soft SUSPICIOUS from natural long shared substring; allowed_monitor — documents operator-visible soft noise, not hard-block FP |
+| `benign_ebpf_b_connect_only_alllit_high_volume` | tripwire (SUSPICIOUS) | 5 | correct soft SUSPICIOUS on every one of the 5 connects — 5 evidence records and 5 OCSF findings from this ONE benign scenario, but only 1 PagerDuty incident (all 5 share one SessionID:Verdict dedup key, since every trip lands on the same SUSPICIOUS tier). Action is detected_only throughout, never a hard block. Counted as a single false positive toward the published any-trip rate, same as any other tripping scenario; the per-scenario metric does not multiply by verdict count, so the real per-incident alert volume this pattern produces is larger than the headline rate implies, and differs by which sink you're watching. See docs/cve_corpus.md. |
 
 ## Discussion — does this reshape the logic?
 
@@ -73,6 +78,12 @@ Each corresponds to a `*_KnownGap` unit test in `internal/engine` — the corpus
 **Leg decay** (`trifecta.leg_ttl` / `decay_after_calls`) dims sticky legs after idle time or N subsequent events so a poisoned session does not forever treat every sink as suspicious. Tainted values are retained so a late sink that still carries a secret can still reach EXFIL. The corpus exercises both dimensions (`benign_proxy_a_leg_decay_then_sink`, `benign_proxy_a_high_throughput_50_then_sink`, TTL past-boundary `benign_proxy_a_leg_ttl_decay_then_sink` at 31m, and still-lit under-boundary `benign_proxy_a_leg_ttl_still_lit_under_boundary` at 29m59s via `StepAdvanceTime`).
 
 **Extraction boundary.** `extractResultText` prefers MCP `content[].text`, then walks other JSON string leaves (bounded). Benign nested-metadata scenarios keep an unrelated sink so registered metadata taint does not EXFIL without overlap; the paired malicious scenario (`malicious_proxy_a_secret_outside_content_text`) proves buried secrets are tainted. Soft-SUSPICIOUS any-trip pins (natural product quotes, multi-server B→C binds) are intentional `allowed_monitor` noise for fetch-heavy agents — tune `content_bind_min_len` rather than hard-blocking.
+
+**`content_bind_min_len: 16` also catches purely coincidental overlap, not just deliberate quoting.** While authoring `docs/cve_corpus.md`'s Filesystem EscapeRoute PEM scenario — not looking for this — an early draft's untrusted excerpt and unrelated sink text happened to share a 16-byte substring and tripped `CheckContentBind` by accident. The pins above already show the *intentional*-quoting noise case (a fetch-heavy agent echoing a long product blurb); this is the sharper case of a fetch-heavy agent hitting the same floor on pure coincidence, with no quoting involved at all. Worth watching as this corpus grows, and a candidate for raising the default rather than leaving it at the value that happened to be picked.
+
+**Some of that floor isn't coincidental at all — it's guaranteed.** `-----BEGIN PRIVATE KEY-----` is a fixed, universal 27-byte string, identical in every PEM key ever written; it alone clears `content_bind_min_len`'s 16-byte bar. `benign_proxy_a_pem_header_universal_collision` pins the deterministic version of the accident above: an untrusted fetched doc and an unrelated sink message both merely *reference* PEM format (no real key, no quoting relationship, nothing secret) and still soft-trip on the shared header line. Any fetch-heavy agent that discusses key formats — security docs, compliance reminders, runbooks — will hit this whenever a sink message happens to mention the same header, not just when someone happens to draft two strings that collide.
+
+**Watch the ratio, not any single pin.** The any-trip rate is currently 21.2% — it has already moved three times (from 13.3%, each move driven by a real, measured finding — a restored tripwire's own false-positive surface, or a newly identified guaranteed-collision shape — not a rounding choice). Every `ExpectTripByDesign: true` scenario is a deliberate design pin (this leg lights, on purpose, for this reason), and each is individually correct today, but the number that matters operationally is the trend across pins as the corpus keeps growing, not whether any one row currently reads true. See [`cve_corpus.md`](cve_corpus.md) for the most recent addition and why it was added.
 
 ## Reproduce
 

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- **Variant B `writev` / `sendmsg` / IPv6** — critical-ring `sys_enter_writev` and `sys_enter_sendmsg` (first iovec; named sendmsg carries dest); dest layout widened to family + 16-byte addr + port on connect/sendto/named-sendmsg (`AF_INET` / `AF_INET6`). Instrumented engine tests replace prior KnownGap skips.
+- **Taint bridge SO_PEERCRED** — when `taint_bridge.enabled`, require `allowed_uids` and/or `allowed_gids`; Accept-time peercred reject; optional `socket_gid` + dir `0750` for non-root dialers. Threat model T2 residual rewritten.
+- **Ring-buffer event segregation** — dual 256 KiB BPF ringbufs: routine `events`/`drop_count` (connect/openat) and critical `critical_events`/`critical_drop_count` (write/writev/sendto/sendmsg/lsm_deny). Sensor drains each on a dedicated goroutine. Fail-closed trips on either drop rate; Prometheus keeps `interlock_ebpf_ringbuf_drops_total` for routine and adds `interlock_ebpf_critical_ringbuf_drops_total`. Closes the connect-flood blinds EXFIL/`lsm_deny` coupling (threat model T1 residual rewritten: critical-ring flood remains a named gap).
+- **Fail-closed mode** — opt-in `fail_closed.enabled` (`internal/failclosed`): ringbuf drop-rate hysteresis, consecutive evidence sink failures, or engine/sensor panic → block monitored egress. Sensor mode quarantines all watched PIDs/cgroups via existing LSM `socket_connect` maps (requires `ebpf.lsm_enforce`; scope=all named limitation); proxy mode denies `tools/call` before EvaluateRequest. Flap damping: min-trip floor, recovery window, exponential backoff. Metrics `interlock_fail_closed_active` / `interlock_fail_closed_transitions_total`. Validated on throwaway EC2 VM (`TestSensor_FailClosedQuarantineAll`).
+- **Tamper-evident evidence hash chain** — each `EvidenceRecord` carries `chain_seq` / `prev_hash` / `hash` (hex SHA-256 of the prior sealed record); JSONL and SQLite sinks seal on emit with restart-continuous tip; `cmd/verify-evidence` / `make verify-evidence` detects mid-chain edit/delete (threat model T5). Complements SIEM/webhook off-node durability; no WORM / external signing.
+- **LSM/KRSI kernel quarantine** (v0.3 Phase 2, Slice 1) — opt-in `ebpf.lsm_enforce` (default `false`) attaches a `BPF_PROG_TYPE_LSM` hook on `security_socket_connect`; once write/`sendto`/`sendmsg`/`writev` payload overlap confirms EXFIL for a PID/cgroup, any further `connect()` from it is denied in-kernel with `-EPERM`, upgrading that repeat attempt from `contained_by_kill` to `prevented`. Fails soft (logged `[SECURITY]` warning, tracepoint-only) without `CONFIG_BPF_LSM=y` + `"bpf"` active in `/sys/kernel/security/lsm`. First EXFIL-carrying packet is unchanged — still `contained_by_kill` by construction (`connect()` precedes the payload that proves EXFIL). Validated end-to-end on a throwaway EC2 VM ([`deploy/ec2/`](deploy/ec2/)); see [`docs/ROADMAP.md`](docs/ROADMAP.md) Phase 2 and [`docs/detection_boundary.md`](docs/detection_boundary.md).
+
+### Changed
+
+- **Docs: three-doc model** — gap tiers moved into [`docs/architecture.md`](docs/architecture.md) §13; status/queue stays in [`docs/ROADMAP.md`](docs/ROADMAP.md); [`docs/project_overview.md`](docs/project_overview.md) is pitch-only. Removed `docs/SUMMARY.md` and `docs/task_list.md` (historical mentions of SUMMARY below remain as release notes).
+- **Docs sync** — README, CONTRIBUTING, threat model T2, PRIVILEGE, architecture §5/§13, ROADMAP Next build order (§3–§4) brought current with writev/sendmsg/IPv6 and SO_PEERCRED.
+
 ## [0.3.0] - 2026-07-12
 
 **v0.3 — Adoptable Product** (Phase 1 DaemonSet, Phase 3 operability, Phase 4 Trust). Phase 2 LSM/KRSI remains demand-gated.

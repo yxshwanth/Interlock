@@ -168,7 +168,7 @@ func TestToolRegistration_ShadowEmitsAuditEvent(t *testing.T) {
 }
 
 func TestToolShadowing_RuntimeReregistration_KnownGap(t *testing.T) {
-	t.Skip("known gap: tool shadowing is checked at startup only; a server that adds tools mid-session via dynamic registration is not detected — see ROADMAP / SUMMARY")
+	t.Skip("known gap: tool shadowing is checked at startup only; a server that adds tools mid-session via dynamic registration is not detected — see ROADMAP / architecture §13")
 }
 
 type proxyAuditSink struct {

@@ -35,6 +35,8 @@ kubectl apply -f deploy/k8s/daemonset-capabilities.yaml
 
 Set `enforcement: monitor` in the sensor/proxy config so trips emit evidence with `allowed_monitor` / `detected_only` and never block or kill.
 
+Optional (not required for a monitor pilot): `ebpf.lsm_enforce` / `fail_closed.enabled` for production hardening after you leave monitor mode — see [`PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md) and [`threat_model.md`](threat_model.md). Evidence records are hash-chained; verify with `make verify-evidence`.
+
 ## What you get back
 
 After one week of real traffic:
