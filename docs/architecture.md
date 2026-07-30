@@ -50,6 +50,15 @@ This is a security tool; boundaries are the design.
 - **Trusted (TCB):** the proxy, engine, eBPF sensor, and config. Interlock **must not become the exfil path itself** — it never forwards a blocked call, holds minimal privilege beyond what eBPF requires, and performs **no network egress of its own** except writing local evidence.
 - The agent sits **inside the untrusted zone** from Interlock's perspective. Detection is designed around behavior, not stated intent.
 
+**Two planes, two Variant B stories (ROADMAP §7):**
+
+| Deploy shape | Who spawns MCP servers | Variant B side-channel |
+|---|---|---|
+| **Proxy mode** with `sandbox.netns: true` | Interlock (`SessionManager` → `StartServer`) | **Prevented by netns** — child is in a zero-route network namespace (`CLONE_NEWNET`); non-loopback `connect()` gets `ENETUNREACH`. eBPF still observes, but the channel is closed by construction. |
+| **Sensor-only** (DaemonSet) | Not Interlock | **Contained by eBPF** — Interlock does not control spawn, so netns does not apply; payload-overlap + kill / LSM quarantine remain the mechanism. |
+
+Default is `sandbox.netns: false` (opt-in). DNS in the netns: **no resolution** — sensitive STDIO sources do not need it; no controlled resolver is stood up.
+
 ---
 
 ## 3. Data flow — life of a tool call
@@ -58,10 +67,10 @@ The proxy is **protocol-aware**, not a transparent byte pipe. It terminates `ini
 
 1. Agent emits a JSON-RPC request (STDIO or HTTP) → **proxy parses the method**. Protocol-level messages (`initialize`, `tools/list`, `ping`, notifications) are handled by the proxy itself — it responds with synthesized results (merged capabilities, merged tool list, etc.) and emits `InterceptedEvent`s for each. These never reach a child server.
 2. For `tools/call`: the proxy parses the tool name and arguments from `params`, resolves the tool name to its owning child server via the routing table, and creates an `InterceptedEvent` (direction = agent→server) attributed to that server.
-3. Engine runs a **pre-forward `EvaluateRequest`** at this parsed dispatch point — after the proxy knows the tool name, args, and target server. Is this call an `external_sink`, and are the other two legs already lit for this session? If a trip fires → **block** (Variant A): the proxy synthesizes a JSON-RPC error result back to the agent using the same response-synthesis mechanism it uses for `initialize` and `tools/list`. The call **never reaches the server**.
-4. Otherwise the proxy **forwards** the raw frame to the resolved child server over its STDIN.
-5. Server executes and returns a result on its STDOUT → **proxy intercepts the result frame** → `InterceptedEvent` (direction = server→agent), attributed to the specific server and forwarded to the agent.
-6. Engine **ingests the result**: if the tool is a `sensitive_source`, it **registers tainted values** and lights `sensitive_source_touched`; if the tool is **not** a sensitive source and `untrusted_origins.tool_results` is true, it lights `untrusted_content_present` and stores a bounded excerpt for content-binding.
+3. Engine runs a **pre-forward `EvaluateRequest`** at this parsed dispatch point — after the proxy knows the tool name, args, and target server. Is this call an `external_sink`, and are the other two legs already lit for this session? If a trip fires → **block** (Variant A): the proxy synthesizes a JSON-RPC error result back to the agent using the same response-synthesis mechanism it uses for `initialize` and `tools/list`. The call **never reaches the server**. When opt-in `vault.enabled` is on and the tool is in `vault.authorize`, the engine **detokenizes** dummy tokens to real secrets **before** `CheckOverlap`, then (only if allowed) returns `ForwardArgs` so the proxy rewrites the frame before `WriteFrame` — ordering is `vault → detokenize-at-authorized-sink → scan detokenized`.
+4. Otherwise the proxy **forwards** the raw frame (or detokenized frame) to the resolved child server over its STDIN.
+5. Server executes and returns a result on its STDOUT → **proxy intercepts the result frame** → `InterceptedEvent` (direction = server→agent), attributed to the specific server.
+6. Engine **ingests the result**: if the tool is a `sensitive_source`, it **registers tainted values** and lights `sensitive_source_touched`; if the tool is **not** a sensitive source and `untrusted_origins.tool_results` is true, it lights `untrusted_content_present` and stores a bounded excerpt for content-binding. When `vault.enabled`, newly extracted secrets are also vault-mapped to inert `ilk.vault.*` dummies and the **agent-visible frame is rewritten** before delivery (children never see the rewrite of results they themselves produced; the agent and later tool args do).
 7. In parallel, the **eBPF sensor** streams `SyscallEvent`s from the proxy's PID subtree. A `connect()` from a *server child* to a non-allowlisted destination → `external_sink_invoked` candidate. If the other legs are lit → **`SUSPICIOUS`** (Variant B): emit evidence only, `detected_only` — no kill. If a corroborating `write`/`writev`/`sendto`/`sendmsg` payload overlaps a tainted value → **`EXFIL`**: emit evidence and **kill the offending child** (containment); hard containment is reserved for `EXFIL` (§5, §7).
 8. On any trip, the engine writes an `EvidenceRecord` to the sink; the viewer renders it.
 
@@ -100,7 +109,7 @@ Blocked `tools/call` responses use `Content-Type: application/json` with a synth
 
 HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an isolated tickets/messenger/exfil backend pool until idle expiry (`sessions.idle_timeout`, default 30m) or `sessions.max_concurrent` (default 32). A `SessionManager` tracks lifecycle; a `PIDRegistry` maps `(pid, start_time)` → `{session_id, server_id}` for eBPF attribution. `IngestSyscall` requires an explicit `SessionID` — no `FirstSessionID` fallback. Unattributed syscalls during PID teardown are audit-logged, not tripped. STDIO mode remains single-session.
 
-**Process lifecycle.** Deterministic startup ordering (spawn all children, initialize each, confirm tools registered, then accept agent traffic); graceful shutdown that drains in-flight frames; crash handling that surfaces a clean error to the agent rather than hanging; process-group isolation (`Setpgid`) so children can be killed cleanly; and **kill-on-detect** — the containment primitive Plane 2 uses for Variant B.
+**Process lifecycle.** Deterministic startup ordering (spawn all children, initialize each, confirm tools registered, then accept agent traffic); graceful shutdown that drains in-flight frames; crash handling that surfaces a clean error to the agent rather than hanging; process-group isolation (`Setpgid`) so children can be killed cleanly; **spawn allowlist** — each `servers[].command` is canonicalized (`filepath.Clean` → absolute via `filepath.Abs` → `filepath.EvalSymlinks`) and pinned at config load; spawn re-resolves and requires equality with the pinned real path (symlink swaps to a different target are rejected); rejects path traversal (`..` anywhere in the command string, including `servers/../../../bin/sh`) and executables that do not match the pinned path for that server ID (optional `sandbox.spawn_allowlist` for helpers); optional **zero-route network namespace** (`sandbox.netns: true` → `CLONE_NEWNET` at spawn — no host NIC route, no resolver; default off; needs `CAP_SYS_ADMIN`); and **kill-on-detect** — the containment primitive Plane 2 uses for Variant B when netns is off or for sensor-only deployments. Host-app config/UI poisoning before Interlock is invoked remains out of scope (see [`cve_corpus.md`](cve_corpus.md) out-of-scope spawn family).
 
 **Enforcement (hold-before-forward at the `tools/call` dispatch point).** Enforcement hooks at the specific point where the proxy has parsed a `tools/call` request, extracted the tool name and arguments, and resolved the target server — not at a generic frame boundary. The engine's `EvaluateRequest` runs here. On `Allow`, the raw frame is forwarded to the resolved child. On block, the proxy **never forwards** and instead synthesizes a JSON-RPC error (`"call blocked by Interlock: <reason>"`) using the same response-synthesis path it already uses for protocol messages. The agent gets a clean, legible failure.
 
@@ -113,7 +122,7 @@ HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an
 **Probe: `connect()` + `write()` / `writev()` + `sendto()` / `sendmsg()` + `openat()` (Variant B).**
 - Tracepoints: `sys_enter_connect`, `sys_enter_write`, `sys_enter_writev`, `sys_enter_sendto`, `sys_enter_sendmsg`, `sys_enter_openat`.
 - Connect: destination family + 16-byte addr + port from `sockaddr_in` / `sockaddr_in6`, PID, TID, and comm (`AF_INET` / `AF_INET6`).
-- Write / writev: first **N** bytes via `bpf_probe_read_user` (fd ≥ 3; compiled `PAYLOAD_MAX=1024`, runtime `ebpf.payload_capture_bytes` default **512**); writev probes the **first iovec only** (verifier-bounded). Correlated in userspace to a recent non-allowlisted connect/`sendto`/`sendmsg` from the same PID.
+- Write / writev: first **N** bytes via `bpf_probe_read_user` (fd ≥ 3; compiled `PAYLOAD_MAX=1024`, runtime `ebpf.payload_capture_bytes` default **1024**); writev probes the **first iovec only** (verifier-bounded). Correlated in userspace to a recent non-allowlisted connect/`sendto`/`sendmsg` from the same PID.
 - Sendto / named sendmsg: **self-contained** dest (family+16B+port) + first-N payload (sendmsg: first iov); allowlist on dest IP; port **53** tagged as `dns` in userspace. No prior `connect()` required. Unnamed sendmsg (`msg_name` NULL) correlates like write.
 - Openat: pathname (≤128 bytes); userspace matches `sensitive_paths` prefixes (empty list = ignore).
 - Events pushed to **two ring buffers** (`BPF_MAP_TYPE_RINGBUF`, 256KB each): **routine** `events` for `connect`/`openat`, **critical** `critical_events` for `write`/`writev`/`sendto`/`sendmsg`/`lsm_deny` (EXFIL carriers + kernel-deny evidence). Reserve failures increment `drop_count` or `critical_drop_count` respectively, surfaced via `Sensor.DropCount()` / `Sensor.CriticalDropCount()`.
@@ -156,7 +165,7 @@ One state machine **per session**.
 
 **Tainted values.** When a `sensitive_source` returns data, the engine extracts candidate secrets and stores them as `TaintedValue`s — **hashed + masked, never raw** (§12). At registration, each value gets a fixed set of **canonical encodings** (literal, base64, hex, URL-encoding, reversal) held in memory only.
 
-**Value overlap.** At sink time, `CheckOverlap` scans sink args for any tainted value in any canonical form, then (if needed) **same-call JSON string reassembly** (concat of string leaves). Forms: literal, base64, hex, URL-encoding, reversal, closed depth-2 nests (`base64_hex`, `hex_base64`, `base64_url`, `base64_reversed`), and `gzip_base64`. On still-miss, a **bounded recursive decoder** (base64 then hex, depth ≤ 3) unwraps JSON string leaves / payloads and rematches against single-layer forms — `match_form` records `decoded_*`. **Cross-call / paginated abutting splits** are closed by the session **fragment buffer** (reassembly-first taint registration). Still out of scope: depth-4+ nests, other compressors — each has a skip / KnownGap. `RedactJSON` scrubs all variant strings from logs.
+**Value overlap.** At sink time, `CheckOverlap` scans sink args for any tainted value in any canonical form, then (if needed) **same-call JSON string reassembly** (concat of string leaves). Forms: literal, base64, hex, URL-encoding, reversal, closed depth-2 nests (`base64_hex`, `hex_base64`, `base64_url`, `base64_reversed`), and compressor+base64 (`gzip_base64`, `brotli_base64`, `zstd_base64`, `lz4_base64` — ROADMAP §9). For long secrets (`len ≥ chunk_match_min_value_len`, default 64), **contiguous N-byte body chunks** (default N=32; PEM/PuTTY armor stripped) are also searched after a full-variant miss — `match_form=chunk_N`. On still-miss, a **bounded recursive decoder** (base64 then hex, default depth **5**, configurable `trifecta.max_decode_depth` clamp `[3,5]` — ROADMAP §15) unwraps JSON string leaves / payloads and rematches against single-layer forms — `match_form` records `decoded_*`. Default was raised from 3→5 after the benign corpus showed EXFIL FP **0.0%** at depths 3/4/5 with flat decode-miss latency (~380µs) — FP picks the default, not cost (`TestCorpus_DecodeDepthFPCurve`). After decode miss, **bounded container descent** (ROADMAP §20) sniffs ZIP/gzip/zlib/tar (including a single-layer base64 unwrap for binary-in-JSON packaging) and rematches interiors — `match_form=container_*`; aborts on hard caps soft-`SUSPICIOUS` with `container_inspect_limit` when AllLit, never EXFIL. **Cross-call / paginated abutting splits** are closed by the session **fragment buffer** (reassembly-first taint registration). Still out of scope: nests needing more than five decode steps (beyond clamp), custom ciphers, encrypted archives / zip-bombs / depth>2 nests, git pack wire outside ToolArgs/PayloadExcerpt, secrets entirely past the eBPF capture window — each has a skip / KnownGap. `RedactJSON` scrubs all variant strings from logs.
 
 **Content-binding.** `CheckContentBind` requires a shared contiguous substring (default ≥ 16 bytes; `trifecta.content_bind_min_len`) between stored untrusted excerpts and the sink args/payload before `SUSPICIOUS` can fire — **when the sink event has a payload/args channel at all.** A bare `connect()` structurally never carries one (no `Payload` field on the raw eBPF event), so requiring content-bind there would make the connect-only tripwire permanently unreachable — an empty sink string always fails the length check regardless of taint or leg state. `classifyTrip` (`internal/engine/engine.go`) accounts for this explicitly: `AllLit` alone is sufficient for `SUSPICIOUS` on a payload-less event; content-bind still gates every event type that *does* carry a payload/args channel (write/sendto/sendmsg/tool-call args), exactly as originally intended. This distinction was missing for one release and silently deleted the connect-only tripwire entirely — found by [`docs/cve_corpus.md`](cve_corpus.md)'s `cve_2025_53967_figma_reverse_shell_connect_only_gap`, fixed, and pinned by `TestEngine_IngestSyscall_ConnectOnly_AllLit_Suspicious`. Soft `SUSPICIOUS` is evidence + `allowed_monitor` / `detected_only` — never hard block/kill.
 
@@ -164,7 +173,7 @@ Operators running fetch-heavy agents (web fetch → quote/summarize into a sink)
 
 **Extraction boundary.** `extractResultText` prefers MCP `content[].text`, then walks other JSON string leaves (bounded depth/bytes), skipping the already-handled `content` key so paginated halves stay abutting for the fragment buffer. Nested metadata secrets are tainted; the benign twin keeps an unrelated sink so EXFIL FP stays 0%.
 
-**Tool tagging / intra-server writes.** `EvaluateRequest` only gates tools tagged `external_sink`. An untagged write-shaped tool on a `sensitive_source` server (e.g. `internal_note` with an empty `tool_tags` override) is invisible to the engine — pinned as `malicious_gap_untagged_tool_on_sensitive_server`. **Current stance:** operators must explicitly tag every tool that can egress or write data (`external_sink`), regardless of which server hosts it. A future hardening (not shipped) is optional sink-suspicion inheritance for write-shaped tools on sensitive servers unless allowlisted — see [`ROADMAP.md`](ROADMAP.md) Next build order.
+**Tool tagging / intra-server writes.** By default (`server_defaults.inherit_sink_suspicion: false`), `EvaluateRequest` only gates tools tagged `external_sink` — Option C. An untagged write-shaped tool on a `sensitive_source` server (e.g. `internal_note` with an empty `tool_tags` override) is invisible — pinned as `malicious_gap_untagged_tool_on_sensitive_server`. **Opt-in (ROADMAP §14):** `inherit_sink_suspicion: true` treats any tool on a `sensitive_source` server as a sink unless listed in `sink_suspicion_allowlist`. Empty `tool_tags` overrides (`internal_note: []`) do **not** exempt — they still inherit (fail toward suspicion). **The sole exemption path is `sink_suspicion_allowlist`.** Restart-required. Pin: `malicious_proxy_a_untagged_inherit_sink`; TN: `benign_proxy_a_inherit_allowlisted_note`.
 
 **Evaluation — verdict and action are separate dimensions.** The machine evaluates the moment a sink fires. **Verdict** describes what was concluded (the detection result); **Action** describes what was done about it (the enforcement response). This separation is load-bearing: Variant A can *prevent* (hold-before-forward), Variant B can only *contain* (kill after the first packet), and monitor mode *allows* — all three are valid actions for the same verdict.
 
@@ -173,6 +182,7 @@ Operators running fetch-heavy agents (web fetch → quote/summarize into a sink)
 | Tainted value appears in the sink's args/payload (`CheckOverlap`) | `EXFIL` | 0.95 |
 | All three legs lit, sink event has no payload channel at all (bare `connect()`) | `SUSPICIOUS` | 0.60 |
 | All three legs lit, sink event has a payload/args channel **and** untrusted↔sink content-bind, no value overlap | `SUSPICIOUS` | 0.60 |
+| All three legs lit, sink event has a payload/args channel, no content-bind, but container inspect aborted on a hard cap (`container_inspect_limit`) | `SUSPICIOUS` | 0.60 |
 | Otherwise | — (no trip) | — |
 
 | Action | When | Effect |
@@ -350,6 +360,8 @@ A single `interlock.yaml` declares servers, tool tags, the egress allowlist, and
 
 ```yaml
 enforcement: block          # block | monitor
+sandbox:
+  netns: false              # opt-in CLONE_NEWNET for spawned children (proxy mode); needs CAP_SYS_ADMIN
 egress_allowlist:           # anything NOT here is treated as an external sink at the kernel
   - 127.0.0.1
   - api.anthropic.com
@@ -367,6 +379,9 @@ tool_tags:                  # per-tool overrides (authoritative)
 untrusted_origins:
   tool_results: true        # v0.1 default: all results untrusted
   web_fetches:  true
+trifecta:
+  chunk_match_bytes: 32           # long-secret contiguous chunk size N (ROADMAP §8)
+  chunk_match_min_value_len: 64   # only chunk tainted values ≥ this length
 ```
 
 ---
@@ -444,22 +459,24 @@ Priority tiers below are the design SoT for what Interlock does *not* catch yet 
 
 | Gap | Trigger / why deferred |
 |---|---|
-| Secrets past capture window | Runtime cap default 512 / max 1024; measure dual-ring drops under load; larger/dynamic / pre-segmentation capture longer-term |
+| Secrets past capture window | **Improved (ROADMAP §8 + §16):** chunk overlap when excerpt holds ≥N body bytes; default `payload_capture_bytes` = **1024** (`PAYLOAD_MAX`) — the knob only reduces from that ceiling. Still open when the secret lies entirely past even 1024 (`malicious_gap_payload_truncated` — permanent KnownGap) |
 | Tamper-evident evidence (WORM / external signing) | Hash chain shipped; WORM volume and external signing still deferred |
 | CEF SIEM / cross-session evidence query | OCSF + single-record viewer shipped; enterprise ingest + dashboard open |
 | **Content-bound `SUSPICIOUS` on payload-bearing sensor egress** | The connect-only tripwire is fixed (below), but a sensor-observed `write`/`sendto` whose payload is merely unrelated (not overlapping taint) still can't reach `SUSPICIOUS` on the sensor plane, because `register_untrusted` (below) deliberately forwards no excerpt text — `CheckContentBind` has nothing to compare against. Would need the bridge to also carry a bounded excerpt, raising its own size/sensitivity questions; not attempted. |
-| **Egress-side fragment reassembly** | `state.FragmentChunks` / `appendFragment` (`internal/engine/engine.go`) are wired only into `IngestResult` — the proxy-ingress path for paginated tool RESULTS split across calls. `IngestSyscall`'s `CheckOverlapPayload` checks each syscall's `PayloadExcerpt` independently against `state.Tainted`, with no mechanism to concatenate several `dns`/`sendto`/`sendmsg` events from one session into a single candidate. A secret split across N small egress writes (the standard DNS-tunneling shape) never proves `EXFIL` even though it fully leaves the host, one fragment at a time. Found via [`docs/cve_corpus.md`](cve_corpus.md)'s `cve_2025_65720_gpt_researcher_dns_fragmented_exfil_gap` — the shell's initial `connect()` still soft-trips `SUSPICIOUS`, so the anomaly is flagged; only the byte-level proof step is defeated. |
+| **Finite egress reassembly window** | ROADMAP §19 appends payload-bearing `write`/`writev`/`sendto`/`sendmsg`/`dns` excerpts into bounded per-(pid,destination) buffers before `CheckOverlapPayload`, closing normal DNS and chunked-write splitting (including `cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). Remaining honest boundary: fragments slower than `trifecta.egress_fragment_max_age` or split across different destinations are not joined (`malicious_gap_egress_slow_trickle`, `malicious_gap_egress_cross_destination_split`). Unbounded trickle / sockmap stream scan remain rejected (§11). |
 
 ### Will cover eventually — diminishing returns, real gaps
 
 | Gap | Trigger / why deferred |
 |---|---|
-| Depth-4+ / other compressors (zstd, deflate-raw) | Depth-3 + gzip covers common cases; add when a real bypass shows up |
+| Depth-6+ nests (beyond clamp) | Default `trifecta.max_decode_depth=5` (clamp `[3,5]`); Fetch five-layer nest closed at default (`cve_2025_65513_fetch_ssrf_cloud_metadata_depth5_nest`); deeper than 5 needs a clamp raise |
+| ZIP/xlsx / archive containers; custom ciphers | Token compressors closed (§9); **whole-file** ZIP/xlsx relay closed via path-driven taint (§18); **extracted-cell** + sink/egress ZIP/gzip/zlib/tar interiors closed via bounded container descent (§20). Still open: custom ciphers; encrypted archives / zip-bombs / depth>2 nests (`malicious_gap_container_inspect_bomb`) |
 | Write before suspicious connect | Correlation assumes connect→write (or self-contained sendto/sendmsg) |
 | Tool-shadowing runtime re-registration | Startup detection shipped |
 | Per-pod ringbuf drop maps | Dual severity-class counters shipped; per-cgroup attribution is a larger BPF change |
 | Critical-ring write/sendto/writev/sendmsg flood | Named residual after segregation — harder than connect storm; accepted KnownGap |
-| **Non-token-shaped taint extraction** | `secretPatterns` (`internal/engine/taint.go`) is shape-based, not a general secret detector: PEM/PuTTY private keys are closed ([`docs/cve_corpus.md`](cve_corpus.md)'s `cve_2025_53109_filesystem_escaperoute_pem_exfil`), but X.509 certs, database connection strings (`postgres://user:pass@host/db`), and binary key containers (PKCS#12 `.p12`/`.pfx`) still register zero taint for the same underlying reason PEM did — no textual marker to anchor on. PKCS#12 specifically can't be closed with a content regex at all (binary DER, no fixed anchor); would need tainting driven by the *file path* observed at read time (`openat` pathname / `read_file` tool args), a materially different mechanism from pattern matching on result text. Add shapes as real disclosures name them, same discipline as the encoding-form list above. |
+| **Non-token-shaped taint extraction** | **Content-driven** (`secretPatterns` in `internal/engine/taint.go`): PEM/PuTTY private keys are closed ([`cve_corpus.md`](cve_corpus.md)'s `cve_2025_53109_filesystem_escaperoute_pem_exfil`). **Path-driven** (ROADMAP §18, `internal/engine/path_taint.go`): when a sensitive read's provenance path matches `sensitive_paths` or extension/name heuristics (`.p12`, `.pfx`, `.kdbx`, `.xlsx`, …), the entire read blob is tainted regardless of textual markers — closes **whole-file** binary-container relay ([`cve_2026_40576_excel_path_traversal_binary_container_exfil`](cve_corpus.md)). **Container interiors** (ROADMAP §20): registration-side `InspectContainer` + `ExtractTaintedValues` on ZIP/gzip/zlib/tar text parts closes credential-in-cell exfil (`malicious_proxy_a_extracted_from_xlsx_container`); overlap-path descent closes sink/egress-wrapped secrets. Still open on content alone: X.509 certs / DB connection strings. Overlap gates unchanged — EXFIL still requires sink/payload overlap (`benign_proxy_a_path_driven_xlsx_partial_relay` pins that short public-cell relay does not EXFIL). |
+| **Protocol-aware egress parsers (Named §21)** | Git pkt-line / pack over smart HTTP or SSH, HTTP body + `Content-Encoding`, SMTP DATA — would close structured-protocol exfil family-at-a-time, but each dissector grows untrusted-input TCB. **Demand-gated:** build only if a deployment shows that MCP family; otherwise NamedGap. Pin: `cve_2025_68143_mcp_git_push_wire_protocol_gap`. **§20 vs §21:** flat zlib/ZIP on ToolArgs/PayloadExcerpt is closed; framing outside those surfaces is not. |
 
 ### Probably never / out of scope — wrong trade-off
 
@@ -468,8 +485,10 @@ Priority tiers below are the design SoT for what Interlock does *not* catch yet 
 | **DoH/DoT** | Encrypted DNS needs TLS interception; mitigate with **network-layer DNS controls** |
 | Exotic/custom multi-layer compressors | Attacker has infinite encodings; Variant B raw-byte overlap is encoding-agnostic when capture works |
 | First EXFIL-carrying packet kernel-prevented | Architectural: `connect()` has no payload — always `contained_by_kill` for the first packet |
+| **Blind side-channel / query-pattern EXFIL (ROADMAP §22)** | Secret inferred from booleans/timing, never transmitted — byte-overlap cannot prove what was never on the wire. Sequence-anomaly detection is a different FP-heavy product; rejected for EXFIL. Pin: `cve_2025_66335_doris_blind_sql_injection_exfil_gap`. If ever researched: SUSPICIOUS-dark only (like §12). |
+| Sockmap / SOCKS5 stream scan / unbounded slow-trickle | Considered and rejected — [`detection_boundary.md`](detection_boundary.md) / ROADMAP §11 |
 
-**Also deferred (not tier tables):** HTTP upstream backends, TLS termination / MITM, GET `/mcp` listen streams; optional sink-suspicion inheritance for untagged write-shaped tools on sensitive servers ([`ROADMAP.md`](ROADMAP.md)).
+**Also deferred (not tier tables):** HTTP upstream backends, TLS termination / MITM, GET `/mcp` listen streams.
 
 **Recently closed on this plane (do not re-open as “open gaps”):**
 - **`writev` / `sendmsg` / IPv6 dest layout** — critical-ring probes + family+16B addr on connect/sendto/named-sendmsg (§5)
@@ -477,6 +496,8 @@ Priority tiers below are the design SoT for what Interlock does *not* catch yet 
 - **`fail_closed`** + **dual ringbufs** — opt-in breaker; connect floods cannot starve EXFIL/`lsm_deny` evidence
 - **Sensor↔proxy taint bridge** — Unix NDJSON + **SO_PEERCRED** allowlists (`allowed_uids` / `allowed_gids`, optional `socket_gid`); residual: node root / shared-GID / allowed peer forging `pod_uid` ([`threat_model.md`](threat_model.md) T2)
 - **Evidence hash chain** — `chain_seq`/`prev_hash`/`hash` + `make verify-evidence`
+- **Bounded container descent (ROADMAP §20)** — ZIP/gzip/zlib/tar interiors under hard caps; extracted-cell + sink/egress-wrapped secrets EXFIL; bomb/encrypted/depth NamedGaps; git pack wire remains Named §21 (demand-gated)
+- **Boundary writeups (ROADMAP §11 / §21 / §22)** — sockmap/SOCKS5/unbounded trickle rejected; protocol dissectors Named/demand-gated; blind side-channel rejected for EXFIL
 - **Sensor-only mode's `SUSPICIOUS` tier, opt-in** — `IngestSyscallSensor` still never lights `untrusted_content_present` on its own; there is genuinely no MCP untrusted-content plane inside a privileged, proxy-less DaemonSet pod, and that has not changed. What shipped: `Engine.RegisterRemoteUntrusted` + the taint bridge's new `register_untrusted` message let an **unprivileged proxy sidecar that already observes MCP traffic** (the same deployment shape `taint_bridge` was built for) forward "untrusted content observed" alongside taint, so a sensor session sharing that bridge connection CAN light the leg and reach the connect-only tripwire. Requires `taint_bridge.enabled` and a proxy on the other end; a true no-proxy-anywhere sensor-only deployment still cannot reach `SUSPICIOUS` — that combination has no untrusted-content observer at all, by construction, not by omission. See the "Sensor-only DaemonSet" paragraph below, `TestEngine_RegisterRemoteUntrusted_ClosesSensorSuspiciousGap`, `TestBridge_ClientToEngine_UntrustedClosesSensorSuspiciousGap`.
 
 ### Sensor-only DaemonSet (v0.3 Phase 1)

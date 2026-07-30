@@ -255,6 +255,104 @@ servers:
 	}
 }
 
+func TestLoadSandboxConfig_DefaultOff(t *testing.T) {
+	yaml := `
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.NetNS {
+		t.Fatal("sandbox.netns must default to false")
+	}
+}
+
+func TestLoadSandboxConfig_NetNS(t *testing.T) {
+	yaml := `
+sandbox:
+  netns: true
+servers:
+  - id: s1
+    command: echo
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Sandbox.NetNS {
+		t.Fatal("sandbox.netns = false, want true")
+	}
+}
+
+func TestTrifectaChunkDefaults(t *testing.T) {
+	var tcfg TrifectaConfig
+	if tcfg.ChunkMatchBytesOrDefault() != 32 {
+		t.Errorf("chunk_match_bytes default = %d, want 32", tcfg.ChunkMatchBytesOrDefault())
+	}
+	if tcfg.ChunkMatchMinLenOrDefault() != 64 {
+		t.Errorf("chunk_match_min_value_len default = %d, want 64", tcfg.ChunkMatchMinLenOrDefault())
+	}
+}
+
+func TestMaxDecodeDepthClamp(t *testing.T) {
+	if ClampMaxDecodeDepth(0) != DefaultMaxDecodeDepth {
+		t.Errorf("0 → %d, want %d", ClampMaxDecodeDepth(0), DefaultMaxDecodeDepth)
+	}
+	if ClampMaxDecodeDepth(2) != 3 {
+		t.Errorf("2 → %d, want 3", ClampMaxDecodeDepth(2))
+	}
+	if ClampMaxDecodeDepth(3) != 3 {
+		t.Errorf("3 → %d, want 3", ClampMaxDecodeDepth(3))
+	}
+	if ClampMaxDecodeDepth(4) != 4 {
+		t.Errorf("4 → %d, want 4", ClampMaxDecodeDepth(4))
+	}
+	if ClampMaxDecodeDepth(5) != 5 {
+		t.Errorf("5 → %d, want 5", ClampMaxDecodeDepth(5))
+	}
+	if ClampMaxDecodeDepth(9) != 5 {
+		t.Errorf("9 → %d, want 5", ClampMaxDecodeDepth(9))
+	}
+	var tcfg TrifectaConfig
+	if tcfg.MaxDecodeDepthOrDefault() != 5 {
+		t.Errorf("default max_decode_depth = %d, want 5", tcfg.MaxDecodeDepthOrDefault())
+	}
+}
+
+func TestPayloadCaptureBytesDefault(t *testing.T) {
+	var e EBPFConfig
+	if e.PayloadCaptureBytesOrDefault() != 1024 {
+		t.Errorf("default payload_capture_bytes = %d, want 1024", e.PayloadCaptureBytesOrDefault())
+	}
+}
+
+func TestLoadServerDefaultsInherit(t *testing.T) {
+	yaml := `
+enforcement: block
+server_defaults:
+  inherit_sink_suspicion: true
+  sink_suspicion_allowlist: [internal_note, read_ticket]
+servers:
+  - id: tickets
+    command: ./servers/tickets
+tool_tags:
+  read_ticket: [sensitive_source]
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ServerDefaults.InheritSinkSuspicion {
+		t.Fatal("inherit_sink_suspicion = false, want true")
+	}
+	if len(cfg.ServerDefaults.SinkSuspicionAllowlist) != 2 {
+		t.Fatalf("allowlist len = %d", len(cfg.ServerDefaults.SinkSuspicionAllowlist))
+	}
+}
+
 func TestLoadEvidenceAndLoggingConfig(t *testing.T) {
 	yaml := `
 evidence:
@@ -434,6 +532,53 @@ func TestLoadFileNotFound(t *testing.T) {
 	}
 }
 
+func TestConfig_VaultDefaults(t *testing.T) {
+	yaml := `
+enforcement: block
+servers:
+  - id: tickets
+    command: ./servers/tickets
+tool_tags:
+  read_ticket: [sensitive_source]
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Vault.Enabled {
+		t.Fatal("vault.enabled must default false")
+	}
+	if len(cfg.Vault.Authorize) != 0 {
+		t.Fatalf("vault.authorize must default empty, got %v", cfg.Vault.Authorize)
+	}
+}
+
+func TestConfig_VaultAuthorize(t *testing.T) {
+	yaml := `
+enforcement: block
+vault:
+  enabled: true
+  authorize:
+    - tool: billing_charge
+      secret_classes: [extracted]
+servers:
+  - id: tickets
+    command: ./servers/tickets
+tool_tags:
+  read_ticket: [sensitive_source]
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Vault.Enabled {
+		t.Fatal("vault.enabled want true")
+	}
+	if len(cfg.Vault.Authorize) != 1 || cfg.Vault.Authorize[0].Tool != "billing_charge" {
+		t.Fatalf("authorize = %+v", cfg.Vault.Authorize)
+	}
+}
+
 func TestTrifectaDefaults(t *testing.T) {
 	yaml := `
 enforcement: block
@@ -462,6 +607,21 @@ tool_tags:
 	if cfg.Trifecta.FragmentMaxBytesOrDefault() != 64*1024 {
 		t.Errorf("default fragment_max_bytes = %d", cfg.Trifecta.FragmentMaxBytesOrDefault())
 	}
+	if !cfg.Trifecta.EgressReassemblyEnabledOrDefault() {
+		t.Fatal("default egress_reassembly_enabled = false, want true")
+	}
+	if cfg.Trifecta.EgressFragmentMaxChunksOrDefault() != 16 {
+		t.Errorf("default egress_fragment_max_chunks = %d", cfg.Trifecta.EgressFragmentMaxChunksOrDefault())
+	}
+	if cfg.Trifecta.EgressFragmentMaxBytesOrDefault() != 4*1024 {
+		t.Errorf("default egress_fragment_max_bytes = %d", cfg.Trifecta.EgressFragmentMaxBytesOrDefault())
+	}
+	if cfg.Trifecta.EgressFragmentMaxAgeOrDefault() != 10*time.Second {
+		t.Errorf("default egress_fragment_max_age = %v", cfg.Trifecta.EgressFragmentMaxAgeOrDefault())
+	}
+	if cfg.Trifecta.EgressMaxDestinationsOrDefault() != 32 {
+		t.Errorf("default egress_max_destinations_per_session = %d", cfg.Trifecta.EgressMaxDestinationsOrDefault())
+	}
 }
 
 func TestTrifectaCustom(t *testing.T) {
@@ -471,6 +631,11 @@ trifecta:
   leg_ttl: 5m
   decay_after_calls: 8
   content_bind_min_len: 24
+  egress_reassembly_enabled: false
+  egress_fragment_max_chunks: 5
+  egress_fragment_max_bytes: 2048
+  egress_fragment_max_age: 3s
+  egress_max_destinations_per_session: 7
 servers:
   - id: tickets
     command: ./servers/tickets
@@ -489,6 +654,21 @@ tool_tags:
 	}
 	if cfg.Trifecta.ContentBindMinLenOrDefault() != 24 {
 		t.Errorf("content_bind_min_len = %d", cfg.Trifecta.ContentBindMinLenOrDefault())
+	}
+	if cfg.Trifecta.EgressReassemblyEnabledOrDefault() {
+		t.Fatal("egress_reassembly_enabled = true, want false")
+	}
+	if cfg.Trifecta.EgressFragmentMaxChunksOrDefault() != 5 {
+		t.Errorf("egress_fragment_max_chunks = %d", cfg.Trifecta.EgressFragmentMaxChunksOrDefault())
+	}
+	if cfg.Trifecta.EgressFragmentMaxBytesOrDefault() != 2048 {
+		t.Errorf("egress_fragment_max_bytes = %d", cfg.Trifecta.EgressFragmentMaxBytesOrDefault())
+	}
+	if cfg.Trifecta.EgressFragmentMaxAgeOrDefault() != 3*time.Second {
+		t.Errorf("egress_fragment_max_age = %v", cfg.Trifecta.EgressFragmentMaxAgeOrDefault())
+	}
+	if cfg.Trifecta.EgressMaxDestinationsOrDefault() != 7 {
+		t.Errorf("egress_max_destinations_per_session = %d", cfg.Trifecta.EgressMaxDestinationsOrDefault())
 	}
 }
 

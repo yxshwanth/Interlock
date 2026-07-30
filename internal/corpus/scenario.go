@@ -8,6 +8,7 @@ package corpus
 import (
 	"time"
 
+	"github.com/yxshwanth/Interlock/internal/config"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
@@ -97,7 +98,7 @@ type Scenario struct {
 	// PreExistingGap (KnownGap scenarios only) marks a miss that was
 	// entailed before the scenario ever ran, because it lands on a gap
 	// already catalogued in docs/architecture.md (e.g. the depth-4+
-	// recursive-decode KnownGap, the non-gzip-compressor KnownGap) rather
+	// recursive-decode KnownGap, the container-inspect-bomb KnownGap) rather
 	// than one this scenario itself surfaced. This matters for
 	// docs/cve_corpus.md: a CVE reconstruction that reproduces a
 	// pre-catalogued gap confirms the gap catalogue predicts real-world
@@ -126,6 +127,22 @@ type Scenario struct {
 	// self-authored. Nil on every scenario in scenarios_malicious.go /
 	// scenarios_benign.go.
 	CVERef *CVERef
+
+	// VaultEnabled opts this scenario into token vaulting (ROADMAP §10).
+	// When true, the runner sets vault.enabled on the fixture config.
+	VaultEnabled bool
+	// VaultAuthorize lists sink tools that may receive detokenized secrets.
+	// Empty with VaultEnabled means no-detokenization-by-default.
+	VaultAuthorize []config.VaultAuthorizeEntry
+
+	// InheritSinkSuspicion opts this scenario into ROADMAP §14 tagging.
+	InheritSinkSuspicion bool
+	// SinkSuspicionAllowlist tools that must not inherit when InheritSinkSuspicion is on.
+	SinkSuspicionAllowlist []string
+
+	// MaxDecodeDepth, when > 0, sets trifecta.max_decode_depth for this scenario
+	// (ROADMAP §15). Zero means use the engine default (3).
+	MaxDecodeDepth int
 
 	Steps []Step
 }

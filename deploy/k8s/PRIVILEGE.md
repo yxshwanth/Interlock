@@ -157,6 +157,26 @@ Run against a real EKS or GKE node (not kind). Prefer
 
 - **No MCP proxy in the DaemonSet** — smaller blast radius; integrators keep their own proxy/sidecar.
 
+## Proxy mode: `sandbox.netns` (CLONE_NEWNET)
+
+When Interlock runs as an **MCP proxy** (not this DaemonSet) and
+`sandbox.netns: true`, each child MCP server is spawned with `CLONE_NEWNET`:
+a fresh network namespace with **no route to the host NIC** and **no DNS
+resolver**. Non-loopback `connect()` fails with `ENETUNREACH` /
+`EHOSTUNREACH`. This **prevents** Variant B's uncontrolled side-channel by
+construction when Interlock controls spawning.
+
+| Requirement | Notes |
+|---|---|
+| `CAP_SYS_ADMIN` (or root) at spawn | Needed for `CLONE_NEWNET`. Nested user-namespace fallback is **not** implemented in this pass. |
+| Linux only | Non-Linux builds reject `sandbox.netns: true` at spawn. |
+| Default `false` | Opt-in; SIGHUP cannot flip it for already-running children (restart / new sessions). |
+
+**This DaemonSet does not gain this prevention.** Sensor-only mode watches
+workloads Interlock did not spawn — eBPF Variant B (payload overlap + kill /
+LSM quarantine) remains the mechanism there. See
+[`docs/architecture.md`](../../docs/architecture.md) §2 trust boundaries.
+
 ## RBAC
 
 The sensor ServiceAccount can only `get/list/watch` pods. Narrow further with

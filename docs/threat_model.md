@@ -117,10 +117,10 @@ Each scenario: **attacker**, **goal**, **mechanism**, **current mitigations**,
 |---|---|
 | **Attacker** | Compromised agent that knows Interlock’s probe set |
 | **Goal** | Exfiltrate without lighting Variant A/B paths Interlock monitors |
-| **Mechanism** | Aggregate of documented gaps: **Unix-domain sockets**, **file-based exfil**, **DoH/DoT**, **semantic / paraphrased** content without byte overlap, untagged write tools, non-gzip compressors, depth-4+ nests, git-wire-protocol-style out-of-band data transfer ([`cve_corpus.md`](cve_corpus.md)). **No longer bypass channels — closed:** IPv6 (family+16B addr+port on connect/sendto/named-sendmsg) and `sendmsg`/`writev` (probed on the critical ring; unnamed `sendmsg` correlates like `write`) — see [`architecture.md`](architecture.md) §5, ROADMAP §3. |
-| **Mitigations** | Honest known-gap tests + corpus pins; detection_boundary; operators tag every egress tool; network-layer DNS / egress controls for DoH |
-| **Residual risk** | Interlock is not a universal DLP. Bypass channels remain until ROADMAP backlog items ship (or complementary controls). |
-| **Guidance** | Read [`detection_boundary.md`](detection_boundary.md); combine with CNI egress policy, DNS allowlists, and host file-integrity monitoring |
+| **Mechanism** | Aggregate of documented gaps: **Unix-domain sockets**, **file-based exfil**, **DoH/DoT**, **semantic / paraphrased** content without byte overlap, untagged write tools (default Option C; closed under opt-in inherit — ROADMAP §14), custom ciphers, encrypted archives / zip-bombs / depth>2 container nests (ROADMAP §20 NamedGaps), depth-6+ nests beyond clamp `[3,5]` (§15), secrets entirely past `PAYLOAD_MAX` (permanent; default capture raised to 1024 — §16), **git-wire / structured-protocol framing** outside ToolArgs/PayloadExcerpt (Named §21 — demand-gated; not a silent queue), **blind side-channel / boolean inference** (structural reject §22 — bytes never on the wire). **No longer bypass channels — closed:** IPv6 (family+16B addr+port on connect/sendto/named-sendmsg), `sendmsg`/`writev` (probed on the critical ring; unnamed `sendmsg` correlates like `write`), token-shaped brotli/zstd/lz4_base64 (ROADMAP §9), ZIP/xlsx **whole-file** relay (§18) and extracted-cell / flat zlib/ZIP on inspected bytes (§20) — see [`architecture.md`](architecture.md) §5/§7, ROADMAP §3/§9/§18/§20. **Proxy-mode uncontrolled TCP egress:** closed when `sandbox.netns: true` (zero-route `CLONE_NEWNET` at spawn — ROADMAP §7); sensor-only deployments still rely on eBPF. |
+| **Mitigations** | Honest known-gap tests + corpus pins; detection_boundary (incl. considered-and-rejected §11/§22); operators tag every egress tool; network-layer DNS / egress controls for DoH; opt-in `sandbox.netns` in proxy mode |
+| **Residual risk** | Interlock is not a universal DLP. Named/demand-gated and structural boundaries remain (§21/§22); complementary controls cover the rest. Netns does not apply to sensor-only workloads Interlock did not spawn. |
+| **Guidance** | Read [`detection_boundary.md`](detection_boundary.md); combine with CNI egress policy, DNS allowlists, and host file-integrity monitoring; enable `sandbox.netns` when Interlock spawns children and holds `CAP_SYS_ADMIN`; do not expect EXFIL proof for blind side-channels |
 
 ---
 
@@ -157,6 +157,7 @@ hardening beyond the caps-first manifest remains iterative (see PRIVILEGE.md).
 4. Unmonitored exfil channels remain (T6).
 5. `SYS_ADMIN` may still be required depending on kernel (least-privilege residual).
 6. `ebpf.lsm_enforce` (opt-in, default off) cannot prevent the *first* EXFIL-carrying packet — `connect()` precedes the payload that proves EXFIL, so kernel quarantine only stops *repeat* attempts (T4); attach failure fails soft, matching default fail-open unless `fail_closed` also requires a live LSM attach in sensor mode.
+7. **Token vaulting** (`vault.enabled`, opt-in): when a sink appears in `vault.authorize`, Interlock rehydrates the real secret after allow. A false allow still forwards the secret — vaulting closes the default agent/child memory-scrape channel, not the authorized-sink path. Vaulting is proxy-plane only (does not change eBPF/bridge in-memory taint).
 
 ---
 

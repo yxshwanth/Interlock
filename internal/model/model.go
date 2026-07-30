@@ -167,6 +167,7 @@ type TaintedVariant struct {
 type TaintedValue struct {
 	Value        string           `json:"-"`
 	Variants     []TaintedVariant `json:"-"` // precomputed canonical encodings for overlap checks
+	Chunks       []TaintedVariant `json:"-"` // contiguous N-byte chunks for long secrets (ROADMAP §8)
 	Hash         string           `json:"hash"`
 	Preview      string           `json:"preview"`
 	Source       string           `json:"source"`
@@ -203,6 +204,31 @@ type SessionState struct {
 	// FragmentChunks is a rolling FIFO of sensitive-source result text used to
 	// reassemble secrets split across calls. Raw in memory only — never on evidence.
 	FragmentChunks []string `json:"-"`
+	// EgressFlows is a per-(pid,destination) rolling payload history used for
+	// bounded egress-side reassembly before overlap checks (dns/write splitting).
+	// Raw in memory only — never on evidence.
+	EgressFlows map[string]*EgressFlowBuffer `json:"-"`
+	// Vault maps dummy token → real secret (ROADMAP §10). Memory only; never
+	// serialized to evidence. Populated when vault.enabled is on.
+	Vault map[string]VaultEntry `json:"-"`
+	// PendingSensitiveReadPaths maps server/tool to the path argument from the
+	// most recent sensitive-source tools/call request (proxy plane only).
+	PendingSensitiveReadPaths map[string]string `json:"-"`
+}
+
+// EgressFlowBuffer stores bounded payload fragments for one (pid,destination)
+// flow key so overlap can run on concatenated excerpts instead of one syscall.
+type EgressFlowBuffer struct {
+	PID          int
+	Destination  string
+	LastAppendNS int64
+	Chunks       []string
+}
+
+// VaultEntry holds the real secret behind an inert dummy token.
+type VaultEntry struct {
+	Real  string
+	Class string // v1: "extracted"
 }
 
 // ---------------------------------------------------------------------------
@@ -296,4 +322,8 @@ type Decision struct {
 	Action   Action          `json:"action,omitempty"`
 	Reason   string          `json:"reason,omitempty"`
 	Evidence *EvidenceRecord `json:"evidence,omitempty"`
+	// ForwardArgs, when non-nil, are detokenized tool args the proxy must
+	// write to the child after an allowed authorized-sink call (ROADMAP §10).
+	// Never set when Allow is false — the real secret must not leave Interlock.
+	ForwardArgs json.RawMessage `json:"-"`
 }
