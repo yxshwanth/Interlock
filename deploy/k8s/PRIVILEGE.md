@@ -9,7 +9,7 @@ terminate MCP traffic or run the Interlock proxy.
 | Setting | Why |
 |---|---|
 | `hostPID: true` | eBPF `bpf_get_current_pid_tgid` and `/proc` scans use host PIDs |
-| hostPath `/sys/kernel/btf` | CO-RE / BTF for loading committed BPF objects |
+| hostPath `/sys/kernel/btf` | Kernel BTF for loading committed BPF objects (`bpf_probe_read_user` in probe body; no `BPF_CORE_READ` uses) |
 | hostPath `/sys/fs/bpf`, `/sys/kernel/tracing` | map pin / tracepoint attach |
 | Elevated privileges | load/attach programs and observe other pods' syscalls |
 
