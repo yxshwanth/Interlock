@@ -4,19 +4,39 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-30
+
+**v0.4 — Detection depth + definitive reference.** LSM Slice 1, fail-closed, dual ringbufs, and evidence hash chain from the post-v0.3 tree, plus ROADMAP §§7–20 detection/hardening work and [`docs/INTERLOCK.md`](docs/INTERLOCK.md) as the code-backed architecture SoT.
+
 ### Added
 
-- **Variant B `writev` / `sendmsg` / IPv6** — critical-ring `sys_enter_writev` and `sys_enter_sendmsg` (first iovec; named sendmsg carries dest); dest layout widened to family + 16-byte addr + port on connect/sendto/named-sendmsg (`AF_INET` / `AF_INET6`). Instrumented engine tests replace prior KnownGap skips.
-- **Taint bridge SO_PEERCRED** — when `taint_bridge.enabled`, require `allowed_uids` and/or `allowed_gids`; Accept-time peercred reject; optional `socket_gid` + dir `0750` for non-root dialers. Threat model T2 residual rewritten.
-- **Ring-buffer event segregation** — dual 256 KiB BPF ringbufs: routine `events`/`drop_count` (connect/openat) and critical `critical_events`/`critical_drop_count` (write/writev/sendto/sendmsg/lsm_deny). Sensor drains each on a dedicated goroutine. Fail-closed trips on either drop rate; Prometheus keeps `interlock_ebpf_ringbuf_drops_total` for routine and adds `interlock_ebpf_critical_ringbuf_drops_total`. Closes the connect-flood blinds EXFIL/`lsm_deny` coupling (threat model T1 residual rewritten: critical-ring flood remains a named gap).
-- **Fail-closed mode** — opt-in `fail_closed.enabled` (`internal/failclosed`): ringbuf drop-rate hysteresis, consecutive evidence sink failures, or engine/sensor panic → block monitored egress. Sensor mode quarantines all watched PIDs/cgroups via existing LSM `socket_connect` maps (requires `ebpf.lsm_enforce`; scope=all named limitation); proxy mode denies `tools/call` before EvaluateRequest. Flap damping: min-trip floor, recovery window, exponential backoff. Metrics `interlock_fail_closed_active` / `interlock_fail_closed_transitions_total`. Validated on throwaway EC2 VM (`TestSensor_FailClosedQuarantineAll`).
-- **Tamper-evident evidence hash chain** — each `EvidenceRecord` carries `chain_seq` / `prev_hash` / `hash` (hex SHA-256 of the prior sealed record); JSONL and SQLite sinks seal on emit with restart-continuous tip; `cmd/verify-evidence` / `make verify-evidence` detects mid-chain edit/delete (threat model T5). Complements SIEM/webhook off-node durability; no WORM / external signing.
-- **LSM/KRSI kernel quarantine** (v0.3 Phase 2, Slice 1) — opt-in `ebpf.lsm_enforce` (default `false`) attaches a `BPF_PROG_TYPE_LSM` hook on `security_socket_connect`; once write/`sendto`/`sendmsg`/`writev` payload overlap confirms EXFIL for a PID/cgroup, any further `connect()` from it is denied in-kernel with `-EPERM`, upgrading that repeat attempt from `contained_by_kill` to `prevented`. Fails soft (logged `[SECURITY]` warning, tracepoint-only) without `CONFIG_BPF_LSM=y` + `"bpf"` active in `/sys/kernel/security/lsm`. First EXFIL-carrying packet is unchanged — still `contained_by_kill` by construction (`connect()` precedes the payload that proves EXFIL). Validated end-to-end on a throwaway EC2 VM ([`deploy/ec2/`](deploy/ec2/)); see [`docs/ROADMAP.md`](docs/ROADMAP.md) Phase 2 and [`docs/detection_boundary.md`](docs/detection_boundary.md).
+- **Definitive technical reference** — [`docs/INTERLOCK.md`](docs/INTERLOCK.md): two-plane architecture, taint/verdict/action model, TCB scenarios, gap ledger, considered-and-rejected; discrepancy index vs stale docs; measured-state snapshot pointing at `make fp-corpus` / `make cve-corpus`
+- **CVE-derived corpus** — [`docs/cve_corpus.md`](docs/cve_corpus.md) / `internal/corpus/scenarios_cve.go`: 7 families, 15 genuine reconstructions (12/15 EXFIL); found connect-only tripwire deletion and PEM taint gap
+- **LSM/KRSI kernel quarantine** (Phase 2 Slice 1) — opt-in `ebpf.lsm_enforce`: repeat `connect()` after EXFIL → in-kernel `-EPERM` (`prevented`); first EXFIL packet remains `contained_by_kill`
+- **Fail-closed mode** — opt-in `fail_closed.enabled` (`internal/failclosed`): ringbuf drop-rate hysteresis, sink failures, panic → block monitored egress; flap damping; global-scope named limitation
+- **Ring-buffer segregation** — dual 256 KiB BPF rings (routine connect/openat vs critical write/writev/sendto/sendmsg/lsm_deny); fail-closed watches both drop rates
+- **Tamper-evident evidence hash chain** — `chain_seq` / `prev_hash` / `hash`; `make verify-evidence`
+- **Variant B `writev` / `sendmsg` / IPv6** — critical-ring probes; family + 16-byte dest on connect/sendto/named-sendmsg
+- **Taint bridge SO_PEERCRED** — `allowed_uids` / `allowed_gids`; optional `register_untrusted` for sensor soft SUSPICIOUS
+- **Standard compressors as canonical forms (ROADMAP §9)** — `brotli_base64` / `zstd_base64` / `lz4_base64` (+ `gzip_base64`); custom cipher remains KnownGap
+- **Token vaulting (ROADMAP §10)** — opt-in `vault.enabled`; `ilk.vault.*` dummies; authorize-list detokenize-then-scan
+- **Zero-route netns (ROADMAP §7)** — opt-in `sandbox.netns` → `CLONE_NEWNET` for spawned children (proxy mode; default off)
+- **Spawn pinning (ROADMAP §17)** — resolve/pin `servers[].command` at config load; reject mismatched binaries; optional `spawn_allowlist`
+- **Long-secret chunk matching (ROADMAP §8)** — contiguous body chunks for values ≥64 B; closes truncated-capture PEM EXFIL when a chunk is in-window
+- **Inherit sink suspicion (ROADMAP §14)** — opt-in `server_defaults.inherit_sink_suspicion` + `sink_suspicion_allowlist`
+- **Configurable decode depth (ROADMAP §15)** — `trifecta.max_decode_depth` default **5**, clamp `[3,5]`; FP curve 0% EXFIL at 3/4/5
+- **Payload capture default 1024 (ROADMAP §16)** — equals compiled `PAYLOAD_MAX`; runtime reduce-only clamp `[64,1024]`
+- **Path-driven taint (ROADMAP §18)** — sensitive path heuristics / config prefixes → whole-blob taint (xlsx whole-file relay)
+- **Egress flow reassembly (ROADMAP §19)** — bounded per-(pid,dest) buffers; closes normal DNS/write fragmentation; slow-trickle / cross-dest remain KnownGaps
+- **Bounded container descent (ROADMAP §20)** — ZIP/gzip/zlib/tar under streaming caps; abort → soft SUSPICIOUS only; bomb/encrypted/depth NamedGaps
+- **Boundary writeups (ROADMAP §11 / §21 / §22)** — sockmap/SOCKS5/unbounded trickle rejected; protocol dissectors Named/demand-gated; blind side-channel rejected for EXFIL
 
 ### Changed
 
-- **Docs: three-doc model** — gap tiers moved into [`docs/architecture.md`](docs/architecture.md) §13; status/queue stays in [`docs/ROADMAP.md`](docs/ROADMAP.md); [`docs/project_overview.md`](docs/project_overview.md) is pitch-only. Removed `docs/SUMMARY.md` and `docs/task_list.md` (historical mentions of SUMMARY below remain as release notes).
-- **Docs sync** — README, CONTRIBUTING, threat model T2, PRIVILEGE, architecture §5/§13, ROADMAP Next build order (§3–§4) brought current with writev/sendmsg/IPv6 and SO_PEERCRED.
+- Connect-only soft SUSPICIOUS restored via `classifyTrip` `hasPayloadChannel` (CVE corpus finding); deferred-kill subsystem removed (unreachable after §1)
+- PEM/PuTTY private-key patterns in `secretPatterns`; any-trip FP published at **18.9% (7/37)** with EXFIL-tier FP **0%**
+- Docs: three-doc model (architecture gaps / ROADMAP queue / project overview pitch); SUMMARY.md removed; INTERLOCK.md is the definitive reference
+- README / PRIVILEGE / threat model / detection_boundary / performance / demo-k8s.sh aligned with immediate EXFIL kill and current capture defaults
 
 ## [0.3.0] - 2026-07-12
 
@@ -167,7 +187,8 @@ First release — a working proof that runtime trifecta detection works across t
 - Redaction is pattern-matched — treat runtime event/evidence logs as sensitive artifacts
 - eBPF integration tested locally (root + BTF kernel), not in CI
 
-[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/yxshwanth/Interlock/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yxshwanth/Interlock/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/yxshwanth/Interlock/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yxshwanth/Interlock/compare/v0.2.0...v0.2.1

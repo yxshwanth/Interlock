@@ -72,15 +72,17 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 | Benchmark | ns/op | B/op | allocs/op | Notes |
 |-----------|------:|-----:|----------:|-------|
-| `BenchmarkCanonicalEncodings` | ~88µs | ~800KB | 39 | Per-secret transforms including depth-2 nests + gzip_base64 (gzip writer dominates B/op) |
+| `BenchmarkCanonicalEncodings` | ~640µs | — | — | Per-secret transforms including depth-2 nests + gzip/brotli/zstd/lz4_base64 (ROADMAP §9; compressor writers dominate) |
 | `BenchmarkCheckOverlap_1Tainted` | ~1.2µs | 840 | 14 | Sink scan; may reassemble JSON string leaves; more forms than v0.2 five-form set |
 | `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values (pre-expansion snapshot; re-run after form growth) |
 | `BenchmarkCheckOverlap_50Tainted` | 2146 | 80 | 1 | 50 tainted values |
-| `BenchmarkCheckOverlap_MissPath/100` | ~11µs | 832 | 14 | Full scan, no hit |
-| `BenchmarkCheckOverlap_MissPath/1000` | **~100µs** | 832 | 14 | **Gate:** comfortably sub-ms (decoder not entered on plain miss) |
+| `BenchmarkCheckOverlap_MissPath/100` | ~12µs | — | — | Full scan, no hit |
+| `BenchmarkCheckOverlap_MissPath/1000` | **~121µs** | — | — | **Gate:** still sub-ms after +3 compressor forms (was ~100µs) |
 | `BenchmarkCheckOverlap_MissPath/10000` | ~1.1ms | 832 | 14 | Linear; only pathological sessions |
 | `BenchmarkCheckOverlap_HitPath/1000` | ~79ns | 144 | 2 | Early match independent of map size |
-| `BenchmarkCheckOverlap_DecodeMissPath` | **~320µs** | — | — | 1K tainted + base64-looking unrelated leaf (decoder runs, no hit) |
+| `BenchmarkCheckOverlap_DecodeMissPath/depth3` | **~391µs** | — | — | 1K tainted + base64-looking unrelated leaf; default budget |
+| `BenchmarkCheckOverlap_DecodeMissPath/depth4` | **~391µs** | — | — | Same fixture at `max_decode_depth=4` — flat vs depth 3 (within noise) |
+| `BenchmarkCheckOverlap_DecodeMissPath/depth5` | **~377µs** | — | — | Same at depth 5; still inside ~0.5 ms class (ROADMAP §15) |
 | `BenchmarkCheckOverlap_DecodeHitPath` | **~5µs** | — | — | Depth-3 `b64(hex(b64(secret)))` unwrap hit |
 | `BenchmarkEvaluateRequest_Exfil_Scale/1000` | ~140µs | 64KB | 900 | Engine path with fat taint map (hit); evidence construction dominates when tripping |
 | `BenchmarkEngine_IngestResult_TaintExtract` | 8163 | 2305 | 38 | Sensitive source result ingest + taint (session legs warmed; tainted reset each iter) |
@@ -90,7 +92,7 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 ### Taint-map scaling curve (snapshot)
 
-`CheckOverlap` miss-path is **linear** in tainted count × ~10 canonical forms. At **1 000** tainted values the miss path is ~**100 µs** — well inside the sink overhead budget. On still-miss, a **bounded recursive decoder** (base64/hex, depth ≤ 3) may run on JSON string leaves; `DecodeMissPath` stays ~**320 µs** (inside the ~0.5 ms class). At 10 000 (~1.1 ms) sessions are pathological; operators should not retain that many live secrets.
+`CheckOverlap` miss-path is **linear** in tainted count × ~13 canonical forms. At **1 000** tainted values the miss path is ~**121 µs** — well inside the sink overhead budget. On still-miss, a **bounded recursive decoder** (base64/hex, `trifecta.max_decode_depth` default **5**, clamp `[3,5]`) may run on JSON string leaves; `DecodeMissPath` stays ~**380–390 µs** at depths 3/4/5 (flat within noise — raising the knob does not leave the ~0.5 ms class). **Default is 5 because EXFIL FP stayed 0.0% at 3/4/5** (`TestCorpus_DecodeDepthFPCurve`), not because of latency. At 10 000 (~1.1 ms) sessions are pathological; operators should not retain that many live secrets.
 
 Reproduce: `go test -bench='BenchmarkCheckOverlap_(MissPath|HitPath|Scale|Decode)' -benchtime=50ms -benchmem ./internal/engine/`
 
@@ -98,8 +100,8 @@ Reproduce: `go test -bench='BenchmarkCheckOverlap_(MissPath|HitPath|Scale|Decode
 
 ### Reading the engine numbers
 
-- **Overlap check** scales linearly with tainted count × form count (~100 µs miss-path at 1K tainted); same-call reassembly adds a JSON walk on miss; depth-3 recursive decode stays inside ~0.5 ms on decode-miss.
-- **CanonicalEncodings** grew after depth-2 + `gzip_base64` — registration cost is higher; gzip allocates a large flate window (expected).
+- **Overlap check** scales linearly with tainted count × form count (~121 µs miss-path at 1K tainted); same-call reassembly adds a JSON walk on miss; recursive decode (depths 3–5) stays inside ~0.5 ms on decode-miss.
+- **CanonicalEncodings** grew after depth-2 + `gzip_base64` + ROADMAP §9 brotli/zstd/lz4 — registration ~**640 µs**/secret (compressor writers dominate allocs). Miss-path / decode-miss stayed in the ~0.5 ms class, so the three forms ship **always-on** (no `extra_compressors` gate).
 - **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks.
 - **EvaluateRequest exfil path** is dominated by evidence **construction** on trip. Disk persistence is async (`AsyncEvidenceSink`); further wins require moving `buildEvidence` off the hot path (deferred).
 
@@ -112,7 +114,7 @@ Each skip test names a **distinct** gap. Full list lives in code; the performanc
 | `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: connect flood → routine drops (critical drained, no connect events there); write flood → critical drops; mixed floods at capture 256/512/1024; CI verifies DropCount/CriticalDropCount APIs (`TestLoader_DropCount_Unloaded`); `TestLSM_DenySurvivesConnectFlood` on BPF-LSM hosts |
 | `TestEventLogger_DiskFull_KnownGap` | `internal/proxy` | Disk-full logging behavior |
 | `TestEvidenceStore_CrossSessionQuery_KnownGap` | `internal/engine` | SQLite query API / viewer DB integration |
-| `TestCheckOverlap_CompressedOther_KnownGap` | `internal/engine` | Non-gzip compressors — encoding-check cost if closed; see [`architecture.md`](architecture.md) §13 priority tiers |
+| `TestCheckOverlap_CustomCipher_KnownGap` | `internal/engine` | Arbitrary ciphers (XOR stand-in) — not brotli/zstd/lz4; those closed in ROADMAP §9 |
 | `TestCheckOverlap_TripleEncoded` | `internal/engine` | Depth-3 nests **closed** via sink-path recursive decoder |
 | `TestCheckOverlap_PayloadTruncated_KnownGap` | `internal/engine` | Secrets past the eBPF `write()` capture window (`PAYLOAD_MAX` / `payload_capture_bytes`) |
 | `TestToolShadowing_RuntimeReregistration_KnownGap` | `internal/proxy` | Mid-session dynamic tool re-registration not re-checked |

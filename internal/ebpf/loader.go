@@ -24,7 +24,7 @@ const (
 	afInet6                      = 10
 	payloadMax                   = 1024
 	pathMax                      = 128
-	defaultPayloadCapture        = 512
+	defaultPayloadCapture        = 1024
 	minPayloadCapture            = 64
 	connectHeaderLen             = 72 // type…comm with family+16B dest
 	writeHeaderLen               = 56

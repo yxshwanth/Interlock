@@ -121,6 +121,55 @@ func TestTagger_BothTagTypes(t *testing.T) {
 	}
 }
 
+func TestTagger_InheritSinkSuspicion_EmptyOverride(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{ID: "tickets", Command: "./tickets", ProvidesTags: []string{"sensitive_source"}},
+		},
+		ToolTags: map[string][]string{
+			"internal_note": {}, // empty override shadows TagsFor — gap without inherit
+		},
+		ServerDefaults: config.ServerDefaultsConfig{InheritSinkSuspicion: true},
+	}
+	tagger := NewTagger(cfg)
+	if tagger.IsExternalSink("internal_note", "tickets") != true {
+		t.Fatal("inherit on: empty tool_tags override on sensitive_source server must still be a sink")
+	}
+	if hasTag(tagger.TagsFor("internal_note", "tickets"), "external_sink") {
+		t.Fatal("TagsFor should still reflect empty override (no external_sink tag)")
+	}
+}
+
+func TestTagger_InheritSinkSuspicion_Allowlist(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{ID: "tickets", Command: "./tickets", ProvidesTags: []string{"sensitive_source"}},
+		},
+		ToolTags: map[string][]string{"internal_note": {}},
+		ServerDefaults: config.ServerDefaultsConfig{
+			InheritSinkSuspicion:   true,
+			SinkSuspicionAllowlist: []string{"internal_note"},
+		},
+	}
+	tagger := NewTagger(cfg)
+	if tagger.IsExternalSink("internal_note", "tickets") {
+		t.Fatal("allowlisted tool must not inherit sink suspicion")
+	}
+}
+
+func TestTagger_InheritSinkSuspicion_DefaultOff(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{ID: "tickets", Command: "./tickets", ProvidesTags: []string{"sensitive_source"}},
+		},
+		ToolTags: map[string][]string{"internal_note": {}},
+	}
+	tagger := NewTagger(cfg)
+	if tagger.IsExternalSink("internal_note", "tickets") {
+		t.Fatal("default inherit off: empty override must not be a sink")
+	}
+}
+
 func TestTagger_PerToolOverrideShadowsServerTag(t *testing.T) {
 	cfg := &config.Config{
 		Servers: []config.ServerConfig{

@@ -23,6 +23,11 @@ func TestSessionManager_ConcurrentCreate(t *testing.T) {
 			{ID: "tickets", Command: ticketsBin},
 		},
 	}
+	resolved, err := cfg.BuildResolvedSpawnCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ResolvedSpawnCommands = resolved
 
 	p := New(cfg, nil, nil)
 	p.Sessions().StartIdleSweeper(context.Background())

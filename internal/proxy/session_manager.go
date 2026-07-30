@@ -54,6 +54,14 @@ type SessionManager struct {
 
 // NewSessionManager creates a session manager for p.
 func NewSessionManager(p *Proxy, cfg *config.Config, log *log.Logger, reg *PIDRegistry) *SessionManager {
+	if cfg != nil && len(cfg.ResolvedSpawnCommands) == 0 && len(cfg.Servers) > 0 {
+		if resolved, err := cfg.BuildResolvedSpawnCommands(); err == nil {
+			cfg.ResolvedSpawnCommands = resolved
+		}
+		if extras, err := cfg.BuildResolvedSpawnExtras(); err == nil {
+			cfg.ResolvedSpawnAllowlist = extras
+		}
+	}
 	return &SessionManager{
 		cfg:         cfg,
 		log:         log,
@@ -220,7 +228,13 @@ func (sm *SessionManager) expireIdle(maxAge time.Duration) {
 func (sm *SessionManager) startAndInit(ctx context.Context, rt *SessionRuntime, cfg config.ServerConfig) error {
 	sm.log.Printf("starting server %q for session %s: %s %v", cfg.ID, rt.Session.ID, cfg.Command, cfg.Args)
 
-	proc, err := StartServer(ctx, cfg)
+	proc, err := StartServer(ctx, cfg, StartServerOpts{
+		NetNS: sm.cfg.Sandbox.NetNS,
+		SpawnPolicy: SpawnPolicy{
+			Allowed: sm.cfg.ResolvedSpawnCommands,
+			Extras:  sm.cfg.ResolvedSpawnAllowlist,
+		},
+	})
 	if err != nil {
 		return fmt.Errorf("starting server %s: %w", cfg.ID, err)
 	}

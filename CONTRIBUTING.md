@@ -145,7 +145,7 @@ High-value areas:
 - `sendmsg` / `writev` probes (Variant B + LSM surface) — highest remaining kernel risk/reward
 - CEF SIEM export; cross-session evidence dashboard / query (ROADMAP Next §5)
 - eBPF gaps: IPv6, larger/dynamic payload capture, per-pod drop maps
-- Dataflow taint: depth-4+ nests, non-gzip compressors
+- Dataflow taint: depth-4+ nests, custom ciphers, ZIP/xlsx containers
 - Already shipped (do not re-open): LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge + SO_PEERCRED, writev/sendmsg/IPv6 — see [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/architecture.md`](docs/architecture.md) §13
 - Phase 4 Trust **met** — [`docs/threat_model.md`](docs/threat_model.md), [`docs/reproducible_builds.md`](docs/reproducible_builds.md), [`docs/fp_corpus.md`](docs/fp_corpus.md)
 ## Security

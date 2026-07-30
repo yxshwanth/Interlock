@@ -6,12 +6,12 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf/ringbuf"
+	"github.com/yxshwanth/Interlock/internal/engine"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
@@ -128,11 +128,9 @@ func (s *Sensor) isAllowlisted(destIP string) bool {
 
 func (s *Sensor) matchesSensitivePath(path string) bool {
 	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	if len(s.sensitivePaths) == 0 || path == "" {
-		return false
-	}
-	return pathMatchesSensitive(path, s.sensitivePaths)
+	prefixes := append([]string(nil), s.sensitivePaths...)
+	s.cfgMu.RUnlock()
+	return engine.IsSensitiveResourcePath(path, prefixes)
 }
 
 // AddPIDs adds the given PIDs to the BPF filter map.
@@ -631,18 +629,6 @@ func (s *Sensor) handleOpenat(raw *OpenatEvent) {
 	if decision.Action == model.ActionContained {
 		s.containPIDs(raw.CgroupID, int(raw.PID), "after openat")
 	}
-}
-
-func pathMatchesSensitive(path string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if p == "" {
-			continue
-		}
-		if strings.HasPrefix(path, p) {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Sensor) stopping() bool {

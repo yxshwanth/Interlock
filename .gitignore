@@ -49,3 +49,7 @@ evidence.json
 evidence-*.jsonl
 events.jsonl
 events-*.jsonl
+
+# Agents
+.cursor/
+.claude/

@@ -21,6 +21,22 @@ func TestDiffNonReloadable(t *testing.T) {
 	}
 }
 
+func TestDiffNonReloadable_SandboxNetNS(t *testing.T) {
+	old := &config.Config{Sandbox: config.SandboxConfig{NetNS: false}}
+	newCfg := &config.Config{Sandbox: config.SandboxConfig{NetNS: true}}
+	w := reload.DiffNonReloadable(old, newCfg)
+	found := false
+	for _, s := range w {
+		if s == "sandbox.netns (restart required; applies to new sessions only)" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected sandbox.netns warning, got %v", w)
+	}
+}
+
 func TestApplyReloadable_Observers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "evidence.jsonl")
