@@ -241,8 +241,8 @@ type VaultEntry struct {
 type Verdict string
 
 const (
-	VerdictExfil      Verdict = "EXFIL"      // high confidence: all legs + value overlap
-	VerdictSuspicious Verdict = "SUSPICIOUS" // lower confidence: all legs, no overlap
+	VerdictExfil      Verdict = "EXFIL"      // overlap against registered taint (AllLit not required)
+	VerdictSuspicious Verdict = "SUSPICIOUS" // AllLit + content-bind / bare-connect / container-abort
 )
 
 // Action describes what was done about a detected trifecta. Verdict says

@@ -138,15 +138,12 @@ PR checklist:
 
 ## What to work on
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for v0.2 and v0.3 plans. Open an issue before starting significant work so we can coordinate.
+See [docs/ROADMAP.md](docs/ROADMAP.md) **Active queue** for open work (stable `§N` IDs in the Shipped ledger). Open an issue before starting significant work so we can coordinate.
 
 High-value areas:
 
-- `sendmsg` / `writev` probes (Variant B + LSM surface) — highest remaining kernel risk/reward
-- CEF SIEM export; cross-session evidence dashboard / query (ROADMAP Next §5)
-- eBPF gaps: IPv6, larger/dynamic payload capture, per-pod drop maps
-- Dataflow taint: depth-4+ nests, custom ciphers, ZIP/xlsx containers
-- Already shipped (do not re-open): LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge + SO_PEERCRED, writev/sendmsg/IPv6 — see [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/architecture.md`](docs/architecture.md) §13
+- Dataflow taint residuals: depth-6+ nests (beyond clamp), custom ciphers, container bomb/encrypted/depth>2; git wire protocol remains Named §21
+- Already shipped (do not re-open): LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge + SO_PEERCRED, writev/sendmsg/IPv6, path-driven taint + container descent (§18/§20), chunk match, egress reassembly — see [`docs/INTERLOCK.md`](docs/INTERLOCK.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md)
 - Phase 4 Trust **met** — [`docs/threat_model.md`](docs/threat_model.md), [`docs/reproducible_builds.md`](docs/reproducible_builds.md), [`docs/fp_corpus.md`](docs/fp_corpus.md)
 ## Security
 

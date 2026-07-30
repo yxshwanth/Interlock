@@ -8,7 +8,7 @@
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-5A67D8)](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%2B%20BTF-FCC624?logo=linux&logoColor=black)](#quickstart)
 
-**A runtime firewall that catches AI agents exfiltrating your data — through tool-call chains the proxy sees, and side channels it can't.**
+**A runtime firewall that catches AI agents exfiltrating your data - through tool-call chains the proxy sees, and side channels it can't.**
 
 <p align="center">
   <img src="media/ReadmeGif.gif" alt="Firewall off: breach. Firewall on: blocked at the tool call, or detected and contained at the kernel." width="720" />
@@ -16,33 +16,52 @@
 
 <p align="center"><em>Firewall off: breach. Firewall on: blocked at the tool call, or detected and contained at the kernel.</em></p>
 
+**Definitive reference:** [`docs/INTERLOCK.md`](docs/INTERLOCK.md) (mechanisms, TCB, gap ledger). This README is the landing page.
+
+**Measured state** (snapshot; regenerate with `make fp-corpus` / `make cve-corpus`):
+
+| Corpus | Headline |
+|---|---|
+| Self-authored FP corpus | EXFIL-tier detection **100%** (31/31); any-trip FP **18.9%** (7/37 soft); EXFIL-tier FP **0%** |
+| CVE reconstructions | **12/15** reach EXFIL; **7/7** families have an EXFIL-shaped catch |
+
+Live numbers live in [`docs/fp_corpus.md`](docs/fp_corpus.md) and [`docs/cve_corpus.md`](docs/cve_corpus.md).
+
 ---
 
 ## The problem
 
-AI agents wired to MCP tools can read private data, ingest attacker-controlled instructions, and reach the outside world — Simon Willison's **lethal trifecta** — while MCP implementations have faced a steady stream of high-severity CVEs through early 2026 ([OX Security](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/), [Cloud Security Alliance research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/)). Static scanners check what a tool *claims* before approval; they miss the attack that matters in production: a sequence of individually authorized calls that chains into exfiltration. [Threat framing →](docs/project_overview.md) · [Detection boundary →](docs/detection_boundary.md)
+AI agents wired to MCP tools can hold Simon Willison's **lethal trifecta** in one session: private data, untrusted content, and external communication. Prompt injection into that mix is treated as ambient; Interlock does not claim to stop the model from being influenced. It moves the control plane to **exfiltration proof**: at sink time, did registered secret bytes (or a closed set of encodings) actually leave?
+
+Static scanners, network policy, and chat guardrails each miss a different slice of that attack (definitions before approval; destinations without content; conversational surface without tool-result / side-channel bytes). Details and the alternatives table: [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §1.
 
 ---
 
 ## What it does
 
-Interlock sits between an agent and its MCP servers on **two observation planes** — with **asymmetric intelligence**:
+Two observation planes, two attack variants, asymmetric enforcement:
 
-- **Plane 1 — proxy (Variant A): dataflow-aware prevention.** The proxy inspects tool-call chains, tracks tainted values through common encodings (base64, hex, URL-encoding, reversal), and **refuses to forward** sink calls that carry secrets. Verdict: `EXFIL` at 0.95 when overlap hits. This plane does real analysis.
-
-- **Plane 2 — eBPF (Variant B): connect() tripwire + write/writev/sendto/sendmsg payload proof.** A malicious server subprocess can open its own TCP socket — invisible to JSON-RPC inspection. The kernel probe fires on `connect()` from a monitored PID; if a correlated `write()`/`writev()` or self-contained `sendto()`/`sendmsg()` carries a tainted secret in the captured payload excerpt (default **512** bytes, max 1024), verdict is `EXFIL` at 0.95, and the process is killed immediately — no waiting window. Connect-only (no overlapping write, all three legs otherwise lit) is `SUSPICIOUS` at 0.60 — a soft tripwire (evidence/alert, `detected_only`), never a hard block; this tier requires a proxy-tied session (`IngestSyscall`) — pure sensor-only DaemonSet mode has no untrusted-content leg and can only ever reach `EXFIL`. Opt-in `ebpf.lsm_enforce` denies *further* connects after EXFIL.
-
-| | Variant A (proxy) | Variant B (eBPF) |
+| | Variant A (`A_chained_tool`) - MCP proxy | Variant B (`B_server_channel`) - eBPF |
 |---|---|---|
-| Capability | Encoding-aware overlap on sink args | `connect()` + `write()`/`writev()`/`sendto()`/`sendmsg()` payload overlap (default 1024 B) |
-| Confidence when tripped | 0.95 (`EXFIL`) with overlap | 0.95 (`EXFIL`) with payload overlap; 0.60 (`SUSPICIOUS`) connect-only, proxy-tied sessions only |
-| Role | Detector + preventer | Tripwire (soft) and immediate payload-backed containment (+ opt-in LSM quarantine) |
+| **Sees** | JSON-RPC tool args/results; hold-before-forward | `connect` / `write` / `writev` / `sendto` / `sendmsg` / DNS-on-53 / `openat` for filtered PIDs/cgroups |
+| **Blind to** | Raw sockets from server processes | MCP tags/semantics; untrusted excerpts unless the [taint bridge](deploy/k8s/PRIVILEGE.md) supplies them |
+| **Hard EXFIL** | Overlap in sink args → `prevented` (block mode) | Payload overlap → immediate `contained_by_kill`; opt-in LSM denies *repeat* `connect()` (`prevented`) |
+| **Soft SUSPICIOUS** | AllLit + content-bind (or bare connect) → `allowed_monitor` | Same soft gates → `detected_only`; unreachable in proxy-less sensor-only without `register_untrusted` |
+
+**EXFIL does not require all three trifecta legs.** `classifyTrip` returns EXFIL on overlap alone (taint can outlive soft-leg decay). Soft SUSPICIOUS requires `AllLit` plus bind / bare-connect / container-abort gates. See [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §8.
+
+**Deployment shape matters for Variant B:**
+
+| Mode | Side channel |
+|---|---|
+| Proxy + opt-in `sandbox.netns` | **Prevented** (`CLONE_NEWNET`; children cannot reach the network) |
+| Sensor-only DaemonSet | **Contained** (kill / optional LSM); Interlock did not spawn the pod, so netns does not apply |
 
 ```mermaid
 flowchart TB
     Agent[AI Agent]
     Proxy[MCP Proxy]
-    Servers["MCP servers<br/>tickets · messenger · exfil"]
+    Servers["MCP servers"]
 
     subgraph tcb [Interlock]
         direction TB
@@ -59,7 +78,7 @@ flowchart TB
     Ebpf -->|SyscallEvent| Engine
     Engine -->|Decision| Proxy
     Engine -->|EvidenceRecord| Sink
-    Ebpf -.->|PID watch| Proxy
+    Ebpf -.->|PID / cgroup watch| Proxy
     Ebpf -.->|connect / write| Servers
     Servers -.->|TCP bypasses proxy| Attacker
 ```
@@ -74,7 +93,7 @@ cd Interlock
 sudo make demo-quiet-ebpf GO=$(which go)
 ```
 
-Requires **Go 1.25+** and **Linux with BTF** (`ls /sys/kernel/btf/vmlinux` should succeed; Ubuntu 6.x works). The eBPF path does not build or run on macOS/Windows. The demo runs three passes — monitor (literal secret breach), block (**gzip_base64** prevented), eBPF (**payload EXFIL** contained) — and prints a comparison table at the end.
+Requires **Go 1.25+** and **Linux with BTF** (`ls /sys/kernel/btf/vmlinux` should succeed; Ubuntu 6.x works). The eBPF path does not build or run on macOS/Windows. The demo runs three passes - monitor (literal secret breach), block (**gzip_base64** prevented), eBPF (**payload EXFIL** contained) - and prints a comparison table at the end.
 
 No root? The proxy-only demo skips Variant B:
 
@@ -83,10 +102,8 @@ make demo-quiet
 ```
 
 <p align="center">
-  <img src="media/demo-quiet.jpeg" alt="make demo-quiet terminal output — literal breach, gzip_base64 prevented, payload EXFIL contained" width="640" />
+  <img src="media/demo-quiet.jpeg" alt="make demo-quiet terminal output" width="640" />
 </p>
-
-For verbose protocol output instead of curated narrative beats:
 
 ```bash
 sudo make demo-ebpf GO=$(which go)   # full demo, verbose
@@ -95,156 +112,140 @@ make demo                             # proxy-only, verbose
 
 ---
 
-> **Why `sudo`?** Variant B loads eBPF probes on `connect()`, `write()`, `writev()`, `sendto()`, `sendmsg()`, and `openat()` to watch the monitored process subtree. That requires root (`CAP_BPF`). The demo money-shot uses local dial + `write()` payload overlap (`INTERLOCK_EXFIL_MODE=local`). Here's precisely what it does: traces those syscalls from PIDs in a filter map, reads destination (IPv4/IPv6) and payload excerpts (default 1024 bytes = compiled `PAYLOAD_MAX`), and pushes events to **dual** ring buffers — routine (connect/openat) and critical (write/writev/sendto/sendmsg/`lsm_deny`). Nothing else — no network traffic sent, no files modified, no data leaves the box. The probe source is in [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c). Read the thing you're being asked to trust.
+> **Why `sudo`?** Variant B loads eBPF probes on `connect()`, `write()`, `writev()`, `sendto()`, `sendmsg()`, and `openat()` for monitored PIDs/cgroups. That needs root (`CAP_BPF` / related caps). The demo money-shot uses local dial + `write()` payload overlap (`INTERLOCK_EXFIL_MODE=local`). Probes copy dest (IPv4/IPv6) and payload excerpts (default **1024** bytes = compiled `PAYLOAD_MAX`) onto **dual** ring buffers: routine (connect/openat) and critical (write/writev/sendto/sendmsg/`lsm_deny`). Source: [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c).
 >
-> **Why `GO=$(which go)`?** `sudo` resets `PATH`, so the Makefile can't find your Go binary unless you pass it explicitly.
+> **Why `GO=$(which go)`?** `sudo` resets `PATH`, so the Makefile can't find Go unless you pass it.
 
 ---
 
 ## Honest limitations
 
-These are design boundaries, not bugs. Naming them first is the point. Full detection-scope write-up: [`docs/detection_boundary.md`](docs/detection_boundary.md).
+Design boundaries, not unfinished TODOs. Full ledger: [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §16; detection-scope write-up: [`docs/detection_boundary.md`](docs/detection_boundary.md).
 
-1. **Value-overlap covers a closed transform set, not full dataflow analysis.** At taint registration: literal, base64, hex, URL-encoding, reversal, depth-2 nests (`base64_hex`, etc.), and compressor+base64 (`gzip_base64`, `brotli_base64`, `zstd_base64`, `lz4_base64`). Same-call JSON string reassembly and a session-level fragment buffer catch secrets split across fields in one `tools/call` or across separate calls; a bounded recursive decoder (default depth **5**) catches multi-layer nests on the sink path (`malicious_proxy_a_depth3_nested`, `malicious_proxy_a_depth4_nested`, Fetch CVE depth-5 — ROADMAP §15). Still misses **custom ciphers**, **ZIP/xlsx containers**, nests beyond the clamp, and secrets that travel over a protocol other than the tool call's own JSON — e.g. as git objects inside a `git push`'s wire protocol, never inline in the args ([`docs/cve_corpus.md`](docs/cve_corpus.md)). Can false-positive on legitimate echoes of encoded forms.
+1. **Closed transform set, not universal DLP.** Precomputed encodings (literal, base64, hex, URL, reversal, depth-2 nests, gzip/brotli/zstd/lz4_base64), fragment reassembly, decode depth default **5**, chunk match for long secrets, path-driven taint, and bounded ZIP/gzip/zlib/tar descent. Still misses **custom ciphers**, nests beyond clamp `[3,5]`, secrets **entirely** past the 1024 B capture window, **git pack / structured-protocol wire** outside ToolArgs/PayloadExcerpt (Named / demand-gated), and container bomb/encrypted/depth>2 aborts.
 
-2. **Semantic / paraphrased exfil is out of scope for EXFIL.** If the agent describes or rewrites a secret in natural language without any registered byte/encoding form, Interlock will not prove EXFIL (`malicious_gap_semantic_paraphrase_exfil`). Soft SUSPICIOUS may still fire on long *literal* shared substrings with untrusted content — that is byte-bind, not understanding. Pair with outbound DLP / human review for meaning-level leaks.
+2. **Semantic / paraphrased exfil is out of scope for EXFIL.** Natural-language rewrite without a registered byte form does not prove EXFIL. Soft SUSPICIOUS may still fire on long *literal* shared substrings (byte-bind, not meaning).
 
-3. **Variant B is connect/sendto/sendmsg/write/writev/openat/DNS, not full stream inspection.** Connect-only or DNS without overlap → soft `SUSPICIOUS` on a proxy-tied session (no hard kill, ever — that's ROADMAP §1's doctrine, not a tier that degrades over time). Pure sensor-only DaemonSet mode never lights `untrusted_content_present`, so it can only ever reach `EXFIL`, not `SUSPICIOUS`. Correlated `write()`/`writev()` or self-contained `sendto`/`sendmsg` whose excerpt overlaps taint → `EXFIL` at 0.95. Default capture is 1024 B (`PAYLOAD_MAX`); secrets entirely past that window remain a permanent KnownGap (`malicious_gap_payload_truncated`). Writes before a suspicious connect are also known gaps. **DoH/DoT is out of scope** — mitigate with network-layer DNS controls. Prioritized gap list: [`docs/architecture.md`](docs/architecture.md) §13.
+3. **Variant B is syscall excerpts, not full stream inspection.** First EXFIL-carrying packet is always `contained_by_kill` (connect has no payload); LSM only stops *repeat* connects. Sensor-only without the taint bridge cannot light soft SUSPICIOUS. **DoH/DoT** and **blind boolean inference** are outside the observation model.
 
-4. **eBPF containment is kill-on-connect, not first-packet prevention — but it is immediate, not deferred.** Variant A truly prevents on EXFIL. Variant B kills the instant a payload-carrying `write()`/`sendto()`/`sendmsg()`/`writev()` proves overlap — there is no waiting window; a bare `SUSPICIOUS` connect never escalates to a kill on its own, by design (hard containment is reserved for `EXFIL`, per ROADMAP §1). Opt-in `ebpf.lsm_enforce` upgrades *repeat* `connect()` attempts after EXFIL to in-kernel `prevented`; the first EXFIL-carrying packet remains `contained_by_kill` by construction.
+4. **Verdict ≠ action.** Monitor mode allows EXFIL through as `allowed_monitor`. Soft SUSPICIOUS never hard-blocks or kills. Collapsing those dimensions would break relevance-aware blocking.
 
-5. **Redaction is pattern-matched, not total.** Event logs scrub known secret patterns (API keys, bearer tokens) and encoded taint variants; HTTP `Authorization` / `Cookie` headers are redacted in request metadata. JWTs, private URLs with embedded tokens, and customer PII in tool bodies still pass through. Treat `events.jsonl` as a sensitive artifact — never commit runtime evidence files.
+5. **Redaction is pattern-matched, not total.** Treat `events.jsonl` / evidence as sensitive artifacts.
 
-6. **HTTP multi-session spawns a full backend pool per `initialize`.** Each new MCP session starts dedicated tickets/messenger/exfil child processes until idle expiry (`sessions.idle_timeout`, default 30m) or `max_concurrent` (default 32) is hit. An adversary who can open HTTP sessions can exhaust host process table slots — bounded, but real. Mitigate with network ACLs in front of Interlock, lower `max_concurrent`, and shorter idle timeouts. Not a substitute for authenticating who may open sessions.
+6. **HTTP multi-session spawns a backend pool per `initialize`.** Bounded by `sessions.max_concurrent` (default 32) and idle timeout (30m); still a process-table exhaustion surface without ACLs.
 
-7. **Performance numbers include HTTP overhead (v0.2.1+).** [`docs/performance.md`](docs/performance.md) publishes engine-on vs passthrough delta: **~0.5 ms on sensitive reads (typical)** and **~0.1 ms on sink checks** — sub-millisecond. Read-path cost scales with secrets-per-result (snapshot uses a 2-secret fixture). Absolute end-to-end p99 is backend-dominated — do not quote ~12 ms `read_ticket` as Interlock's cost. Concurrent multi-session absolute latency is published via `TestHTTP_ConcurrentLoad_ReadTicket`.
+7. **Performance** is sub-millisecond engine delta on published fixtures ([`docs/performance.md`](docs/performance.md)); absolute end-to-end p99 is backend-dominated.
 
-8. **Tool shadowing is checked at registration time only.** Cross-server duplicate tool names use first-owner-wins: the first server keeps the route, the duplicate is omitted from aggregated `tools/list`, and a `tool_shadowing` security audit is emitted. A server that dynamically adds tools mid-session is not re-checked — see `TestToolShadowing_RuntimeReregistration_KnownGap`.
+8. **Tool shadowing** is checked at registration only (mid-session re-registration KnownGap).
 
 ---
 
 ## How it works
 
-### The trifecta state machine
-
-One state machine per session tracks three legs:
+### Trifecta legs (soft tripwire substrate)
 
 | Leg | Lights when |
 |---|---|
-| `sensitive_source_touched` | A tool tagged *sensitive* returns data |
-| `untrusted_content_present` | Content enters from an attacker-controllable origin (v0.1: all tool results). **Never lights in pure sensor-only DaemonSet mode** (`IngestSyscallSensor`) — no MCP proxy in that mode means no untrusted-content plane to observe. |
-| `external_sink_invoked` | A tool tagged *external sink* is called, or eBPF sees a non-allowlisted `connect()` |
+| `sensitive_source_touched` | Sensitive-tagged tool result, remote taint, or sensor sensitive `openat` seed |
+| `untrusted_content_present` | Non-sensitive tool results (when configured); **not** on sensitive results or sensor `openat` alone. Sensor-only needs bridge `register_untrusted` |
+| `external_sink_invoked` | External-sink tool call, or non-allowlisted eBPF egress |
 
-Because `untrusted_content_present` can never light in sensor-only mode, **`SUSPICIOUS` is entirely unreachable there** — only a proxy-tied session (`IngestSyscall`) can produce it. See [`docs/architecture.md`](docs/architecture.md) §13 and [`docs/cve_corpus.md`](docs/cve_corpus.md).
+Leg decay: TTL (default 30m) and call-count (default 32). Tainted values are retained after soft legs decay so late overlap can still EXFIL.
 
-When all three are lit at sink time, the engine trips. **Verdict** (what was concluded) and **action** (what was done) are separate:
+### Verdict vs action
 
-| Condition at sink time | Verdict | Confidence |
+| Condition | Verdict | Confidence |
 |---|---|---|
-| All three legs + tainted value in sink args | `EXFIL` | 0.95 |
-| All three legs; sink event carries a payload/args channel and it byte-shares content with untrusted input | `SUSPICIOUS` | 0.60 |
-| All three legs; sink event has **no** payload channel at all (a bare `connect()`) | `SUSPICIOUS` | 0.60 |
-
-Hard containment (`prevented` / `contained_by_kill`) is reserved for `EXFIL` only — a bare `SUSPICIOUS` trip never blocks or kills, on either plane:
+| Tainted value overlaps sink args / egress payload (`CheckOverlap`) | `EXFIL` | 0.95 |
+| AllLit + content-bind on a payload/args channel | `SUSPICIOUS` | 0.60 |
+| AllLit + bare `connect()` (no payload channel) | `SUSPICIOUS` | 0.60 |
+| AllLit + container inspect hard-cap abort | `SUSPICIOUS` | 0.60 |
 
 | Action | When | Effect |
 |---|---|---|
-| `prevented` | Variant A, `EXFIL`, block mode | Call never forwarded |
-| `contained_by_kill` | Variant B, `EXFIL` | Offending child killed immediately (no delay) |
-| `allowed_monitor` | Variant A, `SUSPICIOUS`, or monitor mode | Logged, evidence emitted, call forwarded |
-| `detected_only` | Variant B, `SUSPICIOUS` | Logged, evidence emitted, nothing killed |
+| `prevented` | Variant A EXFIL in block mode; or Variant B LSM *repeat* connect after EXFIL | Never forwarded / `-EPERM` |
+| `contained_by_kill` | Variant B EXFIL | Immediate SIGKILL (no deferred window) |
+| `allowed_monitor` | Variant A SUSPICIOUS, or monitor mode | Call goes through; evidence emitted |
+| `detected_only` | Variant B SUSPICIOUS | Evidence only; no kill |
 
-### Fused timeline
+### Correlation and clocks
 
-Events from the proxy (userspace) and eBPF (kernel) use different clocks — Go's `CLOCK_MONOTONIC` vs `bpf_ktime_get_ns()`. The evidence receipt orders events by engine-assigned `timeline_seq`, not raw nanosecond timestamps, so the causal story is correct across planes.
+Attribution is **PID or cgroup → session**, then session state (legs + taint). There is no proxy↔syscall “recency window” join on timestamps.
 
-Each trip emits an `EvidenceRecord` — session ID, verdict, action, variant, the three legs with trigger details, the sink call (tool name or syscall), optional value-overlap hit, and the full ordered timeline. The local HTML viewer at [`web/viewer.html`](web/viewer.html) renders it: verdict badge, trifecta legs, and the fused timeline.
+Evidence clocks differ: proxy `ts_mono_ns` is actually `time.Now().UnixNano()` (wall); BPF uses `bpf_ktime_get_ns()` (boot-relative). Fuse timelines with engine-assigned `timeline_seq`, not raw nanoseconds ([`docs/INTERLOCK.md`](docs/INTERLOCK.md) §9).
 
-| Variant A — `EXFIL` prevented (proxy) | Variant B — side channel contained (eBPF) |
+Each trip emits a hash-chained `EvidenceRecord` (`make verify-evidence`). Viewer: [`web/viewer.html`](web/viewer.html).
+
+| Variant A - `EXFIL` prevented (proxy) | Variant B - side channel contained (eBPF) |
 |:---:|:---:|
-| <img src="media/VariantA.jpeg" alt="Variant A evidence receipt — EXFIL prevented at send_message" width="420" /> | <img src="media/VariantB.jpeg" alt="Variant B evidence receipt — connect syscall fused with sensitive read" width="420" /> |
-
-Full architecture spec: [`docs/INTERLOCK.md`](docs/INTERLOCK.md) (definitive); also [`docs/architecture.md`](docs/architecture.md)
+| <img src="media/VariantA.jpeg" alt="Variant A evidence receipt" width="420" /> | <img src="media/VariantB.jpeg" alt="Variant B evidence receipt" width="420" /> |
 
 ---
 
-## Project status — v0.4.0
+## Project status - v0.4.0
 
-**Latest tagged release:** [`v0.4.0`](https://github.com/yxshwanth/Interlock/releases/tag/v0.4.0). Definitive reference: [`docs/INTERLOCK.md`](docs/INTERLOCK.md). Versioning follows SemVer under `0.x` — the API is unstable and minor bumps may break things until v1.0.
+**Latest tagged release:** [`v0.4.0`](https://github.com/yxshwanth/Interlock/releases/tag/v0.4.0).
 
 **Shipped (highlights):**
 
-- Streamable HTTP MCP transport (STDIO still default); multi-session concurrency with PID→session attribution
-- Encoding-aware value overlap (depth-5 recursive decoder default, fragment buffer, gzip/brotli/zstd/lz4_base64, same-call JSON reassembly, chunk match, container descent, egress reassembly)
-- Opt-in token vaulting (`vault.enabled`); opt-in `sandbox.netns` + spawn pinning
-- Engine microbenchmarks + end-to-end HTTP overhead ([`docs/performance.md`](docs/performance.md))
-- JSONL evidence by default (intentional); opt-in SQLite; async emit; **hash-chained** records (`make verify-evidence`)
-- eBPF `write()`/`writev()`/`sendto()`/`sendmsg()` payload capture (default 1024 B; IPv4/IPv6 dest); Variant B `EXFIL` on overlap kills immediately
-- Dual ringbufs (routine connect/openat + critical write/writev/sendto/sendmsg/`lsm_deny`); fail-closed watches both drop rates
-- Opt-in `ebpf.lsm_enforce` (repeat-connect kernel quarantine) + opt-in `fail_closed.enabled`
-- Sensor↔proxy `taint_bridge` with SO_PEERCRED allowlists for managed-cluster EXFIL without privileged `/proc` seed
-- Sensor-only Kubernetes DaemonSet; **EKS validated** — [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md)
-- Prometheus metrics/health; webhooks; OCSF SIEM; SIGHUP reload; systemd; FP + CVE corpora; threat model; reproducible releases
+- Streamable HTTP MCP (STDIO default); multi-session concurrency; PID→session via `(pid, start_time)`
+- Encoding-aware overlap: depth-5 decoder, fragments, compressors, chunk match, path taint, container descent, egress reassembly
+- Opt-in vault, `sandbox.netns`, spawn pinning, inherit sink suspicion
+- Dual ringbufs; opt-in LSM quarantine + fail-closed breaker; evidence hash chain
+- Sensor DaemonSet + taint bridge (SO_PEERCRED); Prometheus / webhooks / OCSF / SIGHUP
+- FP + CVE corpora; [`docs/INTERLOCK.md`](docs/INTERLOCK.md) as SoT
 
-**Roadmap** ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
-
-- **Known gaps / SoT:** [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §16; also [`docs/architecture.md`](docs/architecture.md) §13
-- **Next:** CEF SIEM, cross-session evidence query; protocol dissectors remain demand-gated (§21)
+**Next** ([`docs/ROADMAP.md`](docs/ROADMAP.md)): CEF SIEM, cross-session evidence query; protocol dissectors remain demand-gated (§21).
 
 ### Kubernetes (sensor DaemonSet)
-
-Label agent/tool-server pods with `interlock.io/monitor: "true"`. Deploy the sensor (no proxy in the DaemonSet):
 
 ```bash
 make image
 kubectl apply -f deploy/k8s/rbac.yaml
-kubectl apply -f deploy/k8s/daemonset.yaml          # privileged — kind / full EXFIL
+kubectl apply -f deploy/k8s/daemonset.yaml          # privileged - kind / full EXFIL
 # or: deploy/k8s/daemonset-capabilities.yaml        # managed try-first + taint_bridge
 # or: make demo-k8s
-# EKS: deploy/k8s/eks/push-image.sh → apply /tmp/interlock-daemonset*.yaml
 ```
 
-Integrators keep their own MCP proxy/sidecar. The DaemonSet loads eBPF, attributes host PIDs to pods, and contains non-allowlisted egress. On EKS, capabilities posture observes `connect`/`write`; production **EXFIL** under capabilities uses the **taint bridge** (proxy → `/var/run/interlock/taint.sock`); privileged DaemonSet remains for openat-seed demos. **The taint bridge is a prerequisite for soft `SUSPICIOUS` detection, not an enhancement:** without an unprivileged proxy sidecar forwarding both taint *and* untrusted-content signals over it, a proxy-less sensor-only DaemonSet can only ever reach `EXFIL` — there is no MCP untrusted-content plane inside the privileged pod for `SUSPICIOUS` to light from, by construction (see [`docs/architecture.md`](docs/architecture.md) §13's "Sensor-only DaemonSet" section). Metrics, webhooks, OCSF SIEM, and SIGHUP reload are available. Details: [`deploy/k8s/README.md`](deploy/k8s/README.md), [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md), [`deploy/systemd/README.md`](deploy/systemd/README.md).
-
-Every detection feature ships with explicit known-gap tests naming what it does *not* catch. That discipline carries forward.
+Label workloads with `interlock.io/monitor: "true"`. Integrators keep their own MCP proxy/sidecar. On EKS, capabilities posture observes connect/write; production EXFIL under caps uses the **taint bridge**; soft SUSPICIOUS also needs `register_untrusted`. Details: [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md).
 
 ---
 
 ## Tests
 
-**CI + unit tests** cover engine, proxy, config, k8s attribution, observability, alerting, SIEM, hot-reload, fail-closed breaker, evidence hash chain, HTTP integration, overhead benchmarks, async sink, backpressure, concurrent load. CI runs `test` + `race` jobs on every push to `main`; concurrent-load smoke uses `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`. eBPF probe load requires root and a BTF-enabled kernel — DropCount/CriticalDropCount APIs are CI-tested; live saturation and LSM tests are root/BPF-LSM-gated (`sudo` or `deploy/ec2/`). Kind DaemonSet demo (`make demo-k8s`) is manual (needs docker/kind/BTF).
-
 ```bash
 make test
 go test -race ./...
+make fp-corpus    # regenerates docs/fp_corpus.md
+make cve-corpus   # regenerates docs/cve_corpus.md
 ```
+
+CI runs `test` + `race` on `main`. Live eBPF saturation / LSM tests are root / BPF-LSM gated.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Pick up work from [`docs/ROADMAP.md`](docs/ROADMAP.md) or open an issue first. New detection features should ship with known-gap tests that name what they do *not* catch — that's the project's signature standard.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Prefer [`docs/ROADMAP.md`](docs/ROADMAP.md) or an issue first. New detection features should ship with KnownGap pins naming what they do *not* catch.
 
 ## Security
 
-Interlock runs privileged and loads kernel probes. Do not report vulnerabilities in public issues — see [SECURITY.md](SECURITY.md).
+Interlock runs privileged and loads kernel probes. Do not report vulnerabilities in public issues - see [SECURITY.md](SECURITY.md). Self-threat model (T1-T6): [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §12 / [`docs/threat_model.md`](docs/threat_model.md).
 
 ## Documentation
 
-- [Project overview & threat framing](docs/project_overview.md)
-- [Detection boundary — what we catch / do not](docs/detection_boundary.md)
-- [FP corpus report](docs/fp_corpus.md) (self-authored scenarios) · [CVE corpus report](docs/cve_corpus.md) (reconstructed from published, third-party-disclosed MCP CVEs — 7 CVE families, 7/7 caught in their exfil-shaped variant, two live detection bugs found and fixed along the way)
-- [Architecture spec](docs/architecture.md) (known gaps §13)
-- [Roadmap](docs/ROADMAP.md)
-- [Performance](docs/performance.md)
-- [Changelog](CHANGELOG.md)
+- **[INTERLOCK.md](docs/INTERLOCK.md) - definitive technical reference** (start here for architecture depth)
+- [Detection boundary](docs/detection_boundary.md) - what we catch / do not
+- [FP corpus](docs/fp_corpus.md) · [CVE corpus](docs/cve_corpus.md)
+- [Architecture notes](docs/architecture.md) · [Roadmap](docs/ROADMAP.md) · [Performance](docs/performance.md)
+- [Project overview](docs/project_overview.md) · [Changelog](CHANGELOG.md)
 
 ## Credits
 
-- **Threat framing:** Simon Willison's ["lethal trifecta"](https://simonwillison.net/) — the three-capability model for agent danger.
-- **Prior art:** [AgentSight](https://arxiv.org/abs/2508.02736) (arXiv 2508.02736) — names the same semantic gap (intent vs. action) and uses eBPF; Interlock is the enforcement-capable product take.
-- **Threat data:** [OX Security MCP disclosure](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/), [Cloud Security Alliance research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/), [Endor Labs MCP AppSec research](https://www.endorlabs.com/learn/classic-vulnerabilities-meet-ai-infrastructure-why-mcp-needs-appsec).
+- **Threat framing:** Simon Willison's ["lethal trifecta"](https://simonwillison.net/)
+- **Prior art:** [AgentSight](https://arxiv.org/abs/2508.02736) (arXiv 2508.02736)
+- **Threat data:** [OX Security MCP disclosure](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/), [CSA research note](https://labs.cloudsecurityalliance.org/research/csa-research-note-mcp-by-design-rce-ox-security-20260420-csa/), [Endor Labs](https://www.endorlabs.com/learn/classic-vulnerabilities-meet-ai-infrastructure-why-mcp-needs-appsec)
