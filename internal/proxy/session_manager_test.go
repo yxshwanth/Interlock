@@ -30,6 +30,11 @@ func TestSessionManager_Isolation(t *testing.T) {
 			{ID: "messenger", Command: messengerBin},
 		},
 	}
+	resolved, err := cfg.BuildResolvedSpawnCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ResolvedSpawnCommands = resolved
 
 	p := New(cfg, nil, nil)
 	p.Sessions().StartIdleSweeper(context.Background())

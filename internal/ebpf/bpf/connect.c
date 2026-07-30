@@ -21,7 +21,7 @@
 #define EVENT_SENDMSG 7
 #define PAYLOAD_MAX   1024
 #define PATH_MAX_CAP  128
-#define DEFAULT_PAYLOAD_CAP 512
+#define DEFAULT_PAYLOAD_CAP 1024
 /* BPF programs don't have <errno.h>; EPERM is 1 on every Linux arch. */
 #define EPERM 1
 

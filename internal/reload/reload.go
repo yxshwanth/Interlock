@@ -19,6 +19,7 @@ type Runtime struct {
 	Metrics  *observability.Metrics
 	Async    *engine.AsyncEvidenceSink
 	Sensor   *interlockebpf.Sensor
+	Engine   *engine.Engine
 	Webhook  *alerting.WebhookNotifier
 	SIEM     *siem.Exporter
 	Cfg      *config.Config
@@ -74,6 +75,11 @@ func (r *Runtime) ApplyReloadable(newCfg *config.Config) string {
 		oldSIEM.Close()
 	}
 
+	if r.Engine != nil {
+		r.Engine.Configure(newCfg)
+		parts = append(parts, "vault", "trifecta")
+	}
+
 	r.Cfg = newCfg
 	if len(parts) == 0 {
 		return "observers"
@@ -120,8 +126,27 @@ func DiffNonReloadable(old, new *config.Config) []string {
 	if old.FailClosed.Enabled != new.FailClosed.Enabled {
 		w = append(w, "fail_closed.enabled (restart required)")
 	}
+	if old.Sandbox.NetNS != new.Sandbox.NetNS {
+		w = append(w, "sandbox.netns (restart required; applies to new sessions only)")
+	}
+	if old.ServerDefaults.InheritSinkSuspicion != new.ServerDefaults.InheritSinkSuspicion ||
+		!stringSliceEqual(old.ServerDefaults.SinkSuspicionAllowlist, new.ServerDefaults.SinkSuspicionAllowlist) {
+		w = append(w, "server_defaults.inherit_sink_suspicion (restart required; tagger not hot-reloaded)")
+	}
 	if len(old.Servers) != len(new.Servers) {
 		w = append(w, "servers (restart required)")
 	}
 	return w
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

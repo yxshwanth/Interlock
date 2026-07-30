@@ -65,7 +65,8 @@ kubectl apply -f "${ROOT}/deploy/k8s/demo/exfil-pod.yaml"
 log "waiting for demo pod to start"
 kubectl wait --for=condition=Ready pod/interlock-exfil-demo --timeout=60s || true
 
-# Wait for DELAY_SEC (12) + dials + deferred kill window.
+# Wait for demo DELAY_SEC (~12s) + dials + sensor drain. Containment is
+# immediate SIGKILL on EXFIL (no deferred-kill window; that path was removed).
 sleep 25
 
 SENSOR_POD="$(kubectl -n interlock-system get pod -l app.kubernetes.io/component=sensor -o jsonpath='{.items[0].metadata.name}')"

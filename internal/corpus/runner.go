@@ -94,6 +94,17 @@ func runOne(sc Scenario, cfgFn func(mode string) *config.Config) Result {
 
 	store := engine.NewSessionStore()
 	cfg := cfgFn(mode)
+	if sc.VaultEnabled {
+		cfg.Vault.Enabled = true
+		cfg.Vault.Authorize = sc.VaultAuthorize
+	}
+	if sc.InheritSinkSuspicion {
+		cfg.ServerDefaults.InheritSinkSuspicion = true
+		cfg.ServerDefaults.SinkSuspicionAllowlist = sc.SinkSuspicionAllowlist
+	}
+	if sc.MaxDecodeDepth > 0 {
+		cfg.Trifecta.MaxDecodeDepth = sc.MaxDecodeDepth
+	}
 	tagger := engine.NewTagger(cfg)
 	eng := engine.NewEngine(store, tagger, mode, nil)
 	eng.Configure(cfg)
