@@ -54,6 +54,14 @@ type SessionManager struct {
 
 // NewSessionManager creates a session manager for p.
 func NewSessionManager(p *Proxy, cfg *config.Config, log *log.Logger, reg *PIDRegistry) *SessionManager {
+	if cfg != nil && len(cfg.ResolvedSpawnCommands) == 0 && len(cfg.Servers) > 0 {
+		if resolved, err := cfg.BuildResolvedSpawnCommands(); err == nil {
+			cfg.ResolvedSpawnCommands = resolved
+		}
+		if extras, err := cfg.BuildResolvedSpawnExtras(); err == nil {
+			cfg.ResolvedSpawnAllowlist = extras
+		}
+	}
 	return &SessionManager{
 		cfg:         cfg,
 		log:         log,
