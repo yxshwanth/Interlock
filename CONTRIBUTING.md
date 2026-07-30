@@ -138,7 +138,7 @@ PR checklist:
 
 ## What to work on
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for v0.2 and v0.3 plans. Open an issue before starting significant work so we can coordinate.
+See [docs/ROADMAP.md](docs/ROADMAP.md) **Active queue** for open work (stable `§N` IDs in the Shipped ledger). Open an issue before starting significant work so we can coordinate.
 
 High-value areas:
 
