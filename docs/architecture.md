@@ -453,7 +453,7 @@ Full TCB threat model (blind sensor, poison bridge, fail-open, misattribution, e
 
 ## 13. Known gaps and deferred work
 
-Priority tiers below are the design SoT for what Interlock does *not* catch yet (or never will). Execution queue: [`ROADMAP.md`](ROADMAP.md) **Next build order**. A tool that claims no gaps is lying; a tool that names them is honest.
+Priority tiers below are the design SoT for what Interlock does *not* catch yet (or never will). Execution queue: [`ROADMAP.md`](ROADMAP.md) **Active queue** (open) / **Shipped ledger** (`§N` IDs). A tool that claims no gaps is lying; a tool that names them is honest.
 
 ### Will cover — real detection value, tractable
 
