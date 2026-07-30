@@ -53,7 +53,7 @@ STDIO single-session was a demo simplification. Real deployment means many concu
 Closes the detection-credibility gap for Variant A: encoded exfil in sink args is now caught.
 
 - **Shipped (encoding overlap):** canonical transforms at taint registration — base64, hex, URL-encoding, reversal; depth-2 nests; `gzip_base64`; same-call JSON string reassembly; `CheckOverlap` / `CheckOverlapPayload`; evidence records `match_form`; `RedactJSON` scrubs encoded variants
-- **Known gaps (skip tests):** cross-call splits (**met** via fragment buffer), depth-3 nests (**met** via recursive decoder), non-gzip compressors (**met** via ROADMAP §9 brotli/zstd/lz4) — priority tiers in [`architecture.md`](architecture.md) §13; custom ciphers remain open; ZIP/xlsx whole-file (§18) and extracted/sink container descent (§20) closed later
+- **Known gaps (skip tests):** custom ciphers remain open; ZIP/xlsx **whole-file** (§18) and extracted/sink container descent (§20) are **met**; cross-call splits / depth nests / compressors met earlier — priority tiers in [`architecture.md`](architecture.md) §13 and [`INTERLOCK.md`](INTERLOCK.md) §16
 - **Shipped (post-v0.2):** eBPF `write()` + `sendto()` payload capture (runtime `payload_capture_bytes`, default **1024** / max 1024 — raised in ROADMAP §16) → Variant B `EXFIL` on overlap; connect/DNS/`openat` without overlap → `SUSPICIOUS`. DNS = sendto port 53; openat uses `sensitive_paths`
 
 **Done when:** `TestCheckOverlap_EncodedExfil_KnownGap` passes — **met**.
@@ -252,7 +252,7 @@ Straightforward extension of existing encoding machinery alongside `gzip_base64`
 
 - **Shipped:** `brotli_base64` / `zstd_base64` / `lz4_base64` (compress then std base64) in `CanonicalEncodings`; independent corpus encoders; unit hit pins; `malicious_proxy_a_{brotli,zstd,lz4}_base64` detection; XOR stand-in reclassified as `malicious_gap_custom_cipher` KnownGap.
 - **Perf:** miss-path ~121 µs @ 1K and decode-miss ~380 µs stay inside the ~0.5 ms class — forms ship **always-on** (no config gate). Registration ~640 µs/secret (compressor-dominated) published in [`performance.md`](performance.md).
-- **Non-claims:** ZIP/xlsx **whole-file** relay closed later (§18); extracted-cell / sink ZIP/zlib on inspected bytes closed by §20; git pack wire outside ToolArgs remains Named/demand-gated (§21). Container/wire ≠ token compressor forms.
+- **Non-claims:** ZIP/xlsx **whole-file** relay met (§18); extracted-cell / sink ZIP/zlib on inspected bytes met (§20); git pack wire outside ToolArgs remains Named/demand-gated (§21). Container/wire ≠ token compressor forms.
 
 **Done when:** compressor scenario is detection (not KnownGap); miss-path / decode-miss benches published in [`performance.md`](performance.md); overhead stays in class or the gate is documented. — **met**.
 
