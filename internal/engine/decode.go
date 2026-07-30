@@ -6,24 +6,43 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
+	"github.com/yxshwanth/Interlock/internal/config"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
 const (
-	maxDecodeDepth     = 3
 	maxDecodeBytes     = 8 * 1024
 	minDecodeCandidate = 4
 )
 
-// MaxDecodeDepth is the exported form of maxDecodeDepth, for cross-package
-// tests (internal/corpus) that assert a scenario's premise about this budget
-// still holds, rather than hand-maintaining a duplicate number that can
-// silently drift out of sync when this constant changes. See
-// docs/cve_corpus.md's cve_2025_65513_fetch_ssrf_cloud_metadata_depth5_nest_gap
-// and Scenario.PreExistingGap (internal/corpus/scenario.go).
-const MaxDecodeDepth = maxDecodeDepth
+// DefaultMaxDecodeDepth is the recursive decoder default budget (ROADMAP §15).
+// CVE corpus premises assert against this constant (not the live runtime knob).
+const DefaultMaxDecodeDepth = config.DefaultMaxDecodeDepth
+
+// MaxDecodeDepth is kept as an alias of the default for cross-package premise
+// pins that historically imported engine.MaxDecodeDepth.
+const MaxDecodeDepth = DefaultMaxDecodeDepth
+
+// activeDecodeDepth is the live recursive-decoder budget, set via
+// SetMaxDecodeDepth / Engine.Configure. Defaults to DefaultMaxDecodeDepth.
+var activeDecodeDepth atomic.Int32
+
+func init() {
+	activeDecodeDepth.Store(int32(DefaultMaxDecodeDepth))
+}
+
+// SetMaxDecodeDepth sets the package-wide recursive decoder depth (clamped [3,5]).
+func SetMaxDecodeDepth(n int) {
+	activeDecodeDepth.Store(int32(config.ClampMaxDecodeDepth(n)))
+}
+
+// CurrentMaxDecodeDepth returns the live decoder budget.
+func CurrentMaxDecodeDepth() int {
+	return int(activeDecodeDepth.Load())
+}
 
 // singleLayerForms are the forms matched against after each decode step.
 // Depth-2 nests are intentionally excluded — the recursive decoder unwraps instead.
@@ -36,7 +55,7 @@ var singleLayerForms = []EncodingForm{
 }
 
 // checkOverlapDecoded attempts bounded base64/hex unwrap on candidate strings
-// after the fast-path Contains scan missed. Depth is capped at maxDecodeDepth.
+// after the fast-path Contains scan missed. Depth is capped at CurrentMaxDecodeDepth.
 func checkOverlapDecoded(tainted []model.TaintedValue, candidates []string) *model.OverlapHit {
 	if len(tainted) == 0 || len(candidates) == 0 {
 		return nil
@@ -53,7 +72,7 @@ func checkOverlapDecoded(tainted []model.TaintedValue, candidates []string) *mod
 }
 
 func decodeMatchCandidates(s string, tainted []model.TaintedValue, path []string, depth int) *model.OverlapHit {
-	if depth >= maxDecodeDepth || s == "" || len(s) > maxDecodeBytes {
+	if depth >= CurrentMaxDecodeDepth() || s == "" || len(s) > maxDecodeBytes {
 		return nil
 	}
 

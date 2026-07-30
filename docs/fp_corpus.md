@@ -17,22 +17,22 @@ Two outcome dimensions are scored per scenario, and they answer different questi
 
 | Metric | Value |
 |---|---|
-| Corpus size | 58 scenarios (25 malicious, 33 benign) |
-| **Detection rate** (EXFIL-tier, non-gap malicious) | **100.0%** (21/21) |
-| **False-positive rate** (any trip, benign) | **21.2%** (7/33) |
-| False-positive rate (EXFIL-tier only, benign) | 0.0% (0/33) |
-| Known-gap misses (expected, catalogued) | 4 |
+| Corpus size | 75 scenarios (38 malicious, 37 benign) |
+| **Detection rate** (EXFIL-tier, non-gap malicious) | **100.0%** (31/31) |
+| **False-positive rate** (any trip, benign) | **18.9%** (7/37) |
+| False-positive rate (EXFIL-tier only, benign) | 0.0% (0/37) |
+| Known-gap misses (expected, catalogued) | 7 |
 | Bonus catches (gap unexpectedly closed) | 0 |
 
 ## Confusion matrix
 
 | | Count |
 |---|---:|
-| True positive (EXFIL proven, non-gap malicious) | 21 |
+| True positive (EXFIL proven, non-gap malicious) | 31 |
 | False negative (EXFIL missed, non-gap malicious) | 0 |
-| Known-gap miss (EXFIL missed, documented gap) | 4 |
+| Known-gap miss (EXFIL missed, documented gap) | 7 |
 | Bonus catch (EXFIL achieved, documented gap) | 0 |
-| True negative (benign, no trip) | 26 |
+| True negative (benign, no trip) | 30 |
 | False positive — tripwire (benign, SUSPICIOUS only) | 7 |
 | False positive — EXFIL (benign, severe) | 0 |
 
@@ -40,8 +40,8 @@ Two outcome dimensions are scored per scenario, and they answer different questi
 
 | Variant | TP | FN | GapMiss | Bonus | TN | FP (tripwire) | FP (EXFIL) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `ebpf_variant_b` | 4 | 0 | 1 | 0 | 2 | 2 | 0 |
-| `proxy_variant_a` | 16 | 0 | 3 | 0 | 22 | 5 | 0 |
+| `ebpf_variant_b` | 6 | 0 | 3 | 0 | 2 | 2 | 0 |
+| `proxy_variant_a` | 24 | 0 | 4 | 0 | 26 | 5 | 0 |
 | `sensor_variant_b` | 1 | 0 | 0 | 0 | 2 | 0 | 0 |
 
 ## Known-gap misses (expected)
@@ -50,9 +50,12 @@ Each corresponds to a `*_KnownGap` unit test in `internal/engine` — the corpus
 
 | Scenario | Gap |
 |---|---|
-| `malicious_gap_non_gzip_compressor` | TestCheckOverlap_CompressedOther_KnownGap — only gzip+base64 is a precomputed canonical form; other compressors produce byte sequences with no registered variant to match |
+| `malicious_gap_custom_cipher` | TestCheckOverlap_CustomCipher_KnownGap — brotli/zstd/lz4 are precomputed canonical forms (ROADMAP §9); arbitrary ciphers still produce byte sequences with no registered variant to match |
 | `malicious_gap_payload_truncated` | TestCheckOverlap_PayloadTruncated_KnownGap — secrets past the configured/compiled capture window (ebpf.payload_capture_bytes ≤ PAYLOAD_MAX=1024) are not in PayloadExcerpt |
-| `malicious_gap_untagged_tool_on_sensitive_server` | EvaluateRequest only gates tools tagged external_sink; an untagged tool on a sensitive_source server is forwarded without overlap check — operators must tag every write/egress tool (Option C). Future hardening: optional sink-suspicion inheritance on sensitive servers (ROADMAP §2) |
+| `malicious_gap_untagged_tool_on_sensitive_server` | EvaluateRequest only gates tools tagged external_sink by default; empty tool_tags override shadows server provides_tags. Opt-in server_defaults.inherit_sink_suspicion closes this — empty [] still inherits; sole exemption is sink_suspicion_allowlist (see malicious_proxy_a_untagged_inherit_sink / benign_proxy_a_inherit_allowlisted_note) |
+| `malicious_gap_egress_cross_destination_split` | TestEgressReassembly_CrossDestinationSplit_KnownGap — egress reassembly is intentionally keyed by (pid,destination). Fragments split across different destinations are not concatenated. |
+| `malicious_gap_egress_slow_trickle` | TestEgressReassembly_SlowTrickle_KnownGap — finite egress_fragment_max_age bounds reassembly; fragments arriving slower than the window re-miss. |
+| `malicious_gap_container_inspect_bomb` | ROADMAP §20 aborts container walks on hard caps (max_parts / max_decompressed_bytes / max_inspect_ms / max_descent_depth / encrypted). An aborted walk never invents EXFIL; classifyTrip may soft-SUSPICIOUS with reason container_inspect_limit when AllLit. Zip-bombs and depth>2 nests remain NamedGaps. |
 | `malicious_gap_semantic_paraphrase_exfil` | Detection boundary — Interlock is byte/encoding overlap, not semantic: paraphrases, descriptions, and meaning-preserving transforms without a registered variant do not reach EXFIL (see docs/detection_boundary.md). Paired benign TN: benign_proxy_a_paraphrase_summary |
 
 ## False positives (benign scenarios that tripped)
@@ -83,7 +86,7 @@ Each corresponds to a `*_KnownGap` unit test in `internal/engine` — the corpus
 
 **Some of that floor isn't coincidental at all — it's guaranteed.** `-----BEGIN PRIVATE KEY-----` is a fixed, universal 27-byte string, identical in every PEM key ever written; it alone clears `content_bind_min_len`'s 16-byte bar. `benign_proxy_a_pem_header_universal_collision` pins the deterministic version of the accident above: an untrusted fetched doc and an unrelated sink message both merely *reference* PEM format (no real key, no quoting relationship, nothing secret) and still soft-trip on the shared header line. Any fetch-heavy agent that discusses key formats — security docs, compliance reminders, runbooks — will hit this whenever a sink message happens to mention the same header, not just when someone happens to draft two strings that collide.
 
-**Watch the ratio, not any single pin.** The any-trip rate is currently 21.2% — it has already moved three times (from 13.3%, each move driven by a real, measured finding — a restored tripwire's own false-positive surface, or a newly identified guaranteed-collision shape — not a rounding choice). Every `ExpectTripByDesign: true` scenario is a deliberate design pin (this leg lights, on purpose, for this reason), and each is individually correct today, but the number that matters operationally is the trend across pins as the corpus keeps growing, not whether any one row currently reads true. See [`cve_corpus.md`](cve_corpus.md) for the most recent addition and why it was added.
+**Watch the ratio, not any single pin.** The any-trip rate is currently 18.9% — it has already moved three times (from 13.3%, each move driven by a real, measured finding — a restored tripwire's own false-positive surface, or a newly identified guaranteed-collision shape — not a rounding choice). Every `ExpectTripByDesign: true` scenario is a deliberate design pin (this leg lights, on purpose, for this reason), and each is individually correct today, but the number that matters operationally is the trend across pins as the corpus keeps growing, not whether any one row currently reads true. See [`cve_corpus.md`](cve_corpus.md) for the most recent addition and why it was added.
 
 ## Reproduce
 

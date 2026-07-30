@@ -163,6 +163,16 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 				fmt.Sprintf("call blocked by Interlock: %s", decision.Reason))
 			return &DispatchResult{Response: data, Blocked: true}, nil
 		}
+		if len(decision.ForwardArgs) > 0 {
+			if rewritten, err := replaceToolCallArguments(frame, decision.ForwardArgs); err == nil {
+				frame = rewritten
+			} else {
+				p.log.Printf("[SECURITY] vault detokenize frame rewrite failed — refusing to forward: %v", err)
+				data := p.buildErrorResponse(msg.ID, -32000,
+					"call blocked by Interlock: vault forward rewrite failed")
+				return &DispatchResult{Response: data, Blocked: true}, nil
+			}
+		}
 	}
 
 	p.logEvent(ev)
@@ -210,6 +220,31 @@ func (p *Proxy) buildErrorResponse(id json.RawMessage, code int, message string)
 	return data
 }
 
+// replaceToolCallArguments sets params.arguments on a tools/call frame to args.
+// Used after vault detokenization so the child receives real secrets only when
+// EvaluateRequest allowed an authorized sink.
+func replaceToolCallArguments(frame []byte, args json.RawMessage) ([]byte, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(frame, &root); err != nil {
+		return nil, err
+	}
+	paramsRaw, ok := root["params"]
+	if !ok {
+		return nil, fmt.Errorf("tools/call frame missing params")
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		return nil, err
+	}
+	params["arguments"] = args
+	newParams, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	root["params"] = newParams
+	return json.Marshal(root)
+}
+
 func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []byte) {
 	sess := rt.Session
 	ev := sess.CreateEvent(frame, model.ServerToAgent, sc.proc.ID, sc.proc.PID)
@@ -227,6 +262,9 @@ func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []b
 
 	if p.engine != nil && ev.ToolName != "" {
 		p.engine.IngestResult(ev)
+		if p.engine.VaultEnabled() {
+			frame = p.engine.VaultRewriteFrame(ev.SessionID, frame)
+		}
 	}
 	p.logEvent(ev)
 

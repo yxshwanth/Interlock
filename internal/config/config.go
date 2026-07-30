@@ -123,13 +123,87 @@ func (s SessionsConfig) IdleTimeoutDuration() time.Duration {
 	return d
 }
 
+// SandboxConfig controls spawn-time isolation for proxy-mode child MCP servers.
+// Defaults are all false (opt-in). Sensor-only / DaemonSet deployments do not
+// spawn children and ignore this block.
+type SandboxConfig struct {
+	// NetNS, when true, places each spawned child in a fresh network namespace
+	// (CLONE_NEWNET): loopback-only, no route to the host NIC, no resolver.
+	// Requires CAP_SYS_ADMIN (or root) at spawn. Default false.
+	NetNS bool `yaml:"netns"`
+	// SpawnAllowlist lists additional resolved executables permitted at spawn
+	// beyond each server's declared command (e.g. helper binaries).
+	SpawnAllowlist []string `yaml:"spawn_allowlist"`
+}
+
+// VaultConfig controls opt-in token vaulting (ROADMAP §10): replace extracted
+// secrets with inert dummies in agent-visible payloads. Default disabled.
+// When enabled, detokenization is off unless a tool appears in Authorize.
+type VaultConfig struct {
+	Enabled   bool                  `yaml:"enabled"`
+	Authorize []VaultAuthorizeEntry `yaml:"authorize"`
+}
+
+// VaultAuthorizeEntry names a sink tool that may receive real secrets after
+// EvaluateRequest allows the call. SecretClasses lists classes (v1: "extracted"
+// or "*") the tool may receive.
+type VaultAuthorizeEntry struct {
+	Tool          string   `yaml:"tool"`
+	SecretClasses []string `yaml:"secret_classes"`
+}
+
+// ServerDefaultsConfig controls opt-in tagging inheritance (ROADMAP §14).
+// Default InheritSinkSuspicion=false preserves explicit-tag Option C.
+type ServerDefaultsConfig struct {
+	// InheritSinkSuspicion, when true, treats any tool on a server whose
+	// provides_tags include sensitive_source as an external_sink candidate
+	// unless the tool is listed in SinkSuspicionAllowlist. Restart-required
+	// (tagger is not SIGHUP-rebuilt).
+	//
+	// Empty tool_tags overrides (e.g. internal_note: []) do NOT exempt a tool —
+	// they still inherit. The sole exemption path is SinkSuspicionAllowlist.
+	InheritSinkSuspicion   bool     `yaml:"inherit_sink_suspicion"`
+	SinkSuspicionAllowlist []string `yaml:"sink_suspicion_allowlist"`
+}
+
 // TrifectaConfig controls leg decay and SUSPICIOUS content-binding thresholds.
 type TrifectaConfig struct {
-	LegTTL            string `yaml:"leg_ttl"`              // Go duration; default 30m
-	DecayAfterCalls   int    `yaml:"decay_after_calls"`    // default 32; 0 keeps default
-	ContentBindMinLen int    `yaml:"content_bind_min_len"` // default 16; 0 keeps default
-	FragmentMaxChunks int    `yaml:"fragment_max_chunks"`  // rolling sensitive-text buffer; default 16
-	FragmentMaxBytes  int    `yaml:"fragment_max_bytes"`   // total buffer budget; default 65536
+	LegTTL            string `yaml:"leg_ttl"`                   // Go duration; default 30m
+	DecayAfterCalls   int    `yaml:"decay_after_calls"`         // default 32; 0 keeps default
+	ContentBindMinLen int    `yaml:"content_bind_min_len"`      // default 16; 0 keeps default
+	FragmentMaxChunks int    `yaml:"fragment_max_chunks"`       // rolling sensitive-text buffer; default 16
+	FragmentMaxBytes  int    `yaml:"fragment_max_bytes"`        // total buffer budget; default 65536
+	ChunkMatchBytes   int    `yaml:"chunk_match_bytes"`         // long-secret chunk size N; default 32
+	ChunkMatchMinLen  int    `yaml:"chunk_match_min_value_len"` // only chunk values ≥ this; default 64
+	MaxDecodeDepth    int    `yaml:"max_decode_depth"`          // recursive decoder depth; default 5, clamp [3,5]
+	// EgressReassemblyEnabled controls bounded payload reassembly on the eBPF
+	// egress path (write/writev/sendto/sendmsg/dns) before overlap checks.
+	// Default true; set false to disable and return to per-syscall excerpts only.
+	EgressReassemblyEnabled *bool `yaml:"egress_reassembly_enabled"`
+	// EgressFragmentMaxChunks is the per-(pid,destination) FIFO chunk cap.
+	// Default 16.
+	EgressFragmentMaxChunks int `yaml:"egress_fragment_max_chunks"`
+	// EgressFragmentMaxBytes is the per-(pid,destination) byte budget for
+	// reassembled payload history. Default 4096 bytes.
+	EgressFragmentMaxBytes int `yaml:"egress_fragment_max_bytes"`
+	// EgressFragmentMaxAge bounds how long fragments may accumulate for one
+	// flow before reset (slow-trickle boundary). Default 10s.
+	EgressFragmentMaxAge string `yaml:"egress_fragment_max_age"`
+	// EgressMaxDestinationsPerSession bounds active (pid,destination) reassembly
+	// flows retained per session. Default 32.
+	EgressMaxDestinationsPerSession int `yaml:"egress_max_destinations_per_session"`
+	// ContainerInspectEnabled controls bounded ZIP/gzip/zlib/tar descent on
+	// registration and overlap paths (ROADMAP §20). Default true.
+	ContainerInspectEnabled *bool `yaml:"container_inspect_enabled"`
+	// ContainerMaxDecompressedBytes is the cumulative decompressed budget
+	// per InspectContainer walk. Default 10 MiB.
+	ContainerMaxDecompressedBytes int `yaml:"container_max_decompressed_bytes"`
+	// ContainerMaxDescentDepth caps nested container walks. Default 2.
+	ContainerMaxDescentDepth int `yaml:"container_max_descent_depth"`
+	// ContainerMaxParts caps archive members walked. Default 100.
+	ContainerMaxParts int `yaml:"container_max_parts"`
+	// ContainerMaxInspectMs is the wall-time budget per walk. Default 50ms.
+	ContainerMaxInspectMs int `yaml:"container_max_inspect_ms"`
 }
 
 // LegTTLDuration parses LegTTL with a default of 30 minutes.
@@ -176,11 +250,139 @@ func (t TrifectaConfig) FragmentMaxBytesOrDefault() int {
 	return t.FragmentMaxBytes
 }
 
+// ChunkMatchBytesOrDefault returns the contiguous chunk size N (default 32).
+func (t TrifectaConfig) ChunkMatchBytesOrDefault() int {
+	if t.ChunkMatchBytes <= 0 {
+		return 32
+	}
+	return t.ChunkMatchBytes
+}
+
+// ChunkMatchMinLenOrDefault returns the minimum tainted-value length before
+// chunk precomputation (default 64). Short tokens stay full-string-only so
+// partial prefixes do not EXFIL.
+func (t TrifectaConfig) ChunkMatchMinLenOrDefault() int {
+	if t.ChunkMatchMinLen <= 0 {
+		return 64
+	}
+	return t.ChunkMatchMinLen
+}
+
+// MaxDecodeDepthOrDefault returns the recursive decoder depth budget
+// (default 5, clamped to [3, 5] — ROADMAP §15). Default was raised from 3→5
+// after the benign corpus showed EXFIL FP 0.0% at depths 3/4/5 (latency flat).
+func (t TrifectaConfig) MaxDecodeDepthOrDefault() int {
+	return ClampMaxDecodeDepth(t.MaxDecodeDepth)
+}
+
+// EgressReassemblyEnabledOrDefault returns whether egress flow reassembly is
+// enabled (default true).
+func (t TrifectaConfig) EgressReassemblyEnabledOrDefault() bool {
+	if t.EgressReassemblyEnabled == nil {
+		return true
+	}
+	return *t.EgressReassemblyEnabled
+}
+
+// EgressFragmentMaxChunksOrDefault returns per-flow chunk cap (default 16).
+func (t TrifectaConfig) EgressFragmentMaxChunksOrDefault() int {
+	if t.EgressFragmentMaxChunks <= 0 {
+		return 16
+	}
+	return t.EgressFragmentMaxChunks
+}
+
+// EgressFragmentMaxBytesOrDefault returns per-flow byte budget (default 4096).
+func (t TrifectaConfig) EgressFragmentMaxBytesOrDefault() int {
+	if t.EgressFragmentMaxBytes <= 0 {
+		return 4 * 1024
+	}
+	return t.EgressFragmentMaxBytes
+}
+
+// EgressFragmentMaxAgeOrDefault returns max fragment window age (default 10s).
+func (t TrifectaConfig) EgressFragmentMaxAgeOrDefault() time.Duration {
+	return parsePositiveDuration(t.EgressFragmentMaxAge, 10*time.Second)
+}
+
+// EgressMaxDestinationsOrDefault returns active flow cap per session (default 32).
+func (t TrifectaConfig) EgressMaxDestinationsOrDefault() int {
+	if t.EgressMaxDestinationsPerSession <= 0 {
+		return 32
+	}
+	return t.EgressMaxDestinationsPerSession
+}
+
+// ContainerInspectEnabledOrDefault returns whether container descent is on (default true).
+func (t TrifectaConfig) ContainerInspectEnabledOrDefault() bool {
+	if t.ContainerInspectEnabled == nil {
+		return true
+	}
+	return *t.ContainerInspectEnabled
+}
+
+// ContainerMaxDecompressedBytesOrDefault returns cumulative decompress budget (default 10 MiB).
+func (t TrifectaConfig) ContainerMaxDecompressedBytesOrDefault() int {
+	if t.ContainerMaxDecompressedBytes <= 0 {
+		return 10 * 1024 * 1024
+	}
+	return t.ContainerMaxDecompressedBytes
+}
+
+// ContainerMaxDescentDepthOrDefault returns nested container depth cap (default 2).
+func (t TrifectaConfig) ContainerMaxDescentDepthOrDefault() int {
+	if t.ContainerMaxDescentDepth <= 0 {
+		return 2
+	}
+	return t.ContainerMaxDescentDepth
+}
+
+// ContainerMaxPartsOrDefault returns archive member walk cap (default 100).
+func (t TrifectaConfig) ContainerMaxPartsOrDefault() int {
+	if t.ContainerMaxParts <= 0 {
+		return 100
+	}
+	return t.ContainerMaxParts
+}
+
+// ContainerMaxInspectMsOrDefault returns per-walk wall budget in ms (default 50).
+func (t TrifectaConfig) ContainerMaxInspectMsOrDefault() int {
+	if t.ContainerMaxInspectMs <= 0 {
+		return 50
+	}
+	return t.ContainerMaxInspectMs
+}
+
+// DefaultMaxDecodeDepth is the recursive decoder default (ROADMAP §15).
+// Chosen by EXFIL-FP curve (0% at 3/4/5), not latency — see
+// TestCorpus_DecodeDepthFPCurve.
+const DefaultMaxDecodeDepth = 5
+
+// minMaxDecodeDepth is the lowest operator-selectable budget (reduce from default).
+const minMaxDecodeDepth = 3
+
+// ClampMaxDecodeDepth clamps n into [3, 5]. Zero / negative → default 5.
+func ClampMaxDecodeDepth(n int) int {
+	if n <= 0 {
+		return DefaultMaxDecodeDepth
+	}
+	if n < minMaxDecodeDepth {
+		return minMaxDecodeDepth
+	}
+	if n > 5 {
+		return 5
+	}
+	return n
+}
+
 // EBPFConfig controls kernel capture knobs for Variant B / sensor mode.
 type EBPFConfig struct {
 	// PayloadCaptureBytes limits how many bytes of each write/sendto are
-	// copied into the ring buffer (default 512). Clamped to [64, 1024];
-	// raising above the compiled PAYLOAD_MAX requires rebuilding the BPF object.
+	// copied into the ring buffer. Default is 1024 = compiled PAYLOAD_MAX
+	// (ROADMAP §16 raised 512→1024), so this knob only reduces capture
+	// (ring-buffer pressure on high-throughput nodes). Clamped to [64, 1024];
+	// values above PAYLOAD_MAX require rebuilding the BPF object with a
+	// higher PAYLOAD_MAX (eBPF stack / verifier limits).
 	PayloadCaptureBytes int `yaml:"payload_capture_bytes"`
 
 	// LSMEnforce opts into the kernel-level connect() quarantine hook
@@ -194,10 +396,10 @@ type EBPFConfig struct {
 	LSMEnforce bool `yaml:"lsm_enforce"`
 }
 
-// PayloadCaptureBytesOrDefault returns the runtime capture window (default 512).
+// PayloadCaptureBytesOrDefault returns the runtime capture window (default 1024).
 func (e EBPFConfig) PayloadCaptureBytesOrDefault() int {
 	if e.PayloadCaptureBytes <= 0 {
-		return 512
+		return 1024
 	}
 	return e.PayloadCaptureBytes
 }
@@ -299,11 +501,16 @@ type Config struct {
 	FailClosed       FailClosedConfig    `yaml:"fail_closed"`
 	Enforcement      string              `yaml:"enforcement"`
 	Trifecta         TrifectaConfig      `yaml:"trifecta"`
+	Sandbox          SandboxConfig       `yaml:"sandbox"`
+	Vault            VaultConfig         `yaml:"vault"`
+	ServerDefaults   ServerDefaultsConfig `yaml:"server_defaults"`
 	TaintBridge      TaintBridgeConfig   `yaml:"taint_bridge"`
 	EgressAllowlist  []string            `yaml:"egress_allowlist"`
 	SensitivePaths   []string            `yaml:"sensitive_paths"` // openat pathname prefixes; empty = ignore
-	Servers          []ServerConfig      `yaml:"servers"`
-	ToolTags         map[string][]string `yaml:"tool_tags"`
+	Servers               []ServerConfig      `yaml:"servers"`
+	ResolvedSpawnCommands map[string]string `yaml:"-"` // server ID -> resolved executable (set at load)
+	ResolvedSpawnAllowlist []string         `yaml:"-"` // resolved sandbox.spawn_allowlist
+	ToolTags              map[string][]string `yaml:"tool_tags"`
 	UntrustedOrigins struct {
 		ToolResults bool `yaml:"tool_results"`
 		WebFetches  bool `yaml:"web_fetches"`
@@ -476,6 +683,19 @@ func (c *Config) validate(sensorMode bool) error {
 			return fmt.Errorf("server[%d]: duplicate id %q", i, s.ID)
 		}
 		seen[s.ID] = true
+	}
+
+	if !sensorMode {
+		resolved, err := c.BuildResolvedSpawnCommands()
+		if err != nil {
+			return err
+		}
+		c.ResolvedSpawnCommands = resolved
+		extras, err := c.BuildResolvedSpawnExtras()
+		if err != nil {
+			return err
+		}
+		c.ResolvedSpawnAllowlist = extras
 	}
 
 	return nil

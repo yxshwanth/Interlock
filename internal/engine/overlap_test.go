@@ -237,8 +237,79 @@ func TestCheckOverlap_Compressed(t *testing.T) {
 	}
 }
 
-func TestCheckOverlap_CompressedOther_KnownGap(t *testing.T) {
-	t.Skip("known gap: zstd/deflate-raw/multi-layer compression not in canonical set")
+func TestCheckOverlap_BrotliBase64(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	encoded, err := brotliBase64(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + encoded + `"}`)
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap on brotli+base64 payload")
+	}
+	if hit.MatchForm != string(FormBrotliBase64) {
+		t.Fatalf("MatchForm = %q, want brotli_base64", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_ZstdBase64(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	encoded, err := zstdBase64(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + encoded + `"}`)
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap on zstd+base64 payload")
+	}
+	if hit.MatchForm != string(FormZstdBase64) {
+		t.Fatalf("MatchForm = %q, want zstd_base64", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_LZ4Base64(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	encoded, err := lz4Base64(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + encoded + `"}`)
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("expected overlap on lz4+base64 payload")
+	}
+	if hit.MatchForm != string(FormLZ4Base64) {
+		t.Fatalf("MatchForm = %q, want lz4_base64", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_CustomCipher_KnownGap(t *testing.T) {
+	// XOR-then-base64 stands in for an arbitrary cipher outside the closed
+	// compressor set — must remain a miss (see malicious_gap_custom_cipher).
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	xored := make([]byte, len(secret))
+	for i := range secret {
+		xored[i] = secret[i] ^ 0x5a
+	}
+	encoded := base64.StdEncoding.EncodeToString(xored)
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + encoded + `"}`)
+	if hit := CheckOverlap(tainted, args); hit != nil {
+		t.Fatalf("custom cipher should miss EXFIL overlap, got match_form=%q", hit.MatchForm)
+	}
 }
 
 func TestCheckOverlap_DoubleEncoded(t *testing.T) {
@@ -278,6 +349,36 @@ func TestCheckOverlap_TripleEncoded(t *testing.T) {
 	}
 	if !strings.HasPrefix(hit.MatchForm, "decoded_") {
 		t.Fatalf("MatchForm = %q, want decoded_* path", hit.MatchForm)
+	}
+}
+
+func TestCheckOverlap_Depth4_ConfigGated(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	// Five encode layers need four decodes — misses when budget lowered to 3.
+	nested := base64.StdEncoding.EncodeToString([]byte(secret))
+	nested = hex.EncodeToString([]byte(nested))
+	nested = base64.StdEncoding.EncodeToString([]byte(nested))
+	nested = hex.EncodeToString([]byte(nested))
+	nested = base64.StdEncoding.EncodeToString([]byte(nested))
+
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	args := json.RawMessage(`{"body": "` + nested + `"}`)
+
+	SetMaxDecodeDepth(3)
+	if hit := CheckOverlap(tainted, args); hit != nil {
+		t.Fatalf("depth 3 should miss 5-layer nest, got %q", hit.MatchForm)
+	}
+
+	SetMaxDecodeDepth(DefaultMaxDecodeDepth) // default 5
+	defer SetMaxDecodeDepth(DefaultMaxDecodeDepth)
+	hit := CheckOverlap(tainted, args)
+	if hit == nil {
+		t.Fatal("default depth should catch 5-layer nest")
+	}
+	if !strings.HasPrefix(hit.MatchForm, "decoded_") {
+		t.Fatalf("MatchForm = %q, want decoded_*", hit.MatchForm)
 	}
 }
 

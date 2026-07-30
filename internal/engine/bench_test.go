@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -141,16 +142,23 @@ func BenchmarkCheckOverlap_MissPath(b *testing.B) {
 
 // BenchmarkCheckOverlap_DecodeMissPath measures miss-path cost when sink leaves
 // look base64-encodable (decoder runs) but do not unwrap to any registered secret.
+// Sub-benchmarks publish the depth 3/4/5 latency curve (ROADMAP §15).
 func BenchmarkCheckOverlap_DecodeMissPath(b *testing.B) {
 	tainted := benchTaintedScale(1000)
-	// Valid base64 of unrelated ASCII — forces decode attempts, no secret match.
 	noise := base64.StdEncoding.EncodeToString([]byte("status update: all clear, no tokens in this payload at all"))
 	args := json.RawMessage(`{"to":"ops@example.com","body":"` + noise + `"}`)
-	b.ResetTimer()
-	for b.Loop() {
-		if hit := CheckOverlap(tainted, args); hit != nil {
-			b.Fatal("expected miss")
-		}
+	for _, depth := range []int{3, 4, 5} {
+		depth := depth
+		b.Run("depth"+strconv.Itoa(depth), func(b *testing.B) {
+			SetMaxDecodeDepth(depth)
+			defer SetMaxDecodeDepth(DefaultMaxDecodeDepth)
+			b.ResetTimer()
+			for b.Loop() {
+				if hit := CheckOverlap(tainted, args); hit != nil {
+					b.Fatal("expected miss")
+				}
+			}
+		})
 	}
 }
 

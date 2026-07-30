@@ -11,9 +11,9 @@ func TestCanonicalEncodings_Deterministic(t *testing.T) {
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	forms := CanonicalEncodings(secret)
 
-	// 5 single + 4 depth-2 + gzip_base64
-	if len(forms) < 9 {
-		t.Fatalf("expected at least 9 forms, got %d", len(forms))
+	// 5 single + 4 depth-2 + gzip/brotli/zstd/lz4_base64
+	if len(forms) != 13 {
+		t.Fatalf("expected 13 forms, got %d", len(forms))
 	}
 
 	want := map[string]string{
@@ -27,11 +27,21 @@ func TestCanonicalEncodings_Deterministic(t *testing.T) {
 		string(FormBase64URL):  base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(secret))),
 		string(FormBase64Rev):  base64.StdEncoding.EncodeToString([]byte(reverseString(secret))),
 	}
-	gz, err := gzipBase64(secret)
-	if err != nil {
-		t.Fatal(err)
+	for _, pair := range []struct {
+		form EncodingForm
+		fn   func(string) (string, error)
+	}{
+		{FormGzipBase64, gzipBase64},
+		{FormBrotliBase64, brotliBase64},
+		{FormZstdBase64, zstdBase64},
+		{FormLZ4Base64, lz4Base64},
+	} {
+		v, err := pair.fn(secret)
+		if err != nil {
+			t.Fatalf("%s: %v", pair.form, err)
+		}
+		want[string(pair.form)] = v
 	}
-	want[string(FormGzipBase64)] = gz
 
 	seen := map[string]bool{}
 	for _, f := range forms {

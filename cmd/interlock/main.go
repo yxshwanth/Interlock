@@ -102,7 +102,7 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 	}
 
 	metrics := observability.NewMetrics()
-	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg}
+	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg, Engine: eng}
 	if async, ok := evidenceSink.(*engine.AsyncEvidenceSink); ok {
 		rt.Async = async
 	}
@@ -339,7 +339,7 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	}
 
 	metrics := observability.NewMetrics()
-	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg}
+	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg, Engine: eng}
 	if async, ok := evidenceSink.(*engine.AsyncEvidenceSink); ok {
 		rt.Async = async
 	}
