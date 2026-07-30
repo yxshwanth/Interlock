@@ -126,7 +126,7 @@ HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an
 - Sendto / named sendmsg: **self-contained** dest (family+16B+port) + first-N payload (sendmsg: first iov); allowlist on dest IP; port **53** tagged as `dns` in userspace. No prior `connect()` required. Unnamed sendmsg (`msg_name` NULL) correlates like write.
 - Openat: pathname (≤128 bytes); userspace matches `sensitive_paths` prefixes (empty list = ignore).
 - Events pushed to **two ring buffers** (`BPF_MAP_TYPE_RINGBUF`, 256KB each): **routine** `events` for `connect`/`openat`, **critical** `critical_events` for `write`/`writev`/`sendto`/`sendmsg`/`lsm_deny` (EXFIL carriers + kernel-deny evidence). Reserve failures increment `drop_count` or `critical_drop_count` respectively, surfaced via `Sensor.DropCount()` / `Sensor.CriticalDropCount()`.
-- Compiled from BPF C via `bpf2go` (cilium/ebpf), loaded by Go at runtime. CO-RE via BTF at `/sys/kernel/btf/vmlinux`.
+- Compiled from BPF C via `bpf2go` (cilium/ebpf), loaded by Go at runtime. Loading uses kernel BTF at `/sys/kernel/btf/vmlinux` (DaemonSet hostPath). The probe body copies userspace dest/path/payload with `bpf_probe_read_user` / `_str`; it does **not** use `BPF_CORE_READ` field relocation (the `bpf_core_read.h` include is present but unused in the C body). ARM / cross-distro portability remains deferred.
 - **Still deferred on this plane:** larger/dynamic capture / `tcp_sendmsg` before segmentation; connected sendto/sendmsg with NULL name stays “correlate like write.” **Out of scope:** DoH/DoT (network-layer DNS controls).
 
 **Mostly detect-only at the kernel, plus an opt-in quarantine (v0.3 Phase 2, Slice 1).** The sensor **observes**; the eBPF tracepoints do not block anything. Containment happens in **userspace via kill-on-detect**, and it is **immediate**: `sendto`/`sendmsg`/`write`/`writev` `EXFIL` (payload overlap) and `openat` trips kill promptly, with no waiting window. A bare `connect()` never triggers a kill on its own, at any tier — hard containment is reserved for `EXFIL` (ROADMAP §1), and `connect()` carries no payload at the kernel level so it can never itself prove `EXFIL`. What a payload-less, non-allowlisted `connect()` *can* still do, on a proxy-tied session with every other trifecta leg lit, is trip soft `SUSPICIOUS` (evidence/alert, `detected_only`, no containment) — a real tripwire that a self-authored corpus never exercised and a CVE-derived reconstruction (`cve_2025_53967_figma_reverse_shell_connect_only_gap`, [`docs/cve_corpus.md`](cve_corpus.md)) found had been silently deleted as an unintended side effect of the ROADMAP §1 content-binding fix (`CheckContentBind` rejected an empty sink string before any comparison) — now fixed in `classifyTrip` (`internal/engine/engine.go`). Pure sensor-only DaemonSet mode never lights `untrusted_content_present`, so it can only ever reach `EXFIL`, never this `SUSPICIOUS` tier. An earlier "wait ~100 ms after a suspicious connect for a corroborating write, then kill regardless" design predates ROADMAP §1's "hard block only on `EXFIL`" doctrine and has been removed — it could never legitimately fire under that doctrine (SUSPICIOUS never maps to a containment action), and its removal changes no observable timing: `EXFIL` containment was always immediate, never routed through it. `ebpf.lsm_enforce` (default `false`) additionally attaches a `BPF_PROG_TYPE_LSM` hook on `security_socket_connect`: the instant the existing write/`sendto`/`sendmsg`/`writev` payload-overlap path confirms EXFIL for a PID/cgroup, the sensor writes that PID/cgroup into a BPF map, and **any further `connect()`** from it is denied in-kernel with `-EPERM` before the socket forms — no reliance on the kill racing the process. **This does not move detection earlier.** `connect()` carries no payload, so the hook cannot distinguish a merely non-allowlisted destination from actual exfiltration at connect-time — that determination still requires the payload-bearing syscall. **Honest consequence, unchanged for the first packet:** for Variant B the first packet (and possibly a short write) may have already left when kill fires — Interlock **severs the channel and kills the process before it can exfiltrate further**, rather than perfectly preventing the first byte; the resulting evidence is `contained_by_kill`, never `prevented`. Only *repeat* connection attempts from the already-flagged PID/cgroup — forked children sharing the cgroup, a kill that races, or a respawned process — get `prevented`. Requires `CONFIG_BPF_LSM=y` and `"bpf"` active in `/sys/kernel/security/lsm` (see [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md)); attach failure fails soft with a `[SECURITY]` warning and the sensor keeps running tracepoint-only. Variant A (proxy) is true prevention; Variant B (eBPF) is detection + containment, with this quarantine as defense-in-depth on top.
@@ -147,9 +147,9 @@ HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an
 
 Consumes `InterceptedEvent` (Plane 1) and `SyscallEvent` (Plane 2); **owns `SessionState`**; emits `Decision`s (→ proxy) and `EvidenceRecord`s (→ sink).
 
-**Correlation (syscall → session).** eBPF events carry a PID. The proxy maintains a `PIDRegistry` mapping `(pid, start_time)` → `{session_id, server_id}` for each per-session backend child. The sensor resolves `SessionID` before calling `IngestSyscall`. HTTP mode spawns an isolated server pool per MCP session; STDIO mode runs a single session.
+**Correlation (syscall → session).** eBPF events carry a PID (and optionally a cgroup). The proxy maintains a `PIDRegistry` mapping `(pid, start_time)` → `{session_id, server_id}` for each per-session backend child; `Lookup` is by PID. The sensor resolves `SessionID` before calling `IngestSyscall` (K8s: cgroup → pod). There is **no** timestamp “recency window” joining syscall events to recent proxy frames — attribution is identity lookup, then evaluation against that session’s legs and taints. Closest real windows: sensor `SuspiciousConnectTTL` (5s, write↔prior connect), leg TTL / call decay, egress fragment max age.
 
-**Time alignment.** All events carry a monotonic timestamp (`ts_mono_ns`) from a shared reference. Syscall events are joined to recent proxy events within a **recency window** so a `connect()` can be attributed to the sensitive read that preceded it.
+**Evidence clocks.** Proxy `InterceptedEvent.TSMono` (`ts_mono_ns`) is set from `time.Now().UnixNano()` (wall clock), despite the field name. BPF event times come from `bpf_ktime_get_ns()` (boot-relative). Those domains are not comparable; evidence timelines use engine-assigned `timeline_seq`, not raw nanoseconds. See [`INTERLOCK.md`](INTERLOCK.md) §9.
 
 ---
 
@@ -187,9 +187,9 @@ Operators running fetch-heavy agents (web fetch → quote/summarize into a sink)
 
 | Action | When | Effect |
 |---|---|---|
-| `prevented` | Variant A, block mode, **EXFIL only** | Call never forwarded; synthesized JSON-RPC error |
+| `prevented` | Variant A block mode + **EXFIL**, **or** Variant B LSM *repeat* `connect()` after EXFIL (`ebpf.lsm_enforce`) | Call never forwarded / `-EPERM` |
 | `allowed_monitor` | Monitor mode (any verdict), **or** Variant A `SUSPICIOUS` in block mode | Call goes through; evidence logged |
-| `contained_by_kill` | Variant B (eBPF), **EXFIL only** | Offending child killed; first packet may escape |
+| `contained_by_kill` | Variant B (eBPF), **EXFIL only** | Offending child killed immediately; first packet may escape |
 | `detected_only` | Variant B, `SUSPICIOUS` | Detected and logged; no kill |
 
 **Reset / decay.** Legs are session-scoped. Configurable `trifecta.leg_ttl` (default 30m) and `trifecta.decay_after_calls` (default 32) dim sticky legs so a poisoned session does not forever treat every sink as suspicious. Tainted values are **not** cleared on leg decay — a late sink that still carries a secret can still reach EXFIL.
@@ -302,15 +302,15 @@ type SessionState struct {
 // Verdict = what was concluded (detection). Action = what was done (enforcement).
 type Verdict string
 const (
-    VerdictExfil      Verdict = "EXFIL"      // high confidence: all legs + value overlap
-    VerdictSuspicious Verdict = "SUSPICIOUS"  // lower confidence: all legs, no overlap
+    VerdictExfil      Verdict = "EXFIL"      // overlap against registered taint (AllLit not required)
+    VerdictSuspicious Verdict = "SUSPICIOUS"  // AllLit + bind / bare-connect / container-abort
 )
 type Action string
 const (
-    ActionPrevented    Action = "prevented"        // Variant A block: call never forwarded
-    ActionAllowed      Action = "allowed_monitor"   // monitor mode: call went through
-    ActionContained    Action = "contained_by_kill" // Variant B: child killed (Week 3)
-    ActionDetectedOnly Action = "detected_only"     // detected, no enforcement (kill too aggressive)
+    ActionPrevented    Action = "prevented"        // Variant A EXFIL block, or Variant B LSM repeat-connect deny
+    ActionAllowed      Action = "allowed_monitor"   // monitor mode or soft SUSPICIOUS on Variant A
+    ActionContained    Action = "contained_by_kill" // Variant B EXFIL: immediate SIGKILL
+    ActionDetectedOnly Action = "detected_only"     // Variant B SUSPICIOUS: evidence only
 )
 type Variant string
 const (
@@ -453,7 +453,7 @@ Full TCB threat model (blind sensor, poison bridge, fail-open, misattribution, e
 
 ## 13. Known gaps and deferred work
 
-Priority tiers below are the design SoT for what Interlock does *not* catch yet (or never will). Execution queue: [`ROADMAP.md`](ROADMAP.md) **Next build order**. A tool that claims no gaps is lying; a tool that names them is honest.
+Priority tiers below are the design SoT for what Interlock does *not* catch yet (or never will). Execution queue: [`ROADMAP.md`](ROADMAP.md) **Active queue** (open) / **Shipped ledger** (`§N` IDs). A tool that claims no gaps is lying; a tool that names them is honest.
 
 ### Will cover — real detection value, tractable
 
