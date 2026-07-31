@@ -64,10 +64,22 @@ type Sensor struct {
 // lsmEnforce opts into the kernel-level connect() quarantine (v0.3 Phase 2,
 // Slice 1) — see docs/ROADMAP.md. Attach failure there is non-fatal; the
 // sensor still runs tracepoint-only. Default false (ebpf.lsm_enforce).
-func NewSensor(allowedIPs []string, sensitivePaths []string, lsmEnforce bool, handler SyscallHandler) (*Sensor, error) {
+// After a successful load/attach, CAP_SYS_ADMIN is dropped (ROADMAP §13)
+// unless an option keeps it (proxy sandbox.netns).
+func NewSensor(allowedIPs []string, sensitivePaths []string, lsmEnforce bool, handler SyscallHandler, opts ...SensorOption) (*Sensor, error) {
+	var o sensorOpts
+	for _, fn := range opts {
+		fn(&o)
+	}
+
 	loader, err := NewLoader(lsmEnforce)
 	if err != nil {
 		return nil, fmt.Errorf("sensor: %w", err)
+	}
+
+	if err := DropPostAttach(o.keepSYSAdmin); err != nil {
+		_ = loader.Close()
+		return nil, fmt.Errorf("sensor: drop caps post-attach: %w", err)
 	}
 
 	allow := make(map[string]bool, len(allowedIPs))
@@ -84,6 +96,19 @@ func NewSensor(allowedIPs []string, sensitivePaths []string, lsmEnforce bool, ha
 		stopCh:          make(chan struct{}),
 		suspiciousByPID: make(map[int]pendingConnect),
 	}, nil
+}
+
+type sensorOpts struct {
+	keepSYSAdmin bool
+}
+
+// SensorOption configures NewSensor.
+type SensorOption func(*sensorOpts)
+
+// WithKeepSYSAdmin skips dropping CAP_SYS_ADMIN after attach (needed when
+// proxy sandbox.netns will CLONE_NEWNET for children).
+func WithKeepSYSAdmin() SensorOption {
+	return func(o *sensorOpts) { o.keepSYSAdmin = true }
 }
 
 // SetKillResolver sets optional PID translation for SIGKILL targets.

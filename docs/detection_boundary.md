@@ -117,6 +117,7 @@ Naming the refusal is the product discipline — see ROADMAP §11 / §22.
 | Mechanism | Status |
 |---|---|
 | **Protocol-aware egress parsers** (git pkt-line / pack, HTTP body + `Content-Encoding`, SMTP DATA) — ROADMAP §21 | **Named boundary.** Would close family-at-a-time structured-protocol exfil, but each dissector grows untrusted-input TCB (Wireshark-class risk) for poor effort/gap ratio. Build **only** if a deployment shows that MCP family in production. Until then: `cve_2025_68143_mcp_git_push_wire_protocol_gap` stays Missed. §20 already covers flat zlib/ZIP when bytes appear in ToolArgs/PayloadExcerpt. |
+| **Shannon entropy dark signal** (ROADMAP §12) | Measurement published in [`fp_corpus.md`](fp_corpus.md) (benign would-fire 0% under research thresholds). **Stays unwired** to SUSPICIOUS/EXFIL; declined as EXFIL in INTERLOCK §17. |
 
 ---
 

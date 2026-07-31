@@ -195,7 +195,7 @@ Each trip emits a hash-chained `EvidenceRecord` (`make verify-evidence`). Viewer
 - Sensor DaemonSet + taint bridge (SO_PEERCRED); Prometheus / webhooks / OCSF / SIGHUP
 - FP + CVE corpora; [`docs/INTERLOCK.md`](docs/INTERLOCK.md) as SoT
 
-**Next** ([`docs/ROADMAP.md`](docs/ROADMAP.md)): CEF SIEM, cross-session evidence query; protocol dissectors remain demand-gated (§21).
+**Next** ([`docs/ROADMAP.md`](docs/ROADMAP.md)): protocol dissectors remain demand-gated (§21).
 
 ### Kubernetes (sensor DaemonSet)
 

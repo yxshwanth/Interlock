@@ -61,61 +61,13 @@ Companion SoTs (do not duplicate their prose here):
 
 | ID | Title | Status | Tier |
 |---|---|---|---|
-| §5 leftovers | CEF SIEM export | `[ ]` | 2 |
-| §5 leftovers | Cross-session evidence query | `[ ]` | 2 |
-| §12 | Shannon entropy detector (dark) | `[ ]` | 2 |
-| §13 | Capability drop post-attach | `[ ]` | 2 |
 | §21 | Protocol-aware egress parsers | `Named` | 3 |
 
 ---
 
 ## 2. Active queue
 
-Suggested order: §12 dark measurement → §13 least-privilege closeout → §5 leftovers as demand. §21 stays Named until a deployment shows the MCP family.
-
-### §5 leftovers — Operability
-
-**Status:** `[~]` (fail-closed + dual ringbufs shipped; two items open) · **Tier:** 2
-
-#### CEF SIEM export `[ ]`
-
-| | |
-|---|---|
-| **Goal** | Extend `internal/siem` beyond OCSF for Splunk/QRadar/ArcSight-class ingest. |
-| **Done when** | CEF export path documented and pinned; OCSF path unchanged. |
-| **Links** | `internal/siem`, OCSF already in v0.3 Phase 3 |
-
-#### Cross-session evidence dashboard / query `[ ]`
-
-| | |
-|---|---|
-| **Goal** | Query evidence by `session_id`, verdict, `pod_name` beyond the single-record HTML viewer. |
-| **Done when** | Closes `TestEvidenceStore_CrossSessionQuery_KnownGap` (SQLite or JSONL index). |
-| **Links** | `web/viewer.html`, evidence sinks |
-
----
-
-### §12 — Shannon entropy detector `[ ]`
-
-| | |
-|---|---|
-| **Tier** | 2 |
-| **Goal** | Research spike: “sensitive read, then high-entropy undecodable egress” as a **monitor-only** signal. Deliverable is a **measurement**, not an alert. |
-| **Done when** | Measurement published in [`fp_corpus.md`](fp_corpus.md). Graduate to SUSPICIOUS discussion only if benign FP surface is clean. |
-| **Watch out** | Entropy lights compressed/encrypted/protobuf/hash traffic. If it fires on benign corpus rows, it never leaves dark mode. **Do not wire to any alert tier.** |
-
----
-
-### §13 — Capability drop post-attach `[ ]`
-
-| | |
-|---|---|
-| **Tier** | 2 |
-| **Goal** | After probes load/attach, drop every capability not needed at runtime; keep `KILL` for containment. |
-| **Done when** | Before/after cap set documented and verified on ≥1 supported kernel in [`PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md); residuals named with why. |
-| **Watch out** | `BPF`/`PERFMON` may need to stay for re-attach; `SYS_ADMIN` droppability is kernel-version-dependent. |
-
----
+§21 stays Named until a deployment shows the MCP family.
 
 ### §21 — Protocol-aware egress parsers `Named`
 
@@ -141,15 +93,15 @@ Stable IDs for cross-doc refs (`ROADMAP §N`). One row each — no re-litigation
 | §2 | Close “will cover” gaps | `[x]` | 1 | Fragment buffer, fat-taint benches, payload window, extractResultText, decode depth, inherit-sink via §14 | architecture §13 |
 | §3 | Variant B kernel + syscalls | `[x]` | 1 | LSM Slice 1 opt-in; writev/sendmsg; IPv6 dest | `ebpf.lsm_enforce`; Phase 2 notes below |
 | §4 | Sensor↔proxy taint bridge | `[x]` | 1 | Unix-socket taint forward + SO_PEERCRED | `internal/bridge`, PRIVILEGE.md |
-| §5 | Operability & enterprise | `[~]` | 2 | Fail-closed + dual ringbufs done; CEF + cross-session query open | Active queue |
+| §5 | Operability & enterprise | `[x]` | 2 | Fail-closed, dual ringbufs, CEF SIEM, SQLite cross-session query | `siem.format`, `Query`, `cmd/query-evidence` |
 | §6 | Tamper-evident evidence | `[x]` | 1 | Hash chain + `verify-evidence` | `chain_seq` / `prev_hash` / `hash` |
 | §7 | Zero-route netns (proxy) | `[x]` | 1 | `CLONE_NEWNET` opt-in; non-loopback `ENETUNREACH` | `sandbox.netns` |
 | §8 | Chunk / substring match | `[x]` | 1 | Long-secret chunk EXFIL; near-chunk TN clean | `trifecta.chunk_match_*` |
 | §9 | Standard compressors | `[x]` | 1 | brotli/zstd/lz4 forms; benches in class | `CanonicalEncodings` |
 | §10 | Token vaulting | `[x]` | 1 | Dummy-by-default; authorize then scan | `vault.enabled` |
 | §11 | Considered and rejected | `[x]` | 3 | Sockmap / SOCKS5 / unbounded trickle / blind EXFIL named | [`detection_boundary.md`](detection_boundary.md) |
-| §12 | Shannon entropy (dark) | `[ ]` | 2 | — | Active queue |
-| §13 | Cap drop post-attach | `[ ]` | 2 | — | Active queue |
+| §12 | Shannon entropy (dark) | `[x]` | 2 | Measurement in fp_corpus.md; not wired | `ShannonEntropy`, `MeasureShannonEntropyDark` |
+| §13 | Cap drop post-attach | `[x]` | 2 | Drop SYS_ADMIN after attach; keep KILL/BPF/PERFMON | `DropPostAttach`, PRIVILEGE.md |
 | §14 | Inherit sink suspicion | `[x]` | 1 | Opt-in inherit; allowlist sole exemption | `server_defaults.inherit_sink_suspicion` |
 | §15 | Configurable decode depth | `[x]` | 1 | Default 5; FP curve published | `trifecta.max_decode_depth` |
 | §16 | Payload capture default 1024 | `[x]` | 2 | Default = compiled max; past-window KnownGap remains | `ebpf.payload_capture_bytes` |
@@ -166,7 +118,7 @@ Stable IDs for cross-doc refs (`ROADMAP §N`). One row each — no re-litigation
 |---|---|---|---|
 | 1 | K8s DaemonSet (sensor-only) | `[x]` | `deploy/k8s/`; pod attribution; honest limit: full trifecta still prefers proxy+sensor |
 | 2 | LSM/KRSI + graceful enforcement | `[~]` | Slice 1 shipped (`ebpf.lsm_enforce`): repeat-connect quarantine after EXFIL. First EXFIL packet stays `contained_by_kill` (architectural). Graceful per-tier responses still open. |
-| 3 | Metrics, alerting, SIEM | `[x]` | Prometheus, webhooks, OCSF; CEF deferred to §5 |
+| 3 | Metrics, alerting, SIEM | `[x]` | Prometheus, webhooks, OCSF + CEF |
 | 4 | Trust (threat model, corpus, signed release) | `[x]` | [`threat_model.md`](threat_model.md), corpora, `make release` |
 
 ### v0.2 phases

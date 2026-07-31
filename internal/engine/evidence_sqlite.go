@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/yxshwanth/Interlock/internal/model"
@@ -72,6 +73,12 @@ func initEvidenceSchema(db *sql.DB) error {
 	if err := migrateEvidenceChainColumns(db); err != nil {
 		return err
 	}
+	if err := migrateEvidenceQueryColumns(db); err != nil {
+		return err
+	}
+	if err := backfillEvidenceQueryColumns(db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -88,6 +95,7 @@ func migrateEvidenceChainColumns(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("adding evidence.%s: %w", name, err)
 		}
+		cols[name] = true
 		return nil
 	}
 	if err := add("chain_seq", "INTEGER"); err != nil {
@@ -98,6 +106,83 @@ func migrateEvidenceChainColumns(db *sql.DB) error {
 	}
 	if err := add("hash", "TEXT"); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migrateEvidenceQueryColumns(db *sql.DB) error {
+	cols, err := sqliteTableColumns(db, "evidence")
+	if err != nil {
+		return err
+	}
+	add := func(name, decl string) error {
+		if cols[name] {
+			return nil
+		}
+		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE evidence ADD COLUMN %s %s`, name, decl))
+		if err != nil {
+			return fmt.Errorf("adding evidence.%s: %w", name, err)
+		}
+		cols[name] = true
+		return nil
+	}
+	if err := add("verdict", "TEXT"); err != nil {
+		return err
+	}
+	if err := add("pod_name", "TEXT"); err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_evidence_session_id ON evidence(session_id);
+		CREATE INDEX IF NOT EXISTS idx_evidence_verdict ON evidence(verdict);
+		CREATE INDEX IF NOT EXISTS idx_evidence_pod_name ON evidence(pod_name);
+	`)
+	if err != nil {
+		return fmt.Errorf("creating evidence query indexes: %w", err)
+	}
+	return nil
+}
+
+// backfillEvidenceQueryColumns fills verdict/pod_name from record_json for legacy rows.
+func backfillEvidenceQueryColumns(db *sql.DB) error {
+	rows, err := db.Query(`
+		SELECT id, record_json FROM evidence
+		WHERE verdict IS NULL OR (pod_name IS NULL AND record_json LIKE '%"pod_context"%')
+	`)
+	if err != nil {
+		return fmt.Errorf("select evidence for query backfill: %w", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id  int64
+		raw string
+	}
+	var pending []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.raw); err != nil {
+			return err
+		}
+		pending = append(pending, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range pending {
+		var rec model.EvidenceRecord
+		if err := json.Unmarshal([]byte(r.raw), &rec); err != nil {
+			continue
+		}
+		podName := ""
+		if rec.Pod != nil {
+			podName = rec.Pod.PodName
+		}
+		_, err := db.Exec(`UPDATE evidence SET verdict = ?, pod_name = ? WHERE id = ?`,
+			string(rec.Verdict), podName, r.id)
+		if err != nil {
+			return fmt.Errorf("backfill evidence id=%d: %w", r.id, err)
+		}
 	}
 	return nil
 }
@@ -177,9 +262,16 @@ func (s *SQLiteEvidenceSink) Emit(rec model.EvidenceRecord) error {
 		return fmt.Errorf("marshaling evidence: %w", err)
 	}
 
+	podName := ""
+	if rec.Pod != nil {
+		podName = rec.Pod.PodName
+	}
+
 	_, err = s.db.ExecContext(context.Background(),
-		`INSERT INTO evidence (trip_ts, session_id, record_json, chain_seq, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?)`,
-		rec.TripTS, rec.SessionID, string(data), rec.ChainSeq, rec.PrevHash, rec.Hash)
+		`INSERT INTO evidence (trip_ts, session_id, record_json, chain_seq, prev_hash, hash, verdict, pod_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.TripTS, rec.SessionID, string(data), rec.ChainSeq, rec.PrevHash, rec.Hash,
+		string(rec.Verdict), podName)
 	if err != nil {
 		return fmt.Errorf("insert evidence: %w", err)
 	}
@@ -222,6 +314,72 @@ func (s *SQLiteEvidenceSink) Count() (int, error) {
 	var n int
 	err := s.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM evidence`).Scan(&n)
 	return n, err
+}
+
+// EvidenceQuery filters stored evidence records. Empty fields match any value.
+type EvidenceQuery struct {
+	SessionID string
+	Verdict   string // exact match; empty = any
+	PodName   string
+	Limit     int // default 100, max 1000
+}
+
+// Query returns matching evidence records ordered by trip_ts descending.
+func (s *SQLiteEvidenceSink) Query(ctx context.Context, q EvidenceQuery) ([]model.EvidenceRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("sqlite evidence sink closed")
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var clauses []string
+	var args []any
+	if q.SessionID != "" {
+		clauses = append(clauses, "session_id = ?")
+		args = append(args, q.SessionID)
+	}
+	if q.Verdict != "" {
+		clauses = append(clauses, "verdict = ?")
+		args = append(args, q.Verdict)
+	}
+	if q.PodName != "" {
+		clauses = append(clauses, "pod_name = ?")
+		args = append(args, q.PodName)
+	}
+	sqlStr := `SELECT record_json FROM evidence`
+	if len(clauses) > 0 {
+		sqlStr += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	sqlStr += " ORDER BY trip_ts DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, sqlStr, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query evidence: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.EvidenceRecord
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var rec model.EvidenceRecord
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+			return nil, fmt.Errorf("unmarshal evidence: %w", err)
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }
 
 // Close closes the database.
