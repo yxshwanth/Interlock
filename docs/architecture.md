@@ -439,7 +439,7 @@ type SessionStore interface {
 
 Full TCB threat model (blind sensor, poison bridge, fail-open, misattribution, evidence tamper, bypass channels): [`threat_model.md`](threat_model.md). Provenance: [`reproducible_builds.md`](reproducible_builds.md).
 
-- **Runs privileged** (loading eBPF, managing child processes). Prefer the capabilities DaemonSet; residual `SYS_ADMIN` documented in the threat model / PRIVILEGE.md. Drop further capabilities post-attach remains iterative.
+- **Runs privileged** (loading eBPF, managing child processes). Prefer the capabilities DaemonSet; `SYS_ADMIN` is dropped post-attach (ROADMAP §13) — see threat model / PRIVILEGE.md. Residuals: `BPF`/`PERFMON`/`KILL`.
 - **Never leaks the secrets it's protecting.** Tainted values are stored **hashed + masked** (`sk-...a9f2`), never raw. The value-overlap check compares raw values in memory only; evidence stores only the masked preview. All output files (`evidence.jsonl`, `evidence.json`, `events.jsonl`) are scrubbed by `RedactJSON` before writing — any known tainted value is replaced with its masked preview. Interlock writing the token in plaintext to a log would make the tool *itself* an exfil path — forbidden.
 - **Fail-open vs. fail-closed.** Current default is **fail-open with loud `[SECURITY]` warnings** on stderr. Opt-in `fail_closed.enabled` (see `internal/failclosed`) trips on routine or critical ringbuf drop rate (hysteresis high/low watermarks), consecutive evidence sink write failures, or engine/sensor panics. Policy includes `min_trip_duration`, `recovery_window`, and exponential backoff on flap so engage/clear cannot oscillate. **Scope is always all currently watched PIDs/cgroups** — drop counters are severity-class globals, not per-pod (named limitation). Sensor mode requires `ebpf.lsm_enforce` and reuses `lsm_blocklist_*` via `Sensor.SetFailClosedActive` (fail-closed-owned entries are tracked separately from EXFIL quarantines). Proxy mode denies `tools/call` before `EvaluateRequest`. Metrics: `interlock_fail_closed_active`, `interlock_fail_closed_transitions_total`. The `[SECURITY]` prefix also fires for: (1) engine not configured, (2) engine panics mid-evaluation, (3) evidence sink write failure, (4) missing tool tags, (5) **unattributed eBPF syscalls**, (6) **event log backpressure drops**, (7) **eBPF routine/critical ring-buffer reserve failures**, (8) **`ebpf.lsm_enforce` requested but the LSM hook failed to attach** — the sensor keeps running tracepoint-only rather than refusing to start. Deployers should monitor for `[SECURITY]` in stderr output and ringbuf / fail-closed metrics.
 
@@ -461,7 +461,6 @@ Priority tiers below are the design SoT for what Interlock does *not* catch yet 
 |---|---|
 | Secrets past capture window | **Improved (ROADMAP §8 + §16):** chunk overlap when excerpt holds ≥N body bytes; default `payload_capture_bytes` = **1024** (`PAYLOAD_MAX`) — the knob only reduces from that ceiling. Still open when the secret lies entirely past even 1024 (`malicious_gap_payload_truncated` — permanent KnownGap) |
 | Tamper-evident evidence (WORM / external signing) | Hash chain shipped; WORM volume and external signing still deferred |
-| CEF SIEM / cross-session evidence query | OCSF + single-record viewer shipped; enterprise ingest + dashboard open |
 | **Content-bound `SUSPICIOUS` on payload-bearing sensor egress** | The connect-only tripwire is fixed (below), but a sensor-observed `write`/`sendto` whose payload is merely unrelated (not overlapping taint) still can't reach `SUSPICIOUS` on the sensor plane, because `register_untrusted` (below) deliberately forwards no excerpt text — `CheckContentBind` has nothing to compare against. Would need the bridge to also carry a bounded excerpt, raising its own size/sensitivity questions; not attempted. |
 | **Finite egress reassembly window** | ROADMAP §19 appends payload-bearing `write`/`writev`/`sendto`/`sendmsg`/`dns` excerpts into bounded per-(pid,destination) buffers before `CheckOverlapPayload`, closing normal DNS and chunked-write splitting (including `cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). Remaining honest boundary: fragments slower than `trifecta.egress_fragment_max_age` or split across different destinations are not joined (`malicious_gap_egress_slow_trickle`, `malicious_gap_egress_cross_destination_split`). Unbounded trickle / sockmap stream scan remain rejected (§11). |
 
@@ -555,7 +554,18 @@ Delivery is bounded-concurrency and non-blocking relative to the evidence hot pa
 
 ### 14.3 SIEM export (`internal/siem`)
 
-`siem` maps an `EvidenceRecord` to an **OCSF 1.3 Detection Finding** (`class_uid=2004`, `category_uid=2`, `activity_id=1`) and writes it to a JSONL file (`siem.path`) and/or POSTs it to `siem.url`. Severity: `EXFIL` → `5/Critical`, `SUSPICIOUS` → `3/Medium`. Interlock-specific fields (session_id, verdict, action, variant, pod_context, sink_call, value_overlap) live under OCSF's `unmapped`. CEF export is not implemented. Same `min_verdict` filtering and async delivery semantics as webhooks.
+`siem.format` selects the wire format (`ocsf` default, or `cef`):
+
+| Format | Body | Content-Type (HTTP) |
+|---|---|---|
+| `ocsf` | OCSF 1.3 Detection Finding (`class_uid=2004`, `category_uid=2`, `activity_id=1`) JSONL | `application/json` |
+| `cef` | ArcSight CEF 0 text line (`CEF:0\|Interlock\|Interlock\|…`) | `text/plain` |
+
+OCSF severity: `EXFIL` → `5/Critical`, `SUSPICIOUS` → `3/Medium`. Interlock-specific fields live under OCSF `unmapped`. CEF severity: `EXFIL` → `10`, `SUSPICIOUS` → `5`; session/action/variant/pod/confidence in labeled `cs*`/`cn*` extensions. Same `min_verdict` filtering and async delivery semantics as webhooks. Writes to `siem.path` and/or POSTs to `siem.url`.
+
+### 14.3.1 Cross-session evidence query
+
+With `evidence.backend: sqlite`, `SQLiteEvidenceSink.Query` filters by `session_id` / `verdict` / `pod_name` (indexed columns; legacy rows backfilled from `record_json`). CLI: `make query-evidence` / `cmd/query-evidence` prints a JSON array. [`web/viewer.html`](../web/viewer.html) accepts that array for a filterable multi-record list. JSONL remains append-only (no query index).
 
 ### 14.4 SIGHUP hot-reload (`internal/reload`)
 

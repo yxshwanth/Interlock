@@ -21,6 +21,9 @@ func main() {
 	results := corpus.Run(scenarios)
 	report := corpus.Build(results)
 
+	benignHits, gapHits, benignTotal, gapTotal := corpus.MeasureShannonEntropyDark(scenarios, nil)
+	report.EntropyDarkSection = corpus.EntropyDarkMarkdown(benignHits, gapHits, benignTotal, gapTotal)
+
 	md := report.Markdown()
 	if err := os.WriteFile(*out, []byte(md), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "fp-corpus: writing %s: %v\n", *out, err)
@@ -35,5 +38,6 @@ func main() {
 	fmt.Printf("  false-positive rate (EXFIL-tier, benign):       %.1f%%  (%d/%d)\n",
 		report.FalsePositiveRateExfil()*100, report.FalsePositiveExfil, report.BenignTotal())
 	fmt.Printf("  known-gap misses: %d, bonus catches: %d\n", report.KnownGapMisses, report.BonusCatches)
+	fmt.Printf("  §12 entropy dark benign would-fire: %d/%d\n", len(benignHits), benignTotal)
 	fmt.Printf("wrote %s\n", *out)
 }

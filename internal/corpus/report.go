@@ -20,6 +20,9 @@ type Report struct {
 	TrueNegatives         int
 	FalsePositiveTripwire int
 	FalsePositiveExfil    int
+
+	// EntropyDarkSection is optional Markdown for ROADMAP §12 (set by fp-corpus).
+	EntropyDarkSection string
 }
 
 // Build aggregates raw results into a Report.
@@ -200,6 +203,14 @@ func (r Report) Markdown() string {
 
 	fmt.Fprintf(&b, "## Discussion — does this reshape the logic?\n\n")
 	fmt.Fprintf(&b, "%s\n\n", r.discussion())
+
+	if r.EntropyDarkSection != "" {
+		b.WriteString(r.EntropyDarkSection)
+		if !strings.HasSuffix(r.EntropyDarkSection, "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+	}
 
 	fmt.Fprintf(&b, "## Reproduce\n\n```bash\ngo test ./internal/corpus/...\nmake fp-corpus   # regenerates this file\n```\n")
 

@@ -143,7 +143,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) **Active queue** for open work (stable `�
 High-value areas:
 
 - Dataflow taint residuals: depth-6+ nests (beyond clamp), custom ciphers, container bomb/encrypted/depth>2; git wire protocol remains Named §21
-- Already shipped (do not re-open): LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge + SO_PEERCRED, writev/sendmsg/IPv6, path-driven taint + container descent (§18/§20), chunk match, egress reassembly — see [`docs/INTERLOCK.md`](docs/INTERLOCK.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md)
+- Already shipped (do not re-open): LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge + SO_PEERCRED, writev/sendmsg/IPv6, path-driven taint + container descent (§18/§20), chunk match, egress reassembly, CEF SIEM + SQLite cross-session query (§5), Shannon entropy dark measurement (§12), post-attach cap drop (§13) — see [`docs/INTERLOCK.md`](docs/INTERLOCK.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md)
 - Phase 4 Trust **met** — [`docs/threat_model.md`](docs/threat_model.md), [`docs/reproducible_builds.md`](docs/reproducible_builds.md), [`docs/fp_corpus.md`](docs/fp_corpus.md)
 ## Security
 
