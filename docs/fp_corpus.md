@@ -88,6 +88,20 @@ Each corresponds to a `*_KnownGap` unit test in `internal/engine` — the corpus
 
 **Watch the ratio, not any single pin.** The any-trip rate is currently 18.9% — it has already moved three times (from 13.3%, each move driven by a real, measured finding — a restored tripwire's own false-positive surface, or a newly identified guaranteed-collision shape — not a rounding choice). Every `ExpectTripByDesign: true` scenario is a deliberate design pin (this leg lights, on purpose, for this reason), and each is individually correct today, but the number that matters operationally is the trend across pins as the corpus keeps growing, not whether any one row currently reads true. See [`cve_corpus.md`](cve_corpus.md) for the most recent addition and why it was added.
 
+## ROADMAP §12 — Shannon entropy dark measurement
+
+Research-only signal: sensitive read already registered, then a sink/egress blob of length ≥ 32 with Shannon entropy ≥ 7.0 bits/byte, where standard `CheckOverlap` / `CheckOverlapPayload` would miss. **Not wired** to `classifyTrip`, evidence emit, webhooks, or SIEM — measurement only.
+
+| Metric | Value |
+|---|---|
+| Thresholds | min_len=32, min_entropy=7.0 bits/byte |
+| Benign would-fire rate | **0.0%** (0/37) |
+| KnownGap malicious would-fire | 0/7 |
+
+No benign scenario would fire under these thresholds.
+
+**Product call:** Benign surface is clean under these thresholds; SUSPICIOUS-tier discussion is allowed but not implemented in this release (still measurement-only).
+
 ## Reproduce
 
 ```bash

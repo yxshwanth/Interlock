@@ -767,7 +767,7 @@ Attribution flow (same story as [§9](#9-the-correlation-engine)): PID or cgroup
 | **Mitigation** | Honest KnownGaps; opt-in inherit sink suspicion; opt-in netns in proxy mode; network DNS/egress controls |
 | **Residual** | Not universal DLP; sensor-only has no netns prevention; Named/demand-gated boundaries remain |
 
-Accepted residual: vault authorized-sink rehydration; `SYS_ADMIN` held post-attach (capability drop after attach is ROADMAP §13, not shipped).
+Accepted residual: vault authorized-sink rehydration; `SYS_ADMIN` dropped post-attach (ROADMAP §13) except when `sandbox.netns` needs it for spawn; `BPF`/`PERFMON`/`KILL` retained.
 
 **How to verify this yourself:** dual-ring and LSM tests in `internal/ebpf`; bridge auth in `internal/bridge`; threat scenarios are also mirrored in `docs/threat_model.md` (this section is aligned to code as of writing).
 
@@ -899,7 +899,7 @@ Why the schema is load-bearing: SIEM `unmapped` fields, evidence viewers, bridge
 
 `internal/alerting`: generic / Slack / PagerDuty webhooks; `min_verdict` default `SUSPICIOUS`. PagerDuty dedupes on `SessionID:Verdict` (so high-volume soft connects understate as one incident while OCSF still emits per trip).
 
-`internal/siem`: OCSF 1.3 Detection Finding `class_uid=2004`; EXFIL → severity 5, SUSPICIOUS → 3; Interlock-specific fields in `unmapped`. CEF is deferred (ROADMAP).
+`internal/siem`: `format: ocsf` (default) → OCSF 1.3 Detection Finding `class_uid=2004`; EXFIL → severity 5, SUSPICIOUS → 3; Interlock fields in `unmapped`. `format: cef` → ArcSight CEF 0 text lines (EXFIL → 10, SUSPICIOUS → 5). Cross-session SQLite query: `SQLiteEvidenceSink.Query` / `make query-evidence`; viewer accepts JSON arrays.
 
 Fan-out: `engine.MultiEmitObserver`.
 
@@ -1001,9 +1001,8 @@ From `CVEOutOfScope()` / `docs/cve_corpus.md`:
 |---|---|
 | **Protocol-aware egress parsers** (git pkt-line/pack, HTTP `Content-Encoding` body, SMTP DATA) - ROADMAP §21 | Would close family-at-a-time structured-protocol exfil (`cve_2025_68143_mcp_git_push_wire_protocol_gap`), but each dissector grows untrusted-input TCB (Wireshark-class risk) for poor effort/gap ratio. Build only if a deployment shows that MCP family. Flat zlib/ZIP on ToolArgs/PayloadExcerpt is already closed (§20); framing *outside* those surfaces is not. |
 | Per-pod ringbuf drop maps | Dual severity-class globals only today |
-| CEF SIEM / cross-session evidence dashboard | OCSF shipped; CEF + query UI open |
-| Shannon entropy as product signal | Monitor-dark research only (§12); never EXFIL without surviving FP corpus |
-| Capability drop post-attach | §13 residual `SYS_ADMIN` |
+| Shannon entropy as product signal | Monitor-dark measurement published in [`fp_corpus.md`](fp_corpus.md) (ROADMAP §12); benign would-fire **0%** under research thresholds — still **not wired** to SUSPICIOUS/EXFIL |
+| Capability drop post-attach | **Shipped (ROADMAP §13):** `SYS_ADMIN` dropped after attach; `BPF`/`PERFMON`/`KILL` retained — see PRIVILEGE.md |
 | Non-token taint shapes still open (e.g. X.509, DB URLs) without path heuristics | Expand patterns only with FP measurement |
 
 ### Structural / permanent
@@ -1063,7 +1062,7 @@ Naming the refusal is product discipline. These were evaluated; they will not be
 
 **Temptation:** catch custom ciphers and compressed secrets without encodings.
 
-**Declined as EXFIL because:** entropy describes half of benign binary traffic (compressed media, TLS, protobuf, hashes). That moves detection off the byte-overlap gate into inference where false positives live, and would burn the 0% EXFIL-tier FP contract. ROADMAP §12 allows monitor-dark research only; if it lights benign corpus rows, it never graduates. Custom cipher remains a NamedGap.
+**Declined as EXFIL because:** entropy describes half of benign binary traffic (compressed media, TLS, protobuf, hashes). That moves detection off the byte-overlap gate into inference where false positives live, and would burn the 0% EXFIL-tier FP contract. ROADMAP §12 published a dark measurement in [`fp_corpus.md`](fp_corpus.md) (benign would-fire 0% under research thresholds on the authored corpus); the signal remains **unwired** to SUSPICIOUS/EXFIL. Custom cipher remains a NamedGap.
 
 ### Blind side-channel / query-pattern → EXFIL (related reject)
 

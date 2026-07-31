@@ -128,12 +128,12 @@ Each scenario: **attacker**, **goal**, **mechanism**, **current mitigations**,
 
 Capabilities DaemonSet ([`daemonset-capabilities.yaml`](../deploy/k8s/daemonset-capabilities.yaml)):
 
-| Capability | Why held today | Droppable post-load? |
+| Capability | Why held at startup | Post-attach (ROADMAP §13) |
 |---|---|---|
-| `BPF` | Load/attach BPF programs | Not while probes must stay loaded/reattachable |
-| `PERFMON` | Tracepoint / perf-related attach on modern kernels | Required with `BPF` on many distros |
-| `SYS_ADMIN` | Historical BPF/cgroup needs on some kernels | **Residual over-privilege** — preferred target to eliminate when kernel/runtime allows; not dropped today |
-| `KILL` | Variant B `contained_by_kill` | Required for containment action |
+| `BPF` | Load/attach BPF programs | **Kept** — live map updates; no in-process re-attach today |
+| `PERFMON` | Tracepoint / perf-related attach on modern kernels | **Kept** with `BPF` |
+| `SYS_ADMIN` | Historical BPF/cgroup needs on some kernels at load | **Dropped** after attach (`DropPostAttach`); kept only if `sandbox.netns` (proxy) |
+| `KILL` | Variant B `contained_by_kill` | **Kept** — required for containment |
 
 Other surface:
 
@@ -144,8 +144,7 @@ Other surface:
 | hostPath `/var/run/interlock` | Taint bridge (production EXFIL under caps) |
 | `privileged: true` | Demo / openat `/proc/<pid>/root` seed only — prefer caps + bridge |
 
-**Accepted:** Interlock does not yet drop capabilities after attach. Least-privilege
-hardening beyond the caps-first manifest remains iterative (see PRIVILEGE.md).
+**Shipped:** post-attach drop of `SYS_ADMIN` (see [`PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md)). Residuals `BPF`/`PERFMON`/`KILL` named with why.
 
 ---
 
@@ -155,7 +154,7 @@ hardening beyond the caps-first manifest remains iterative (see PRIVILEGE.md).
 2. Default is fail-open; opt-in `fail_closed` blocks all watched egress (scope=all; `connect()`-only via LSM) on **routine or critical** ringbuf drop rate / sink failure / panic — process kill restart gap remains (T1, T3). Connect floods no longer starve critical-path evidence (dual rings); write/sendto flood against the critical ring remains a named residual.
 3. Evidence hash-chaining detects mid-chain edit/delete; no WORM / external signing (T5). Full-file forge still possible with node root.
 4. Unmonitored exfil channels remain (T6).
-5. `SYS_ADMIN` may still be required depending on kernel (least-privilege residual).
+5. `SYS_ADMIN` is dropped post-attach in sensor / proxy+eBPF paths; retained only for `sandbox.netns` child spawn. `BPF`/`PERFMON` remain as named residuals (see PRIVILEGE.md §13).
 6. `ebpf.lsm_enforce` (opt-in, default off) cannot prevent the *first* EXFIL-carrying packet — `connect()` precedes the payload that proves EXFIL, so kernel quarantine only stops *repeat* attempts (T4); attach failure fails soft, matching default fail-open unless `fail_closed` also requires a live LSM attach in sensor mode.
 7. **Token vaulting** (`vault.enabled`, opt-in): when a sink appears in `vault.authorize`, Interlock rehydrates the real secret after allow. A false allow still forwards the secret — vaulting closes the default agent/child memory-scrape channel, not the authorized-sink path. Vaulting is proxy-plane only (does not change eBPF/bridge in-memory taint).
 

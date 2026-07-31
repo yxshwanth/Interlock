@@ -70,11 +70,11 @@ type AlertingConfig struct {
 	Webhook WebhookConfig `yaml:"webhook"`
 }
 
-// SIEMConfig controls OCSF export (file and/or HTTP).
+// SIEMConfig controls OCSF or CEF export (file and/or HTTP).
 // Enabled when Path or URL is non-empty.
 type SIEMConfig struct {
-	Format     string `yaml:"format"`      // ocsf (only)
-	Path       string `yaml:"path"`        // append OCSF JSONL
+	Format     string `yaml:"format"`      // ocsf | cef
+	Path       string `yaml:"path"`        // append OCSF JSONL or CEF lines
 	URL        string `yaml:"url"`         // optional HTTP POST
 	MinVerdict string `yaml:"min_verdict"` // SUSPICIOUS | EXFIL
 	Timeout    string `yaml:"timeout"`     // Go duration; default 5s
@@ -791,8 +791,10 @@ func (c *Config) validateSIEM() error {
 	switch strings.ToLower(s.Format) {
 	case "", "ocsf":
 		s.Format = "ocsf"
+	case "cef":
+		s.Format = "cef"
 	default:
-		return fmt.Errorf("siem.format must be \"ocsf\", got %q", s.Format)
+		return fmt.Errorf("siem.format must be \"ocsf\" or \"cef\", got %q", s.Format)
 	}
 	mv, err := normalizeMinVerdict(s.MinVerdict)
 	if err != nil {

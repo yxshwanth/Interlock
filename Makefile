@@ -1,4 +1,4 @@
-.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent demo-k8s image clean bench bench-http race readme-gif fp-corpus cve-corpus verify-evidence release bpf-generate lsm-vm-up lsm-vm-ssh lsm-vm-sync lsm-vm-down
+.PHONY: build test demo demo-ebpf demo-quiet demo-quiet-ebpf demo-http demo-http-ebpf demo-quiet-http demo-quiet-http-ebpf demo-http-concurrent demo-k8s image clean bench bench-http race readme-gif fp-corpus cve-corpus verify-evidence query-evidence release bpf-generate lsm-vm-up lsm-vm-ssh lsm-vm-sync lsm-vm-down
 
 GO ?= $(shell which go 2>/dev/null || echo /usr/local/go/bin/go)
 BINARIES = interlock servers/tickets/tickets servers/messenger/messenger servers/exfil/exfil
@@ -57,6 +57,16 @@ BACKEND ?= jsonl
 EVIDENCE_PATH ?= evidence.jsonl
 verify-evidence: build
 	$(GO) run ./cmd/verify-evidence -backend=$(BACKEND) -path=$(EVIDENCE_PATH)
+
+# Query SQLite evidence by session_id / verdict / pod_name (JSON array to stdout).
+#   make query-evidence EVIDENCE_DB=evidence.db SESSION=sess-a VERDICT=EXFIL POD=agent-1
+EVIDENCE_DB ?= evidence.db
+SESSION ?=
+VERDICT ?=
+POD ?=
+LIMIT ?= 100
+query-evidence: build
+	$(GO) run ./cmd/query-evidence -db=$(EVIDENCE_DB) -session='$(SESSION)' -verdict='$(VERDICT)' -pod='$(POD)' -limit=$(LIMIT)
 
 # Convert media/ReadmeGif.mp4 → media/ReadmeGif.gif for the README hero (requires ffmpeg).
 readme-gif: media/ReadmeGif.gif
