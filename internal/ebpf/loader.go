@@ -396,9 +396,6 @@ func (l *Loader) UnquarantineWatched(pids []int, cgroups []uint64) error {
 	return nil
 }
 
-// PayloadMax is the compiled-in capture ceiling (event struct size).
-func PayloadMax() int { return payloadMax }
-
 // ClampPayloadCaptureBytes clamps n into [minPayloadCapture, payloadMax].
 func ClampPayloadCaptureBytes(n int) int {
 	if n < minPayloadCapture {
@@ -420,19 +417,6 @@ func (l *Loader) SetPayloadCaptureBytes(n int) error {
 	var key uint32
 	val := uint32(n)
 	return l.objs.PayloadCap.Put(key, val)
-}
-
-// PayloadCaptureBytes reads the current runtime capture cap from the BPF map.
-func (l *Loader) PayloadCaptureBytes() (int, error) {
-	if l.objs.PayloadCap == nil {
-		return 0, fmt.Errorf("payload_cap map not loaded")
-	}
-	var key uint32
-	var val uint32
-	if err := l.objs.PayloadCap.Lookup(&key, &val); err != nil {
-		return 0, err
-	}
-	return int(val), nil
 }
 
 // UpdatePIDSet replaces the BPF PID filter map contents with the given PIDs.

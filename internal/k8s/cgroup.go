@@ -2,8 +2,6 @@
 package k8s
 
 import (
-	"fmt"
-	"os"
 	"regexp"
 	"strings"
 )
@@ -71,17 +69,4 @@ func NormalizeContainerID(raw string) string {
 		return raw[:64]
 	}
 	return raw
-}
-
-// ContainerIDFromPID reads /proc/<pid>/cgroup and extracts a container ID.
-func ContainerIDFromPID(pid int) (string, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
-	if err != nil {
-		return "", err
-	}
-	id := ExtractContainerID(string(data))
-	if id == "" {
-		return "", fmt.Errorf("no container id in /proc/%d/cgroup", pid)
-	}
-	return id, nil
 }
