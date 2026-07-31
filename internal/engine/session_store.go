@@ -57,13 +57,6 @@ func (s *SessionStore) Upsert(st *model.SessionState) {
 	s.sessions[st.SessionID] = st
 }
 
-// Delete removes a session from the store.
-func (s *SessionStore) Delete(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, sessionID)
-}
-
 // All returns a snapshot of every session in the store.
 func (s *SessionStore) All() []*model.SessionState {
 	s.mu.RLock()

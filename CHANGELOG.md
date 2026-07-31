@@ -11,6 +11,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - **Shannon entropy dark measurement (ROADMAP §12)** — corpus-only would-fire rates in `docs/fp_corpus.md`; not wired to verdicts/alerts
 - **Post-attach capability drop (ROADMAP §13)** — clear `CAP_SYS_ADMIN` after eBPF attach; keep `KILL`/`BPF`/`PERFMON`; netns keeps SYS_ADMIN
 
+### Removed
+
+- Dead code: `ContainerIDFromPID`, `PodAttribution.Register`, `SessionStore.Delete`, `PIDRegistry.AllPIDs`, `PayloadMax`, `Loader.PayloadCaptureBytes`, unused `Proxy.mu`
+- Orphan `deploy/k8s/configmap-sensor.yaml` (live sensor ConfigMap is `interlock-sensor-config` in `deploy/k8s/rbac.yaml`)
+
 ## [0.4.0] - 2026-07-30
 
 **v0.4 — Detection depth + definitive reference.** LSM Slice 1, fail-closed, dual ringbufs, and evidence hash chain from the post-v0.3 tree, plus ROADMAP §§7–20 detection/hardening work and [`docs/INTERLOCK.md`](docs/INTERLOCK.md) as the code-backed architecture SoT.
@@ -60,7 +65,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - `IngestSyscallSensor`: sensitive `openat` seeds taint via `/proc/<pid>/root` file read (no kill); egress `connect`/`write`/`sendto`/DNS contain; payload overlap → `EXFIL` 0.95 with redacted `payload_excerpt`
 - Evidence `pod_context` (`namespace`, `pod_name`, `pod_uid`, `node_name`); sensor session ID is `k8s:<podUID>`
 - `cmd/k8s-exfil-demo` — demo workload that reads a mounted secret then exfiltrates it over TCP, for the kind e2e path
-- Multi-stage `Dockerfile` + `make image`; `deploy/k8s/` — `daemonset.yaml`, `daemonset-capabilities.yaml`, `rbac.yaml`, `configmap-sensor.yaml`, `service-metrics.yaml`, `demo/exfil-pod.yaml`; [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md) privilege surface doc
+- Multi-stage `Dockerfile` + `make image`; `deploy/k8s/` — `daemonset.yaml`, `daemonset-capabilities.yaml`, `rbac.yaml` (includes `interlock-sensor-config` ConfigMap), `service-metrics.yaml`, `demo/exfil-pod.yaml`; [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md) privilege surface doc
 - `deploy/k8s/eks/` — EKS cluster/IAM/push/validate/delete helpers; `push-image-kaniko.sh` for builds without local Docker
 - `make demo-k8s` / `scripts/demo-k8s.sh` — kind load, apply, labeled exfil pod, asserts EXFIL evidence with redacted excerpt
 - **Prometheus metrics + health** (`internal/observability`): `/metrics` (`promhttp`) and `/healthz` on `observability.listen`; detection and drop counters; DaemonSet liveness/readiness probes + headless `interlock-sensor-metrics` Service
@@ -101,7 +106,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - README / architecture / ROADMAP: Variant B dual claim (tripwire or payload-backed EXFIL); sendto/openat/DNS; bounded overlap expansion
 - Taint registration path: `CanonicalEncodings` → `[]TaintedVariant` directly; cheaper `HashValue`; `extractResultText` via `strings.Builder`
 - [`docs/performance.md`](docs/performance.md) — async evidence, ingest opts, concurrent load snapshot, ringbuf test honesty; encoding form-count growth note
-- Docs: consolidated historical week/v0.2 summaries into [`docs/SUMMARY.md`](docs/SUMMARY.md)
+- Docs: consolidated historical week/v0.2 summaries (later superseded by [`docs/INTERLOCK.md`](docs/INTERLOCK.md))
 
 ## [0.2.1] - 2026-07-05
 
@@ -144,7 +149,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - HTTP demo path: `make demo-http`, `make demo-http-ebpf`, `make demo-quiet-http`, `make demo-quiet-http-ebpf`
 - Example configs: `interlock-http.yaml`, `interlock-http-monitor.yaml`
 - Auth header redaction helpers for HTTP request metadata
-- Current product summary: [`docs/SUMMARY.md`](docs/SUMMARY.md) (replaces historical week/v0.2 summary docs)
+- Current product summary docs (later superseded by [`docs/INTERLOCK.md`](docs/INTERLOCK.md))
 
 ### Changed
 
