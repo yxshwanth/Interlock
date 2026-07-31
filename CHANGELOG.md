@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- **CEF SIEM export (ROADMAP §5)** — `siem.format: cef` ArcSight CEF 0 text lines beside existing OCSF; OCSF path unchanged
+- **Cross-session evidence query (ROADMAP §5)** — SQLite `Query` by `session_id` / `verdict` / `pod_name`; `make query-evidence`; viewer multi-record list mode
+- **Shannon entropy dark measurement (ROADMAP §12)** — corpus-only would-fire rates in `docs/fp_corpus.md`; not wired to verdicts/alerts
+- **Post-attach capability drop (ROADMAP §13)** — clear `CAP_SYS_ADMIN` after eBPF attach; keep `KILL`/`BPF`/`PERFMON`; netns keeps SYS_ADMIN
+
 ## [0.4.0] - 2026-07-30
 
 **v0.4 — Detection depth + definitive reference.** LSM Slice 1, fail-closed, dual ringbufs, and evidence hash chain from the post-v0.3 tree, plus ROADMAP §§7–20 detection/hardening work and [`docs/INTERLOCK.md`](docs/INTERLOCK.md) as the code-backed architecture SoT.

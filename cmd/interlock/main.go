@@ -362,7 +362,11 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 			}
 			return eng.IngestSyscall(ev)
 		}
-		s, sErr := interlockebpf.NewSensor(cfg.EgressAllowlist, cfg.SensitivePaths, cfg.EBPF.LSMEnforce, handler)
+		var sensorOpts []interlockebpf.SensorOption
+		if cfg.Sandbox.NetNS {
+			sensorOpts = append(sensorOpts, interlockebpf.WithKeepSYSAdmin())
+		}
+		s, sErr := interlockebpf.NewSensor(cfg.EgressAllowlist, cfg.SensitivePaths, cfg.EBPF.LSMEnforce, handler, sensorOpts...)
 		if sErr != nil {
 			logger.Printf("WARNING: eBPF sensor failed to initialize: %v", sErr)
 			logger.Printf("  (this is expected if not running as root)")

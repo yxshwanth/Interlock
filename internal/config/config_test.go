@@ -510,7 +510,7 @@ servers:
 	}
 }
 
-func TestLoadSIEMInvalidFormat(t *testing.T) {
+func TestLoadSIEMFormatCEF(t *testing.T) {
 	yaml := `
 siem:
   format: cef
@@ -519,9 +519,27 @@ servers:
   - id: s1
     command: echo
 `
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SIEM.Format != "cef" {
+		t.Fatalf("format=%q", cfg.SIEM.Format)
+	}
+}
+
+func TestLoadSIEMInvalidFormat(t *testing.T) {
+	yaml := `
+siem:
+  format: syslog
+  path: /tmp/x
+servers:
+  - id: s1
+    command: echo
+`
 	_, err := Load(writeTemp(t, yaml))
 	if err == nil {
-		t.Fatal("expected error for cef")
+		t.Fatal("expected error for unknown siem.format")
 	}
 }
 

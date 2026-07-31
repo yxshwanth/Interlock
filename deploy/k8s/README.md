@@ -142,10 +142,10 @@ alerting:
     # url: https://events.pagerduty.com/v2/enqueue
     # pagerduty_routing_key: <from Secret>
 siem:
-  format: ocsf
+  format: ocsf   # or cef
   path: /var/log/interlock/ocsf.jsonl
   # url: https://siem.example/ingest
   min_verdict: SUSPICIOUS
 ```
 
-Trips fan out after evidence persist: Slack Incoming Webhook / PagerDuty Events API v2 / generic JSON, plus OCSF Detection Finding (class_uid 2004) to file and/or HTTP. CEF is not shipped yet.
+Trips fan out after evidence persist: Slack Incoming Webhook / PagerDuty Events API v2 / generic JSON, plus SIEM export (`siem.format: ocsf` or `cef`) to file and/or HTTP. With `evidence.backend: sqlite`, query by session/verdict/pod via `make query-evidence` (JSON array for `web/viewer.html`).
