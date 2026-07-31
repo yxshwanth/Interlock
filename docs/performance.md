@@ -113,7 +113,6 @@ Each skip test names a **distinct** gap. Full list lives in code; the performanc
 |---|---|---|
 | `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: connect flood → routine drops (critical drained, no connect events there); write flood → critical drops; mixed floods at capture 256/512/1024; CI verifies DropCount/CriticalDropCount APIs (`TestLoader_DropCount_Unloaded`); `TestLSM_DenySurvivesConnectFlood` on BPF-LSM hosts |
 | `TestEventLogger_DiskFull_KnownGap` | `internal/proxy` | Disk-full logging behavior |
-| `TestEvidenceStore_CrossSessionQuery_KnownGap` | `internal/engine` | SQLite query API / viewer DB integration |
 | `TestCheckOverlap_CustomCipher_KnownGap` | `internal/engine` | Arbitrary ciphers (XOR stand-in) — not brotli/zstd/lz4; those closed in ROADMAP §9 |
 | `TestCheckOverlap_TripleEncoded` | `internal/engine` | Depth-3 nests **closed** via sink-path recursive decoder |
 | `TestCheckOverlap_PayloadTruncated_KnownGap` | `internal/engine` | Secrets past the eBPF `write()` capture window (`PAYLOAD_MAX` / `payload_capture_bytes`) |

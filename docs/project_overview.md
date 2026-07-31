@@ -85,6 +85,6 @@ Status, shipped/open lists, and build order: [`ROADMAP.md`](ROADMAP.md). Known-g
 
 **v0.2 (met — tagged `v0.2.0` / `v0.2.1` / `v0.2.2`):** HTTP/SSE, multi-session, encoding-aware overlap, Variant B payload paths, async evidence, published overhead.
 
-**v0.3 (Phases 1–4 met; tagged `v0.3.0` for DaemonSet/operability/Trust):** LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge, and Variant B `writev`/`sendmsg`/IPv6 coverage landed in this tree. Remaining enterprise queue: CEF, cross-session query — [`ROADMAP.md`](ROADMAP.md). Gap inventory: [`architecture.md`](architecture.md) §13.
+**v0.3 (Phases 1–4 met; tagged `v0.3.0` for DaemonSet/operability/Trust):** LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge, Variant B `writev`/`sendmsg`/IPv6, CEF SIEM, SQLite cross-session query, Shannon entropy dark measurement (§12), and post-attach cap drop (§13) landed. Remaining Named item: protocol dissectors (§21) — [`ROADMAP.md`](ROADMAP.md). Gap inventory: [`architecture.md`](architecture.md) §13.
 
 **Leading indicators of traction:** integrator outreach (gate cleared), GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.
