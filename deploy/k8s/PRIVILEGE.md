@@ -177,6 +177,32 @@ workloads Interlock did not spawn — eBPF Variant B (payload overlap + kill /
 LSM quarantine) remains the mechanism there. See
 [`docs/architecture.md`](../../docs/architecture.md) §2 trust boundaries.
 
+## Post-attach capability drop (ROADMAP §13)
+
+Startup still requires the caps-first set above (`BPF`, `PERFMON`, `SYS_ADMIN`,
+`KILL`) so load/attach succeeds. After a successful `NewLoader` / `NewSensor`,
+Interlock calls `DropPostAttach` and **clears `CAP_SYS_ADMIN`** from the
+process effective and permitted sets.
+
+| Capability | After attach | Why |
+|---|---|---|
+| `KILL` | **kept** | `KillProcess` / `contained_by_kill` |
+| `BPF` | **kept** | Conservative residual for live map updates (`AddPID`, `SetPayloadCaptureBytes`); SIGHUP does not re-attach probes |
+| `PERFMON` | **kept** | Companion to `BPF` on modern kernels |
+| `SYS_ADMIN` | **dropped** | No longer needed once programs are attached |
+
+**Verified:** Linux root-gated test `TestDropPostAttach_RootGated` in
+`internal/ebpf` — after drop, `CapEff` lacks `SYS_ADMIN`, and map
+`Put`/`AddPID` still succeed. Target posture matches the EKS AL2023 caps
+DaemonSet (kernel `6.1.x` class); re-check CapEff logs (`[SECURITY] caps
+post-attach:…`) on each new node image.
+
+**Exception:** proxy mode with `sandbox.netns: true` keeps `SYS_ADMIN`
+(`WithKeepSYSAdmin`) because child spawn still needs `CLONE_NEWNET`.
+
+DaemonSet YAML startup `securityContext` is unchanged — caps are still
+granted at container start; drop is in-process only.
+
 ## RBAC
 
 The sensor ServiceAccount can only `get/list/watch` pods. Narrow further with

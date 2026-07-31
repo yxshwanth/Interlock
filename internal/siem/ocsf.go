@@ -30,7 +30,7 @@ type DeliveryRecorder interface {
 	RecordAlertDelivery(kind, result string)
 }
 
-// Exporter writes OCSF Detection Finding events to file and/or HTTP.
+// Exporter writes Detection Finding events (OCSF JSON or CEF text) to file and/or HTTP.
 type Exporter struct {
 	cfg      config.SIEMConfig
 	client   *http.Client
@@ -101,8 +101,7 @@ func (e *Exporter) record(result string) {
 }
 
 func (e *Exporter) deliver(rec model.EvidenceRecord) error {
-	ev := ToOCSF(rec)
-	data, err := json.Marshal(ev)
+	data, contentType, err := e.encode(rec)
 	if err != nil {
 		return err
 	}
@@ -112,11 +111,23 @@ func (e *Exporter) deliver(rec model.EvidenceRecord) error {
 		}
 	}
 	if e.cfg.URL != "" {
-		if err := e.postHTTP(data); err != nil {
+		if err := e.postHTTP(data, contentType); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (e *Exporter) encode(rec model.EvidenceRecord) ([]byte, string, error) {
+	if strings.EqualFold(e.cfg.Format, "cef") {
+		return []byte(ToCEF(rec)), "text/plain", nil
+	}
+	ev := ToOCSF(rec)
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, "application/json", nil
 }
 
 func (e *Exporter) appendFile(data []byte) error {
@@ -133,12 +144,15 @@ func (e *Exporter) appendFile(data []byte) error {
 	return nil
 }
 
-func (e *Exporter) postHTTP(data []byte) error {
+func (e *Exporter) postHTTP(data []byte, contentType string) error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, e.cfg.URL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	req.Header.Set("Content-Type", contentType)
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return err
