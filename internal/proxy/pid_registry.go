@@ -98,17 +98,6 @@ func (r *PIDRegistry) Lookup(pid int) (sessionID, serverID string, ok bool) {
 	return "", "", false
 }
 
-// AllPIDs returns every registered PID (for diagnostics/tests).
-func (r *PIDRegistry) AllPIDs() []int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]int, 0, len(r.byPID))
-	for pid := range r.byPID {
-		out = append(out, pid)
-	}
-	return out
-}
-
 func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil

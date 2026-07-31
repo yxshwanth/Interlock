@@ -97,7 +97,6 @@ type Proxy struct {
 	pidRegistry *PIDRegistry
 	agentWriter *FrameWriter
 	stdioRT     *SessionRuntime
-	mu          sync.Mutex
 
 	failClosedActive atomic.Bool
 	failClosedReason atomic.Value // string

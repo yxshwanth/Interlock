@@ -56,30 +56,6 @@ func NewPodAttribution() *PodAttribution {
 	}
 }
 
-// Register records that a host process belongs to a pod/container.
-func (r *PodAttribution) Register(key ProcessKey, pod PodInfo, containerID string) {
-	e := entry{
-		Key:       key,
-		SessionID: SessionIDForPod(pod.UID),
-		Pod: model.PodContext{
-			Namespace: pod.Namespace,
-			PodName:   pod.Name,
-			PodUID:    pod.UID,
-			NodeName:  pod.NodeName,
-		},
-		ContainerID: containerID,
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, exists := r.entries[key]; !exists {
-		r.byPID[key.PID] = append(r.byPID[key.PID], key)
-		r.byPod[pod.UID] = append(r.byPod[pod.UID], key)
-	}
-	r.entries[key] = e
-}
-
 // UnregisterPod removes all processes for a pod UID. Returns the PIDs removed.
 func (r *PodAttribution) UnregisterPod(podUID string) []int {
 	r.mu.Lock()
