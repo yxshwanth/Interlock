@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-func TestPodAttribution_RegisterLookup(t *testing.T) {
+func TestPodAttribution_SyncPodLookup(t *testing.T) {
 	r := NewPodAttribution()
 	pod := PodInfo{UID: "uid-1", Namespace: "ns", Name: "agent", NodeName: "node-a"}
 	key := ProcessKey{PID: 4242, StartTimeNs: 100}
-	r.Register(key, pod, "abc")
+	r.SyncPod(pod, "abc", []ProcessKey{key})
 
 	a, ok := r.Lookup(4242)
 	if !ok {

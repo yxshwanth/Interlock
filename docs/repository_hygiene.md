@@ -78,7 +78,7 @@ This file lowers the barrier for the first contributor and sets expectations. In
 
 **Test.** How to run the suite (`go test ./...`), that `go vet` must be clean, and — specific to this project — that `go test -race` should pass, because concurrency is a real hazard here (the roadmap's PID→session work will lean on this). State the current test count as a baseline expectation: new features come with tests.
 
-**The known-gap discipline.** State it explicitly as a contribution norm: detection features ship with tests that name what they *don't* catch (like `TestCheckOverlap_EncodedExfil_KnownGap`). This is Interlock's signature standard — make it a written rule so contributors uphold it.
+**The known-gap discipline.** State it explicitly as a contribution norm: detection features ship with tests that name what they *don't* catch (like `TestCheckOverlap_CustomCipher_KnownGap`). This is Interlock's signature standard — make it a written rule so contributors uphold it.
 
 **Commit and PR conventions.** Point to §8. Small, focused PRs. One logical change per PR. A PR that does three things is three PRs.
 
