@@ -8,7 +8,7 @@ require (
 	github.com/klauspost/compress v1.19.1
 	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/prometheus/client_golang v1.22.0
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.1
