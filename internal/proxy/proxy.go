@@ -97,7 +97,10 @@ type Proxy struct {
 	pidRegistry *PIDRegistry
 	agentWriter *FrameWriter
 	stdioRT     *SessionRuntime
-	mu          sync.Mutex
+
+	failClosedActive atomic.Bool
+	failClosedReason atomic.Value // string
+	onEnginePanic    func(recovered any)
 }
 
 // New creates a Proxy from the given config.
@@ -127,6 +130,30 @@ func (p *Proxy) PIDRegistry() *PIDRegistry {
 // SetPIDHooks registers eBPF watch/unwatch callbacks on the session manager.
 func (p *Proxy) SetPIDHooks(hooks PIDHooks) {
 	p.sessions.SetPIDHooks(hooks)
+}
+
+// SetFailClosed engages or clears the proxy-side fail-closed circuit breaker.
+// When active, tools/call is denied before EvaluateRequest.
+func (p *Proxy) SetFailClosed(active bool, reason string) {
+	p.failClosedActive.Store(active)
+	if reason == "" {
+		reason = "fail_closed"
+	}
+	p.failClosedReason.Store(reason)
+}
+
+// FailClosed reports whether the proxy circuit breaker is engaged.
+func (p *Proxy) FailClosed() (bool, string) {
+	if !p.failClosedActive.Load() {
+		return false, ""
+	}
+	reason, _ := p.failClosedReason.Load().(string)
+	return true, reason
+}
+
+// SetOnEnginePanic registers a hook invoked when EvaluateRequest panics.
+func (p *Proxy) SetOnEnginePanic(fn func(recovered any)) {
+	p.onEnginePanic = fn
 }
 
 func (p *Proxy) logEvent(ev model.InterceptedEvent) {

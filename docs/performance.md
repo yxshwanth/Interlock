@@ -1,6 +1,6 @@
 # Performance
 
-Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+).
+Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+). For live production numbers (not benchmark snapshots), scrape `interlock_*` Prometheus metrics from `observability.listen` — including `interlock_ebpf_ringbuf_drops_total` (routine) and `interlock_ebpf_critical_ringbuf_drops_total` (critical) — see [`architecture.md` §14.1](architecture.md#141-metrics-and-health-internalobservability) and [`deploy/k8s/README.md`](../deploy/k8s/README.md#metrics-and-health-phase-3-slice-1).
 
 ## What these numbers are and are not
 
@@ -10,7 +10,7 @@ Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP p
 
 Do **not** quote `BenchmarkEngine_EvaluateRequest_Exfil` (~0.56 ms) as steady-state overhead. Do **not** quote absolute `read_ticket` p99 (~12 ms) as "Interlock's cost" — that is mostly the demo tickets server's I/O.
 
-**Headline (engine delta, snapshot machine):** Interlock adds **sub-millisecond engine overhead** — **~0.5 ms on sensitive reads (typical agent traffic)** and **~0.1 ms on sink checks**. Agents read sensitive data constantly; the common path is the higher number, not the lower.
+**Headline (engine delta, snapshot machine):** Interlock adds **sub-millisecond engine overhead** — **~0.5 ms on sensitive reads (typical agent traffic)** and **~0.1 ms on sink checks**. Agents read sensitive data constantly; the common path is the higher number, not the lower. This headline is measured on short (~40-byte) token-shaped secrets; it does **not** hold for a session that reads PEM/PuTTY-shaped keyfiles — see "Read-path scaling by value size" below.
 
 ## End-to-end HTTP overhead
 
@@ -18,7 +18,7 @@ Do **not** quote `BenchmarkEngine_EvaluateRequest_Exfil` (~0.56 ms) as steady-st
 
 - **Command:** `make bench-http` (requires `make build` for demo server binaries)
 - **Harness:** `internal/proxy/http/` — `httptest` + real ticket/messenger STDIO backends; SSE responses; `initialize` outside timer
-- **A (absolute):** `TestHTTP_OverheadReport_*` — 10,000 client-side samples (`OVERHEAD_SAMPLES` env to override); p50/p95/p99/p999 — **fixture context only**, not Interlock isolation
+- **A (absolute):** `TestHTTP_OverheadReport_*` + `TestHTTP_ConcurrentLoad_ReadTicket` — 10,000 client-side samples (`OVERHEAD_SAMPLES` env to override; concurrent uses `CONCURRENT_SESSIONS`, default 4); p50/p95/p99/p999 — **fixture context only**, not Interlock isolation
 - **C (engine delta):** `BenchmarkHTTP_EngineDelta_*` — same stack, engine on vs passthrough (`engine == nil`); mean ns/op and allocs/op — **the deployer-facing Interlock cost**
 - **Environment:** Linux amd64, Go 1.25 — snapshot machine; numbers drift across hardware
 
@@ -37,8 +37,9 @@ Passthrough uses `proxy.New(..., nil)` — same HTTP path, no `EvaluateRequest` 
 |---|---:|---:|---:|---|
 | `read_ticket` (block config, benign — no trip) | 5.27 ms | 12.64 ms | 14.80 ms | Dominated by demo **tickets** STDIO backend payload work, not Interlock |
 | `send_message` benign (monitor, full eval) | 0.89 ms | 1.85 ms | 2.16 ms | Lighter messenger backend + Interlock; full trifecta + `CheckOverlap`, allow forward |
+| `read_ticket` concurrent (4 sessions, block) | 1.04 ms | 3.11 ms | 5.96 ms | `TestHTTP_ConcurrentLoad_ReadTicket` (n=1000); multi-session pool contention + backend I/O — still not Interlock isolation |
 
-Absolute rows differ because the **backends differ** (heavy read vs cheap send), not because Interlock treats them differently. Use **C** for Interlock overhead; use **A** only with the backend caveat above.
+Absolute rows differ because the **backends differ** (heavy read vs cheap send), not because Interlock treats them differently. Use **C** for Interlock overhead; use **A** only with the backend caveat above. Concurrent A adds session-pool contention on top of the same backend-dominated path.
 
 ### Reading the HTTP numbers
 
@@ -53,10 +54,12 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 **Read-path scaling:** the ~536 µs / +63 allocs delta is for a demo ticket with **2 tainted values**. `IngestResult` registers each secret plus five canonical encodings — cost scales **linearly with secrets-per-result**. A payload returning 50 secrets would be roughly 25× that ingestion work; "~0.5 ms" means "~0.5 ms for a 2-secret read," not a universal ceiling. Same caveat class as the absolute-latency backend-I/O note: measured on a toy fixture; scaling behavior is documented so you can extrapolate.
 
+**Read-path scaling by VALUE size, not just count — the "~0.5 ms" headline does not hold for a keyfile read.** Every prior number on this page is measured against short (~40-byte) token-shaped secrets. `internal/engine/taint.go`'s PEM/PuTTY patterns register a whole private-key block (~1.7-3.2KB for a real RSA-2048+ key) as one tainted value — a materially different size class. `BenchmarkCanonicalEncodings_PEMSized` (~111 µs vs. ~68-88 µs token-sized) shows registration itself only grows modestly. The bigger effect is in `IngestResult`'s reassembly path: `appendFragment`'s rolling FIFO caps at 16 chunks / 64KB (`defaultFragmentChunks`, `defaultFragmentBytes`), and `ExtractTaintedValues` re-runs its full pattern set (6 regexes) over `strings.Join(state.FragmentChunks, "")` on **every** sensitive-source read, not just the fresh chunk. With ~40-byte tokens, 16 chunks reassemble to under 1KB; with ~1.7KB PEM chunks, the same 16-chunk cap reassembles to **~28KB**, scanned by every pattern on every read. Measured: `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` — **~4.1-4.3 ms/op**, ~1.8MB/op, 189-196 allocs, against the token-fixture baseline's ~345 µs/op — **roughly 12x**, not the 1.5x `CanonicalEncodings` alone would predict. A session that reads keyfiles/PEM-shaped secrets repeatedly reaches this steady-state reassembly cost within ~16 reads (vs. ~1600 reads for 40-byte tokens before the FIFO fills at its byte cap) and pays it on every subsequent sensitive read, not just once.
+
 **Two optimization levers (different hot spots):**
 
-1. **Block path:** evidence construction + sink write (~563 µs / 6.3K allocs on trip) — async evidence emit (ROADMAP).
-2. **Read path:** taint ingestion + canonical encodings on sensitive results — the bigger **per-benign-call** contributor (~536 µs delta).
+1. **Block path:** evidence construction (~563 µs / 6.3K allocs on trip with in-memory sink). **Async evidence emit (shipped):** `AsyncEvidenceSink` enqueues under `Emit` so JSONL/SQLite/`evidence.json` I/O no longer runs under `Engine.mu` before `Decision` returns. Construction still dominates allocs; sink I/O is off the hot path. Config: `evidence.backpressure: block | drop`, `evidence.queue_size`.
+2. **Read path:** taint ingestion + canonical encodings on sensitive results — the bigger **per-benign-call** contributor (~536 µs delta). **Shipped mechanical opts:** `CanonicalEncodings` writes `[]TaintedVariant` directly (no intermediate `EncodedForm` copy); `HashValue` uses `hex.EncodeToString`; `extractResultText` uses `strings.Builder`. Isolated `IngestResult` microbench ~8.2 µs / 38 allocs (was ~14.9 µs / 39; microbench also fixed to reset tainted slice instead of growing forever). HTTP delta remains backend+proxy dominated — expect modest wall-time change on C.
 
 ## Engine microbenchmarks
 
@@ -69,31 +72,53 @@ Absolute rows differ because the **backends differ** (heavy read vs cheap send),
 
 | Benchmark | ns/op | B/op | allocs/op | Notes |
 |-----------|------:|-----:|----------:|-------|
-| `BenchmarkCanonicalEncodings` | 276 | 576 | 7 | Per-secret transform precompute at registration |
-| `BenchmarkCheckOverlap_1Tainted` | 70 | 80 | 1 | Sink scan, 1 tainted value (5 forms) |
-| `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values |
+| `BenchmarkCanonicalEncodings` | ~640µs | — | — | Per-secret transforms including depth-2 nests + gzip/brotli/zstd/lz4_base64 (ROADMAP §9; compressor writers dominate) |
+| `BenchmarkCheckOverlap_1Tainted` | ~1.2µs | 840 | 14 | Sink scan; may reassemble JSON string leaves; more forms than v0.2 five-form set |
+| `BenchmarkCheckOverlap_10Tainted` | 517 | 80 | 1 | 10 tainted values (pre-expansion snapshot; re-run after form growth) |
 | `BenchmarkCheckOverlap_50Tainted` | 2146 | 80 | 1 | 50 tainted values |
-| `BenchmarkEngine_IngestResult_TaintExtract` | 14860 | 2808 | 39 | Sensitive source result ingest + taint — explains ReadTicket HTTP delta |
-| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence emit — rare trip only |
+| `BenchmarkCheckOverlap_MissPath/100` | ~12µs | — | — | Full scan, no hit |
+| `BenchmarkCheckOverlap_MissPath/1000` | **~121µs** | — | — | **Gate:** still sub-ms after +3 compressor forms (was ~100µs) |
+| `BenchmarkCheckOverlap_MissPath/10000` | ~1.1ms | 832 | 14 | Linear; only pathological sessions |
+| `BenchmarkCheckOverlap_HitPath/1000` | ~79ns | 144 | 2 | Early match independent of map size |
+| `BenchmarkCheckOverlap_DecodeMissPath/depth3` | **~391µs** | — | — | 1K tainted + base64-looking unrelated leaf; default budget |
+| `BenchmarkCheckOverlap_DecodeMissPath/depth4` | **~391µs** | — | — | Same fixture at `max_decode_depth=4` — flat vs depth 3 (within noise) |
+| `BenchmarkCheckOverlap_DecodeMissPath/depth5` | **~377µs** | — | — | Same at depth 5; still inside ~0.5 ms class (ROADMAP §15) |
+| `BenchmarkCheckOverlap_DecodeHitPath` | **~5µs** | — | — | Depth-3 `b64(hex(b64(secret)))` unwrap hit |
+| `BenchmarkEvaluateRequest_Exfil_Scale/1000` | ~140µs | 64KB | 900 | Engine path with fat taint map (hit); evidence construction dominates when tripping |
+| `BenchmarkEngine_IngestResult_TaintExtract` | 8163 | 2305 | 38 | Sensitive source result ingest + taint (session legs warmed; tainted reset each iter) |
+| `BenchmarkEngine_EvaluateRequest_Exfil` | 562798 | 432733 | 6296 | Worst-case block + evidence **construction** (in-memory test sink) — rare trip only; production disk I/O is async via `AsyncEvidenceSink` |
+| `BenchmarkCanonicalEncodings_PEMSized` | ~111µs | ~869KB | 42 | Registration cost for one ~1.7KB PEM-sized value vs. `BenchmarkCanonicalEncodings`'s ~40-byte token — only ~1.5x, not the dominant PEM cost |
+| `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` | **~4.1-4.3ms** | ~1.8MB | ~190 | Same fixture as `BenchmarkEngine_IngestResult_TaintExtract` but with a PEM-sized value — **~12x** the token baseline; dominated by the fragment-reassembly regex pass, see "Read-path scaling by value size" above |
+
+### Taint-map scaling curve (snapshot)
+
+`CheckOverlap` miss-path is **linear** in tainted count × ~13 canonical forms. At **1 000** tainted values the miss path is ~**121 µs** — well inside the sink overhead budget. On still-miss, a **bounded recursive decoder** (base64/hex, `trifecta.max_decode_depth` default **5**, clamp `[3,5]`) may run on JSON string leaves; `DecodeMissPath` stays ~**380–390 µs** at depths 3/4/5 (flat within noise — raising the knob does not leave the ~0.5 ms class). **Default is 5 because EXFIL FP stayed 0.0% at 3/4/5** (`TestCorpus_DecodeDepthFPCurve`), not because of latency. At 10 000 (~1.1 ms) sessions are pathological; operators should not retain that many live secrets.
+
+Reproduce: `go test -bench='BenchmarkCheckOverlap_(MissPath|HitPath|Scale|Decode)' -benchtime=50ms -benchmem ./internal/engine/`
+
+**50 concurrent sessions:** absolute HTTP latency under concurrency is **backend- and pool-dominated**, not overlap-scan dominated. `TestHTTP_ConcurrentLoad_ReadTicket` publishes absolute p99 at `CONCURRENT_SESSIONS` (default 4; raise to 50 for a local soak). Engine delta (C) remains the deployer-facing Interlock cost (~0.5 ms read / ~0.1 ms sink on the 2-secret fixture). Fat-taint miss-path above shows overlap itself stays cheap until thousands of registered secrets.
 
 ### Reading the engine numbers
 
-- **Overlap check** scales linearly with tainted count; constant 80 B/op — no per-value allocation in the scan.
+- **Overlap check** scales linearly with tainted count × form count (~121 µs miss-path at 1K tainted); same-call reassembly adds a JSON walk on miss; recursive decode (depths 3–5) stays inside ~0.5 ms on decode-miss.
+- **CanonicalEncodings** grew after depth-2 + `gzip_base64` + ROADMAP §9 brotli/zstd/lz4 — registration ~**640 µs**/secret (compressor writers dominate allocs). Miss-path / decode-miss stayed in the ~0.5 ms class, so the three forms ship **always-on** (no `extra_compressors` gate).
 - **IngestResult** cost shows up on sensitive **reads** in the HTTP delta, not on sink overlap checks.
-- **EvaluateRequest exfil path** is dominated by evidence emit on trip — see async evidence emit (ROADMAP).
+- **EvaluateRequest exfil path** is dominated by evidence **construction** on trip. Disk persistence is async (`AsyncEvidenceSink`); further wins require moving `buildEvidence` off the hot path (deferred).
 
 ## Known gaps
 
-Each skip test names a **distinct** gap:
+Each skip test names a **distinct** gap. Full list lives in code; the performance-relevant subset:
 
 | Test | Package | Gap |
 |---|---|---|
-| `TestHTTP_ConcurrentLoad_KnownGap` | `internal/proxy/http` | Concurrent multi-session HTTP load p99 (single-session A+C is covered) |
-| `TestEBPF_RingbufSaturation_KnownGap` | `internal/ebpf` | Kernel ring-buffer saturation under load |
+| `TestEBPF_RingbufSaturation_UnderLoad` | `internal/ebpf` | Root-gated: connect flood → routine drops (critical drained, no connect events there); write flood → critical drops; mixed floods at capture 256/512/1024; CI verifies DropCount/CriticalDropCount APIs (`TestLoader_DropCount_Unloaded`); `TestLSM_DenySurvivesConnectFlood` on BPF-LSM hosts |
 | `TestEventLogger_DiskFull_KnownGap` | `internal/proxy` | Disk-full logging behavior |
-| `TestEvidenceStore_CrossSessionQuery_KnownGap` | `internal/engine` | SQLite query API / viewer DB integration |
+| `TestCheckOverlap_CustomCipher_KnownGap` | `internal/engine` | Arbitrary ciphers (XOR stand-in) — not brotli/zstd/lz4; those closed in ROADMAP §9 |
+| `TestCheckOverlap_TripleEncoded` | `internal/engine` | Depth-3 nests **closed** via sink-path recursive decoder |
+| `TestCheckOverlap_PayloadTruncated_KnownGap` | `internal/engine` | Secrets past the eBPF `write()` capture window (`PAYLOAD_MAX` / `payload_capture_bytes`) |
+| `TestToolShadowing_RuntimeReregistration_KnownGap` | `internal/proxy` | Mid-session dynamic tool re-registration not re-checked |
 
-There is **one** HTTP load gap test — `TestHTTP_ConcurrentLoad_KnownGap`. The former `TestBenchmark_FullHTTPLoad_KnownGap` in `engine/` was removed to avoid documenting the same hole twice.
+Concurrent multi-session HTTP load p99 is covered by `TestHTTP_ConcurrentLoad_ReadTicket` (CI smoke: `CONCURRENT_SESSIONS=2 OVERHEAD_SAMPLES=100`) — it replaced the removed `TestHTTP_ConcurrentLoad_KnownGap` once that gap closed. `TestCheckOverlap_EncodedExfil_KnownGap` (`internal/engine`) is a stale name carried forward from v0.1: it now **passes** rather than skips — base64/hex/URL/reversal overlap is shipped — but the name wasn't renamed to avoid rewriting the ROADMAP history that cites it as the "done when" milestone for v0.2 Phase 3.
 
 ## Reproduce
 

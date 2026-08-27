@@ -2,7 +2,7 @@
 
 ## One line
 
-Interlock is a **runtime behavioral firewall for AI agents**. It watches what an agent *does* across its tool calls and severs the connection the instant a benign-looking sequence turns into a data exfiltration.
+Interlock is a **runtime behavioral firewall for AI agents**. It watches what an agent *does* across its tool calls and, when it can **prove** a secret moved — the tainted bytes, or a registered encoding of them, actually appear in a sink call's args or a captured syscall payload — cuts the connection before the call completes. That is a narrower, more defensible claim than "catches exfiltration": it proves exfiltration when the bytes are visible in something Interlock inspects, and says so when they aren't. [`docs/cve_corpus.md`](cve_corpus.md) is the ledger of which published, real-world attacks land on which side of that line.
 
 ---
 
@@ -24,7 +24,7 @@ The framing is Simon Willison's **"lethal trifecta."** An agent is dangerous whe
 
 Any one leg is safe. All three, live in one session, is how data walks out — usually via **tool poisoning**: an attacker hides instructions inside a tool's *result*, which the agent reads as trusted context. The mid-2025 Supabase/Cursor breach was exactly this shape: privileged data access + attacker-supplied input + an external channel.
 
-Interlock detects that combination **at runtime** and cuts the third leg before data leaves.
+Interlock detects that combination **at runtime** and cuts the third leg before data leaves — when it can **prove** a secret moved (byte/encoding overlap). What that proof covers, and the intentional **semantic / paraphrase** gap, are spelled out in [`detection_boundary.md`](detection_boundary.md).
 
 ---
 
@@ -49,41 +49,23 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 - **Runtime, not static.** Detection happens as the agent acts, not before it starts.
 - **Sequence-level, not per-call.** The unit of detection is the trifecta pattern across a session, which no per-call scanner models.
 - **Two observation planes.** A userspace MCP proxy *and* a kernel-level eBPF sensor, so it catches both chained-tool exfil and out-of-band side channels the proxy can't see.
-- **Evidence-first.** Every trip produces a receipt — the injected instruction, the sensitive read, the attempted send — down to the syscall.
+- **Evidence-first.** Every trip produces a receipt — the injected instruction, the sensitive read, the attempted send — down to the syscall. Records are hash-chained for on-node integrity (`make verify-evidence`).
 
 ---
 
-## Core tech stack (v0.2.1)
+## Core tech stack
 
 | Layer | Choice |
 |---|---|
 | Language (proxy, engine, control plane) | **Go** |
-| Kernel sensor | **eBPF** via `cilium/ebpf` (ebpf-go); `connect()` probe only |
+| Kernel sensor | **eBPF** via `cilium/ebpf` (ebpf-go); connect/write/writev/sendto/sendmsg/openat; opt-in LSM `socket_connect` quarantine |
+| Ring buffers | Dual 256 KiB: **routine** (connect/openat) + **critical** (write/writev/sendto/sendmsg/`lsm_deny`) |
 | Transport intercepted | **MCP over STDIO** (default) or **Streamable HTTP** (`2025-11-25`); backend servers remain STDIO children |
-| Demo agent | **Claude Agent SDK** (scripted demo client) |
 | Evidence UI | Self-contained **local HTML** (read-only) |
-| Dev platform | **Ubuntu 6.x + BTF** (CO-RE-friendly) |
-| Session state | In-memory per `session_id`; HTTP multi-session via `SessionManager` + `PIDRegistry` |
-| Evidence persistence | **JSONL** default; opt-in **SQLite** with `max_records` retention |
+| Kubernetes deploy | Sensor-only **DaemonSet**; `taint_bridge` (SO_PEERCRED); **EKS validated** |
+| Metrics / SIEM | Prometheus `/metrics` + `/healthz`; webhooks; **OCSF 1.3** |
 
----
-
-## Shipped vs deferred (v0.2.1)
-
-**Shipped in v0.2:**
-
-- Streamable HTTP MCP transport; multi-session concurrency with PID→session attribution
-- Bounded encoding overlap on Variant A (base64, hex, URL-encoding, reversal)
-- Engine microbenchmarks + end-to-end HTTP overhead story ([`performance.md`](performance.md))
-- Opt-in SQLite evidence, event log backpressure, eBPF ring-buffer drop counter
-
-**Still out of scope** (see [`ROADMAP.md`](ROADMAP.md)):
-
-- eBPF `sendto`/`write` payload capture (Variant B remains a `connect()` tripwire)
-- Full byte-level dataflow taint (split/compressed/nested encoding — known-gap tests)
-- Kernel-level blocking (LSM/KRSI), Kubernetes DaemonSet deployment
-- Dashboard beyond the read-only viewer, cross-session query API, SIEM/metrics layer
-- Multi-agent orchestration, policy config UX, managed platform
+Status, shipped/open lists, and build order: [`ROADMAP.md`](ROADMAP.md). Known-gap tiers: [`architecture.md`](architecture.md) §13.
 
 ---
 
@@ -101,6 +83,8 @@ The one-line pitch they instantly understand: *"Scanners check what tools claim.
 
 **v0.1 (met — tagged `v0.1.0`):** both attack variants demo on STDIO; one-command reproduce; syscall-level evidence receipt.
 
-**v0.2 (met — tagged `v0.2.0` + `v0.2.1`):** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil on Variant A, publishes scoped overhead numbers, persists evidence (SQLite opt-in). Full audit: [`v0.2_summary.md`](v0.2_summary.md).
+**v0.2 (met — tagged `v0.2.0` / `v0.2.1` / `v0.2.2`):** HTTP/SSE, multi-session, encoding-aware overlap, Variant B payload paths, async evidence, published overhead.
 
-**Leading indicators of traction:** GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.
+**v0.3 (Phases 1–4 met; tagged `v0.3.0` for DaemonSet/operability/Trust):** LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge, Variant B `writev`/`sendmsg`/IPv6, CEF SIEM, SQLite cross-session query, Shannon entropy dark measurement (§12), and post-attach cap drop (§13) landed. Remaining Named item: protocol dissectors (§21) — [`ROADMAP.md`](ROADMAP.md). Gap inventory: [`architecture.md`](architecture.md) §13.
+
+**Leading indicators of traction:** integrator outreach (gate cleared), GitHub stars, maintainer engagement, and at least one "the next MCP CVE — Interlock would have caught it, here's the trace" moment.

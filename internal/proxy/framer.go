@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"sync"
 )
@@ -55,9 +56,15 @@ func NewFrameWriter(w io.Writer) *FrameWriter {
 }
 
 // WriteFrame writes data followed by a newline. Thread-safe.
+// Rejects frames larger than maxFrameSize so len(data)+1 cannot overflow
+// the allocation size.
 func (fw *FrameWriter) WriteFrame(data []byte) error {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
+
+	if len(data) > maxFrameSize {
+		return fmt.Errorf("frame exceeds max size (%d bytes)", maxFrameSize)
+	}
 
 	buf := make([]byte, len(data)+1)
 	copy(buf, data)

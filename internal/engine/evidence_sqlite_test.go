@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -139,8 +140,88 @@ func TestSQLiteEvidenceSink_ConcurrentRetention(t *testing.T) {
 	}
 }
 
-func TestEvidenceStore_CrossSessionQuery_KnownGap(t *testing.T) {
-	t.Skip("known v0.2 gap: SQLite stores records but no query API or viewer DB integration yet")
+func TestEvidenceStore_CrossSessionQuery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence.db")
+	sink, err := NewSQLiteEvidenceSink(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+
+	recs := []model.EvidenceRecord{
+		{
+			SessionID:  "sess-a",
+			TripTS:     100,
+			Verdict:    model.VerdictExfil,
+			Action:     model.ActionPrevented,
+			Variant:    model.VariantA,
+			Confidence: 0.95,
+			Pod:        &model.PodContext{PodName: "agent-a", Namespace: "ns"},
+		},
+		{
+			SessionID:  "sess-b",
+			TripTS:     200,
+			Verdict:    model.VerdictSuspicious,
+			Action:     model.ActionDetectedOnly,
+			Variant:    model.VariantB,
+			Confidence: 0.6,
+			Pod:        &model.PodContext{PodName: "agent-b", Namespace: "ns"},
+		},
+		{
+			SessionID:  "sess-a",
+			TripTS:     300,
+			Verdict:    model.VerdictSuspicious,
+			Action:     model.ActionDetectedOnly,
+			Variant:    model.VariantA,
+			Confidence: 0.6,
+			Pod:        &model.PodContext{PodName: "agent-a", Namespace: "ns"},
+		},
+	}
+	for _, rec := range recs {
+		if err := sink.Emit(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	bySession, err := sink.Query(context.Background(), EvidenceQuery{SessionID: "sess-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bySession) != 2 {
+		t.Fatalf("session sess-a: got %d", len(bySession))
+	}
+	if bySession[0].TripTS < bySession[1].TripTS {
+		t.Fatal("expected trip_ts DESC order")
+	}
+
+	byVerdict, err := sink.Query(context.Background(), EvidenceQuery{Verdict: string(model.VerdictExfil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byVerdict) != 1 || byVerdict[0].SessionID != "sess-a" {
+		t.Fatalf("verdict EXFIL: %+v", byVerdict)
+	}
+
+	byPod, err := sink.Query(context.Background(), EvidenceQuery{PodName: "agent-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byPod) != 1 || byPod[0].SessionID != "sess-b" {
+		t.Fatalf("pod agent-b: %+v", byPod)
+	}
+
+	combined, err := sink.Query(context.Background(), EvidenceQuery{
+		SessionID: "sess-a",
+		Verdict:   string(model.VerdictSuspicious),
+		PodName:   "agent-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(combined) != 1 || combined[0].TripTS != 300 {
+		t.Fatalf("combined filter: %+v", combined)
+	}
 }
 
 func sampleEvidence(sessionID string) model.EvidenceRecord {
@@ -166,10 +247,13 @@ func TestNewEvidenceSink_DefaultJSONL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if js, ok := sink.(*JSONLEvidenceSink); ok {
-		defer js.Close()
-	} else {
-		t.Fatalf("expected JSONLEvidenceSink, got %T", sink)
+	async, ok := sink.(*AsyncEvidenceSink)
+	if !ok {
+		t.Fatalf("expected AsyncEvidenceSink, got %T", sink)
+	}
+	defer async.Close()
+	if _, ok := async.inner.(*JSONLEvidenceSink); !ok {
+		t.Fatalf("expected inner JSONLEvidenceSink, got %T", async.inner)
 	}
 }
 
@@ -185,9 +269,12 @@ func TestNewEvidenceSink_SQLite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ss, ok := sink.(*SQLiteEvidenceSink); ok {
-		defer ss.Close()
-	} else {
-		t.Fatalf("expected SQLiteEvidenceSink, got %T", sink)
+	async, ok := sink.(*AsyncEvidenceSink)
+	if !ok {
+		t.Fatalf("expected AsyncEvidenceSink, got %T", sink)
+	}
+	defer async.Close()
+	if _, ok := async.inner.(*SQLiteEvidenceSink); !ok {
+		t.Fatalf("expected inner SQLiteEvidenceSink, got %T", async.inner)
 	}
 }
