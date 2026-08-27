@@ -1,0 +1,23 @@
+# Pinned environment for regenerating bpf2go artifacts (clang + libbpf headers).
+# Consumers do NOT need this image — committed connect_x86_bpfel.o is embedded.
+#
+# Build:  docker build -f deploy/build/Dockerfile.bpf -t interlock-bpf-builder .
+# Regen:  make bpf-generate
+#
+# Base: golang:1.25 (matches go.mod) + Debian clang/llvm/libbpf-dev.
+FROM golang:1.25-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	clang \
+	llvm \
+	libbpf-dev \
+	linux-libc-dev \
+	make \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Record toolchain versions for operators comparing rebuilds.
+RUN clang --version && llvm-config --version && go version
+
+WORKDIR /src
+# Default command prints help; make bpf-generate overrides with go generate.
+CMD ["bash", "-c", "echo 'Use: make bpf-generate (or docker run ... go generate ./internal/ebpf/...)'"]

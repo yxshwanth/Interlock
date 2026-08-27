@@ -15,6 +15,10 @@ egress_allowlist:
   - 127.0.0.1
   - api.anthropic.com
 
+# sensitive_paths:           # openat pathname prefixes; empty = ignore openat trips
+#   - /etc/shadow
+#   - /var/run/secrets
+#   - /home/
 servers:
   - id: tickets
     command: ./servers/tickets/tickets
@@ -36,10 +40,48 @@ untrusted_origins:
   tool_results: true
   web_fetches:  true
 
+# sandbox:
+#   netns: false               # CLONE_NEWNET for spawned children (proxy mode); needs CAP_SYS_ADMIN
+#   spawn_allowlist: []        # optional extra resolved executables beyond servers[].command
+
+# vault:                       # ROADMAP §10 — opt-in token vaulting
+#   enabled: false             # replace extracted secrets with dummies in agent-visible results
+#   authorize:                 # empty = never detokenize (default when enabled)
+#     - tool: billing_charge
+#       secret_classes: [extracted]  # or ["*"]
+
+# server_defaults:             # ROADMAP §14 — opt-in sink inheritance
+#   inherit_sink_suspicion: false  # tools on sensitive_source servers gated unless allowlisted
+#   sink_suspicion_allowlist: []   # SOLE exemption when inherit is on — empty tool_tags: [] still inherits
+#                                  # restart required (like sandbox.netns)
+
+# trifecta:                    # leg decay + SUSPICIOUS content-bind thresholds
+#   leg_ttl: 30m               # dim sticky legs after this idle-with-leg window
+#   decay_after_calls: 32      # dim after N subsequent tool events
+#   content_bind_min_len: 16   # min shared substring for SUSPICIOUS content-bind
+#   chunk_match_bytes: 32      # long-secret contiguous chunk size N
+#   chunk_match_min_value_len: 64  # only chunk tainted values ≥ this length
+#   max_decode_depth: 5        # default 5 (FP-driven); clamp [3,5] — lower to reduce decode aggressiveness
+#   egress_reassembly_enabled: true   # default true: bounded egress flow reassembly before payload overlap
+#   egress_fragment_max_chunks: 16    # per-(pid,destination) chunk cap
+#   egress_fragment_max_bytes: 4096   # per-(pid,destination) byte budget
+#   egress_fragment_max_age: 10s      # slow-trickle beyond this window re-misses (honest KnownGap)
+#   egress_max_destinations_per_session: 32  # bound active egress flow keys per session
+#   container_inspect_enabled: true          # ROADMAP §20: bounded ZIP/gzip/zlib/tar descent
+#   container_max_decompressed_bytes: 10485760  # 10 MiB cumulative; abort past (KnownGap)
+#   container_max_descent_depth: 2           # zip-in-zip stop
+#   container_max_parts: 100                 # archive member walk cap
+#   container_max_inspect_ms: 50             # wall-time budget per walk
+
+# ebpf:
+#   payload_capture_bytes: 1024  # default = PAYLOAD_MAX; knob only reduces (ringbuf pressure); >1024 needs BPF rebuild
+
 # evidence:
-#   backend: jsonl          # jsonl (default) | sqlite
+#   backend: jsonl          # jsonl (intentional default) | sqlite (opt-in retention)
 #   path: evidence.jsonl    # or evidence.db for sqlite
 #   max_records: 1000       # sqlite retention cap (0 = unlimited)
+#   backpressure: block     # block (default) | drop — async emit queue
+#   queue_size: 256         # async emit bounded queue
 
 # logging:
 #   backpressure: block     # block (default) | drop

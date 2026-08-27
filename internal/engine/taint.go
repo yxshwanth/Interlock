@@ -2,8 +2,8 @@ package engine
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -23,6 +23,18 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:auth[_ ]?token|bearer|token)[:\s]+["']?([A-Za-z0-9+/=_-]{20,})["']?`),
 	// Account IDs: acct_..., account_...
 	regexp.MustCompile(`\b(acct_[A-Za-z0-9_]{8,})\b`),
+	// PEM private key blocks (RSA/EC/DSA/OPENSSH/PKCS8, encrypted or not).
+	// Unlike the token patterns above, a PEM body is base64 noise with no
+	// textual marker of its own — the BEGIN/END lines are the only fixed
+	// anchor, so the whole block (not a captured sub-value) is what gets
+	// tainted. See docs/cve_corpus.md's cve_2025_53109_filesystem_escaperoute
+	// scenarios: a verbatim private key relayed to a sink is the most
+	// literal exfiltration shape possible, and previously produced zero
+	// tainted values because nothing here matched it at all.
+	regexp.MustCompile(`(?s)(-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----)`),
+	// PuTTY .ppk private key files: text format with its own header/MAC
+	// framing rather than PEM's BEGIN/END lines.
+	regexp.MustCompile(`(?s)(PuTTY-User-Key-File-\d+:.*?Private-MAC:\s*[0-9a-fA-F]+)`),
 }
 
 // ExtractTaintedValues scans resultText for candidate secrets and returns
@@ -44,7 +56,7 @@ func ExtractTaintedValues(resultText, source string, seq uint64) []model.Tainted
 
 			values = append(values, model.TaintedValue{
 				Value:        val,
-				Variants:     taintedVariants(val),
+				Variants:     CanonicalEncodings(val),
 				Hash:         HashValue(val),
 				Preview:      MaskValue(val),
 				Source:       source,
@@ -57,19 +69,10 @@ func ExtractTaintedValues(resultText, source string, seq uint64) []model.Tainted
 	return values
 }
 
-func taintedVariants(value string) []model.TaintedVariant {
-	forms := CanonicalEncodings(value)
-	out := make([]model.TaintedVariant, len(forms))
-	for i, f := range forms {
-		out[i] = model.TaintedVariant{Form: string(f.Form), Value: f.Value}
-	}
-	return out
-}
-
 // HashValue returns the hex-encoded SHA-256 hash of the value.
 func HashValue(value string) string {
 	h := sha256.Sum256([]byte(value))
-	return fmt.Sprintf("%x", h)
+	return hex.EncodeToString(h[:])
 }
 
 // MaskValue returns a masked preview of the value, showing the first 3

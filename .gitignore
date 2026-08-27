@@ -11,6 +11,7 @@
 /servers/tickets/tickets
 /servers/messenger/messenger
 /servers/exfil/exfil
+/dist/
 
 # Test binary
 *.test
@@ -25,6 +26,9 @@ go.work.sum
 
 # Dependency directory
 vendor/
+
+# Throwaway LSM/KRSI VM keys (deploy/ec2/) — never commit
+deploy/ec2/.keys/
 
 # IDE / editor
 .vscode/
@@ -45,3 +49,7 @@ evidence.json
 evidence-*.jsonl
 events.jsonl
 events-*.jsonl
+
+# Agents
+.cursor/
+.claude/

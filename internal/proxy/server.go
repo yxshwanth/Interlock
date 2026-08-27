@@ -21,12 +21,30 @@ type ServerProcess struct {
 	PID    int
 }
 
+// StartServerOpts controls spawn-time isolation for a child MCP server.
+type StartServerOpts struct {
+	// NetNS places the child in a fresh network namespace (CLONE_NEWNET).
+	// Default false. Requires CAP_SYS_ADMIN on Linux.
+	NetNS bool
+	// SpawnPolicy validates the resolved executable against pinned server paths.
+	SpawnPolicy SpawnPolicy
+}
+
 // StartServer launches an MCP server as a child process, wiring its
 // stdin/stdout/stderr as pipes for the proxy to interpose on.
-func StartServer(ctx context.Context, cfg config.ServerConfig) (*ServerProcess, error) {
-	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
+func StartServer(ctx context.Context, cfg config.ServerConfig, opts StartServerOpts) (*ServerProcess, error) {
+	resolved, err := ValidateSpawnCommand(cfg.ID, cfg.Command, opts.SpawnPolicy)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.CommandContext(ctx, resolved, cfg.Args...)
 	// Isolate the child in its own process group so we can kill it cleanly.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	attr := &syscall.SysProcAttr{Setpgid: true}
+	if err := applySandboxNetNS(attr, opts.NetNS); err != nil {
+		return nil, fmt.Errorf("server %s: %w", cfg.ID, err)
+	}
+	cmd.SysProcAttr = attr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -42,6 +60,9 @@ func StartServer(ctx context.Context, cfg config.ServerConfig) (*ServerProcess, 
 	}
 
 	if err := cmd.Start(); err != nil {
+		if opts.NetNS {
+			return nil, fmt.Errorf("server %s: start (sandbox.netns — needs CAP_SYS_ADMIN): %w", cfg.ID, err)
+		}
 		return nil, fmt.Errorf("server %s: start: %w", cfg.ID, err)
 	}
 

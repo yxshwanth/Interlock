@@ -1,166 +1,190 @@
 # Interlock — Roadmap
 
-Interlock v0.1 is a working proof: it catches the lethal trifecta at runtime across two planes (a userspace MCP proxy and a kernel-level eBPF sensor), blocks the chained-tool exfil, contains the server side-channel, and produces a forensic receipt for each. It is deliberately scoped — STDIO transport, `connect()`-only eBPF, single session, heuristic value-overlap.
+Map from *proof* to *product* — not a commitment. Priorities follow dependency and risk; integrator feedback can reorder. **Every detection feature ships with KnownGap tests naming what it does *not* catch.**
 
-This roadmap is the path from *proof* to *product*. It's organized in two arcs:
+Companion SoTs (do not duplicate their prose here):
 
-- **v0.2 — Usable Tool.** It touches real MCP, detects things that can't be trivially bypassed, survives concurrency, and has a published performance story.
-- **v0.3 — Adoptable Product.** A team can deploy it across a fleet, operate it, integrate it into their existing security stack, and trust it.
-
-**A note on how to read this.** This is a map, not a commitment. The priorities below are reasoned from dependency and risk, but the *real* roadmap will be written by the people who use v0.1 — the issues they open and the questions they ask. Where user demand contradicts this document, user demand wins. v0.3 in particular should only be built if v0.2 produced demand for it; building the product layer for zero users is a well-known way to waste a year.
-
-The discipline that made v0.1 credible carries forward: **every detection feature ships with explicit known-gap tests naming what it does *not* catch.** "I catch these, not those, and here's the test proving I know the difference" is the standard, not the exception.
-
----
-
-## v0.2 — Usable Tool
-
-Closes the five gaps that separate an impressive demo from something someone can actually run against a real agent: real transport, concurrency, non-trivial detection, performance numbers, persistent evidence.
-
-### Phase 1 — HTTP/SSE Transport Interception
-
-The biggest coverage gap. STDIO was the demo; production MCP is HTTP/SSE. Everything else in v0.2 is worth less if the tool only works on toy transport.
-
-- Interpose on HTTP MCP: proxy the JSON-RPC-over-HTTP path; parse request/response bodies into the existing `InterceptedEvent` model.
-- Handle SSE streaming — responses arrive as a token stream, not one body, so the framer needs a streaming-aware path.
-- Unify the event model so HTTP and STDIO events flow into the *same* engine.
-
-**Done when:** the full trifecta demo runs against an HTTP MCP server, not just STDIO.
-
-**Watch out:**
-- SSE plus a proxy creates a buffering hazard. Inspect-then-forward is safe but adds latency; forward-then-inspect is fast but may forward bytes before they're judged — a correctness problem for a *blocking* firewall. This trade-off is the phase's real design decision, not the plumbing. Decide it deliberately and document it.
-- HTTP means auth headers, TLS, and connection reuse. Credentials now transit the proxy — the redaction discipline extends here, and TLS termination raises a trust-boundary question (MITM, or sit inside the boundary?).
-
-### Phase 2 — Multi-Session Concurrency and Attribution
-
-STDIO single-session was a demo simplification. Real deployment means many concurrent agents. The schema already carries `session_id`; the logic has to become real.
-
-- Real PID→session mapping under concurrency: a syscall arrives from PID X — which of N active sessions owns it?
-- Per-session state isolation in the engine and session store.
-- Session lifecycle: creation, expiry, cleanup, and processes that fork children.
-
-**Done when:** two poisoned sessions run concurrently, each correctly attributed, neither leaking state into the other. — **Met** (PR #9, review hardening #10).
-
-- **Shipped:** Per-session backend server pools (spawn on HTTP `initialize`); `SessionManager` with idle expiry; `PIDRegistry` (PID + `/proc` start time); eBPF `RemovePID` + dynamic watch/unwatch; `IngestSyscall` requires explicit `SessionID` (no `FirstSessionID` guess); race CI; unattributed syscall audit trail; `TestConcurrentDualSession_VariantA_Block`; `make demo-http-concurrent`
-- **STDIO unchanged:** single session on stdin/stdout as before
-
-**Watch out:**
-- The PID→session map is a shared, concurrently-mutated structure — written by the proxy on spawn/exit, read by the eBPF event loop on every syscall. Classic race surface. A syscall can arrive for a PID *after* the process died but *before* cleanup, and the OS can recycle a PID to a different session. **PID reuse is a real correctness bug here** — the key may need to be PID + process-start-time, not PID alone.
-- This is where concurrency bugs hide. Run `go test -race` continuously; the demo never surfaces these, only load does.
-
-### Phase 3 — Real Dataflow Taint
-
-Closes the detection-credibility gap for Variant A: encoded exfil in sink args is now caught.
-
-- **Shipped (encoding overlap):** canonical transforms at taint registration — base64, hex, URL-encoding, reversal; `CheckOverlap` tests sink args against all forms; evidence records `match_form`; `RedactJSON` scrubs encoded variants from logs
-- **Known gaps (skip tests):** split-across-calls, compression, double/nested encoding
-- **Deferred:** eBPF `sendto`/`write` payload capture (Variant B `EXFIL` upgrade — follow-up PR)
-
-**Done when:** `TestCheckOverlap_EncodedExfil_KnownGap` passes — **met**.
-
-**Watch out:**
-- Full dataflow taint is a research-grade problem with no natural finish line. Scope it hard: cover the common encodings, declare the exotic ones still out of scope, and **keep a known-gap test for them.**
-- Performance. Checking every sink payload against every tainted value through N transformations is expensive — Phase 4 benchmarks will quantify this.
-
-### Phase 4 — Performance, Benchmarks, and Persistent Evidence
-
-The "is this operable" gate — **shipped**.
-
-- **Benchmarks:** engine hot-path suite + [`performance.md`](performance.md) with published snapshot (`make bench`)
-- **SQLite evidence (opt-in):** `evidence.backend: sqlite` with `max_records` retention; JSONL remains default
-- **Backpressure:** `logging.backpressure: block | drop` with runtime stats at shutdown
-- **eBPF drops:** kernel `drop_count` map when ring buffer reserve fails; surfaced via `Sensor.DropCount()`
-
-**Done when:** published overhead numbers + evidence survives restart without unbounded growth — **met** (SQLite opt-in; JSONL still append-only).
-
-**Deferred:** Prometheus metrics (v0.3), SQLite for `events.jsonl`
-
-**Post-v0.2 performance (prioritized):**
-
-1. **End-to-end HTTP overhead (A + C)** — **met** (v0.2.1): `TestHTTP_OverheadReport_*`, `BenchmarkHTTP_EngineDelta_*`, `make bench-http`, [`performance.md`](performance.md) snapshot. Passthrough via `proxy.New(..., nil)`; concurrent load deferred to `TestHTTP_ConcurrentLoad_KnownGap`.
-2. **Async evidence emit** — block path ~563 µs / 432 KB / 6,296 allocs on trip; dominated by evidence construction and sink write. Decouple block decision from receipt write.
-3. **Taint ingestion on sensitive reads** — HTTP delta shows ~536 µs / +63 allocs on `read_ticket` vs ~118 µs on sink overlap checks. Per-benign-call engine cost is ingestion + canonical encodings on `IngestResult`, not `CheckOverlap`. Optimize registration path if sub-ms overhead must shrink further.
-
-**v0.2 exit state:** works on HTTP/SSE, handles concurrent sessions, catches encoded exfil, has published overhead numbers, persists evidence (SQLite opt-in). **All four phases merged** — see [v0.2_summary.md](v0.2_summary.md). Tagged **`v0.2.0`** (milestone) and **`v0.2.1`** (HTTP overhead A+C).
+| Topic | Document |
+|---|---|
+| Detection gaps / tiers | [`architecture.md`](architecture.md) §13, [`INTERLOCK.md`](INTERLOCK.md) §16 |
+| Boundaries / rejected | [`detection_boundary.md`](detection_boundary.md) |
+| FP / CVE rates | [`fp_corpus.md`](fp_corpus.md), [`cve_corpus.md`](cve_corpus.md) |
+| Privilege / deploy | [`deploy/k8s/PRIVILEGE.md`](../deploy/k8s/PRIVILEGE.md) |
+| Performance | [`performance.md`](performance.md) |
 
 ---
 
-## v0.3 — Adoptable Product
+## How to maintain this file
 
-Turns the tool into something a team deploys, operates, and trusts at scale. Build this arc only if v0.2's release produced demand for it.
+**Fixed sections (do not rename or reorder):**
 
-### Phase 1 — Kubernetes-Native Deployment (DaemonSet)
+1. Status snapshot
+2. Active queue
+3. Shipped ledger
+4. Version history
+5. Backlog (demand-gated)
+6. Out of scope
+7. Cross-cutting hazards
 
-Where the market actually is: agent infrastructure runs in Kubernetes, and eBPF tools deploy as DaemonSets — one sensor per node.
+**Item schema** (use for every Active-queue and new Shipped-ledger row):
 
-- Package as a container; DaemonSet manifest; sensor-per-node watching that node's agent pods.
-- Node-level PID→pod→session attribution: map kernel PIDs to container/pod identity.
-- RBAC, security context, and the privileged-container story — justify and minimize it.
+| Field | Required | Notes |
+|---|---|---|
+| `ID` | yes | Stable `§N` for cross-doc refs (`ROADMAP §N`). Never renumber shipped IDs. |
+| `Title` | yes | Short noun phrase |
+| `Status` | yes | `[ ]` open · `[~]` partial · `[x]` done · `Named` · `Rejected` |
+| `Tier` | yes | 1 / 2 / 3 (see architecture §13) |
+| `Goal` | yes | ≤2 sentences |
+| `Done when` | yes | Testable exit criteria |
+| `Links` | when shipped | Docs, tests, config knobs — not narrative |
 
-**Done when:** it deploys to a real cluster (kind/minikube) and catches exfil from an agent pod.
+**Rules:**
 
-**Watch out:**
-- **Container PID namespaces.** The PID the kernel sees is not the PID inside the container. The whole PID→session mapping assumed host PIDs; in Kubernetes it must translate across namespaces. This is the phase's core difficulty and it is genuinely fiddly.
-- Privileged DaemonSets get scrutinized hard by security teams. The v0.1 transparency move — here is exactly what the probe does, read the source — scales up and matters more here.
-
-### Phase 2 — Kernel-Level Blocking (LSM/KRSI) and Graceful Enforcement
-
-Upgrades detection from detect-and-kill to actual prevention, closing the honest v0.1 limitation ("contained, not prevented" for Variant B).
-
-- LSM/KRSI hook to block the `connect()` in-kernel before the packet leaves.
-- Graceful responses beyond SIGKILL: block-the-call, quarantine-the-session, alert-only — configurable per verdict tier.
-- A fail-closed option (v0.1 was fail-open for the demo; production wants the choice).
-
-**Done when:** Variant B is upgraded — the packet never leaves, and the record reads `prevented`, not `contained_by_kill`.
-
-**Watch out:**
-- This is the **highest-risk work in either arc.** Kernel-level blocking via LSM/KRSI is more constrained than tracepoints, more kernel-version-sensitive, and a bug can break the host's networking or deadlock processes. Prototype in a throwaway VM you can destroy, not your main machine.
-- **The blast radius inverts.** Once you block in-kernel, you're in the critical path of every connection. A bug no longer means a missed attack — it means broken legitimate traffic, or a downed host. Testing rigor has to level up at exactly this boundary.
-
-### Phase 3 — Operability: Daemon, Config, Metrics, Alerting
-
-The unglamorous layer that decides whether a team keeps it running.
-
-- A proper service/daemon mode (systemd unit, real lifecycle), not a script invoked with `sudo`.
-- Hot-reloadable, validated, versioned configuration.
-- Prometheus metrics (sensor liveness, event rate, drop count, detection count, overhead) and health endpoints.
-- Alerting integrations: Slack/PagerDuty webhooks, and structured SIEM export (OCSF or CEF) to plug into an existing security stack.
-
-**Done when:** it runs as a managed service, exports metrics, and fires a real alert on detection.
-
-**Watch out:**
-- SIEM format compliance is finicky and boring, but it is *the* enterprise integration. Get the schema wrong and it won't ingest. Follow the OCSF spec exactly; don't invent fields.
-
-### Phase 4 — Trust: Self-Security, Validation Corpus, Hardening
-
-What makes senior engineers willing to run privileged kernel code in production.
-
-- Least-privilege audit (drop every capability not needed post-load), tamper-resistance (can a compromised agent blind the sensor?), and a threat model *for Interlock itself*.
-- Signed, reproducible releases — the run-as-root audience demands provenance.
-- A real attack-scenario corpus (dozens of trifecta and evasion variants, not one fixture) and a **published false-positive rate** on realistic benign traffic.
-
-**Done when:** there's a signed release, a documented threat model, and detection/false-positive numbers on a corpus rather than a single demo.
-
-**Watch out:**
-- The **false-positive rate** is where the product lives or dies. A tool that kills legitimate processes gets uninstalled on day one. If the FP rate on realistic traffic is bad, that is the single most important finding in the project, and it should reshape the detection logic — not get buried to protect a launch narrative. This is the v0.1 honesty discipline at product scale.
-
-**v0.3 exit state:** deploys as a Kubernetes DaemonSet, blocks in-kernel, runs as an operable service with metrics and SIEM integration, and ships signed with a threat model and a published false-positive rate. An adoptable product.
+- Open work lives only in **Active queue** (full schema).
+- Shipped work is one table row in **Shipped ledger** — detail belongs in code/docs/tests, not here.
+- Do not re-open `[x]` / `Named` / `Rejected` items; file a new `§N` if scope changes.
+- Do not paste corpus writeups, CVE narratives, or PR archaeology into this file.
+- New work: append the next free `§N`, add to Active queue, move to Shipped ledger on merge.
 
 ---
 
-## Cross-Cutting Hazards
+## 1. Status snapshot
 
-Four things span both arcs and are the most likely to cause real damage:
+| | |
+|---|---|
+| **Product arcs** | v0.1 proof · v0.2 usable tool · v0.3 adoptable product — **all exit gates met** |
+| **Focus** | Post-corpus hardening and enterprise leftovers |
+| **Hard contracts** | EXFIL-tier FP **0.0%**; engine overhead class ~0.5 ms / ~0.1 ms — must not regress |
+| **Rates (regen)** | `make fp-corpus`, `make cve-corpus` → live numbers in fp/cve corpus docs |
 
-- **Concurrency and races** (v0.2 Phase 2, v0.3 Phase 1) — PID reuse, namespace translation, shared-map mutation. `go test -race` is not optional. Demos never surface these; load does.
-- **Performance vs detection depth** — every detection feature (taint, payload inspection, per-session tracking) taxes the hot path. Benchmark continuously, not once, or the tool becomes too expensive to run.
-- **Scope-infinity** on taint and validation — both are bottomless. Bound them with explicit known-gap tests. Naming what you don't catch is the signature discipline; keep making that move.
-- **The blast-radius inversion** (v0.3 Phase 2) — the moment enforcement moves from observing to blocking in-kernel, a bug stops meaning "missed detection" and starts meaning "broke the host."
+### Open at a glance
+
+| ID | Title | Status | Tier |
+|---|---|---|---|
+| §21 | Protocol-aware egress parsers | `Named` | 3 |
 
 ---
 
-## Backlog (Beyond v0.3)
+## 2. Active queue
 
-Real features, deferred until demand justifies them: IPv6 and DNS-level tracing; Unix-socket and file-based exfil paths; a cross-session dashboard with search and trends; an API for programmatic evidence access; role-based access and operator audit logs; ARM support and cross-distro/CO-RE portability; a managed cloud offering; third-party security audit and red-team results; comparison benchmarks against static scanners.
+§21 stays Named until a deployment shows the MCP family.
 
-None of these move the next release. They are a menu for when users ask.
+### §21 — Protocol-aware egress parsers `Named`
+
+| | |
+|---|---|
+| **Tier** | 3 |
+| **Goal** | Demand-gated only: lightweight egress dissectors (git pkt-line / smart HTTP, HTTP body + `Content-Encoding`, SMTP DATA) then reuse §20 walker + overlap. |
+| **Done when (documentation)** | Named boundary in ROADMAP + detection_boundary + architecture §13; CVE pin still Missed; **no engine code until demand**. |
+| **Gate** | Build only if a deployment shows that MCP family in production. |
+| **Links** | Pin `cve_2025_68143_mcp_git_push_wire_protocol_gap`; flat zlib/ZIP on ToolArgs/PayloadExcerpt already closed (§20). |
+
+---
+
+## 3. Shipped ledger
+
+Stable IDs for cross-doc refs (`ROADMAP §N`). One row each — no re-litigation.
+
+### Post-corpus build order (§1–§22)
+
+| ID | Title | Status | Tier | Done when (summary) | Links |
+|---|---|---|---|---|---|
+| §1 | Operational FP remediation | `[x]` | 1 | Any-trip FP down; EXFIL FP 0%; hard contain EXFIL-only | relevance-aware block, leg decay, content-bind; [`fp_corpus.md`](fp_corpus.md) |
+| §2 | Close “will cover” gaps | `[x]` | 1 | Fragment buffer, fat-taint benches, payload window, extractResultText, decode depth, inherit-sink via §14 | architecture §13 |
+| §3 | Variant B kernel + syscalls | `[x]` | 1 | LSM Slice 1 opt-in; writev/sendmsg; IPv6 dest | `ebpf.lsm_enforce`; Phase 2 notes below |
+| §4 | Sensor↔proxy taint bridge | `[x]` | 1 | Unix-socket taint forward + SO_PEERCRED | `internal/bridge`, PRIVILEGE.md |
+| §5 | Operability & enterprise | `[x]` | 2 | Fail-closed, dual ringbufs, CEF SIEM, SQLite cross-session query | `siem.format`, `Query`, `cmd/query-evidence` |
+| §6 | Tamper-evident evidence | `[x]` | 1 | Hash chain + `verify-evidence` | `chain_seq` / `prev_hash` / `hash` |
+| §7 | Zero-route netns (proxy) | `[x]` | 1 | `CLONE_NEWNET` opt-in; non-loopback `ENETUNREACH` | `sandbox.netns` |
+| §8 | Chunk / substring match | `[x]` | 1 | Long-secret chunk EXFIL; near-chunk TN clean | `trifecta.chunk_match_*` |
+| §9 | Standard compressors | `[x]` | 1 | brotli/zstd/lz4 forms; benches in class | `CanonicalEncodings` |
+| §10 | Token vaulting | `[x]` | 1 | Dummy-by-default; authorize then scan | `vault.enabled` |
+| §11 | Considered and rejected | `[x]` | 3 | Sockmap / SOCKS5 / unbounded trickle / blind EXFIL named | [`detection_boundary.md`](detection_boundary.md) |
+| §12 | Shannon entropy (dark) | `[x]` | 2 | Measurement in fp_corpus.md; not wired | `ShannonEntropy`, `MeasureShannonEntropyDark` |
+| §13 | Cap drop post-attach | `[x]` | 2 | Drop SYS_ADMIN after attach; keep KILL/BPF/PERFMON | `DropPostAttach`, PRIVILEGE.md |
+| §14 | Inherit sink suspicion | `[x]` | 1 | Opt-in inherit; allowlist sole exemption | `server_defaults.inherit_sink_suspicion` |
+| §15 | Configurable decode depth | `[x]` | 1 | Default 5; FP curve published | `trifecta.max_decode_depth` |
+| §16 | Payload capture default 1024 | `[x]` | 2 | Default = compiled max; past-window KnownGap remains | `ebpf.payload_capture_bytes` |
+| §17 | Spawn-time launch intercept | `[x]` | 1 | Pinned paths + optional allowlist | `ResolvedSpawnCommands` |
+| §18 | Path-driven taint seeding | `[x]` | 1 | Whole-file container relay EXFIL | `path_taint.go` |
+| §19 | Egress flow reassembly | `[x]` | 1 | Same-dest DNS/write fragments EXFIL | `SessionState.EgressFlows` |
+| §20 | Bounded container descent | `[x]` | 1 | Extracted-xlsx / sink-zip / zlib EXFIL | `container.go` |
+| §21 | Protocol egress parsers | `Named` | 3 | Boundary documented; no dissector | Active queue / detection_boundary |
+| §22 | Blind side-channel EXFIL | `Rejected` | 3 | Not EXFIL; wrong observation model | detection_boundary; Doris CVE pin |
+
+### v0.3 phases
+
+| Phase | Title | Status | Notes |
+|---|---|---|---|
+| 1 | K8s DaemonSet (sensor-only) | `[x]` | `deploy/k8s/`; pod attribution; honest limit: full trifecta still prefers proxy+sensor |
+| 2 | LSM/KRSI + graceful enforcement | `[~]` | Slice 1 shipped (`ebpf.lsm_enforce`): repeat-connect quarantine after EXFIL. First EXFIL packet stays `contained_by_kill` (architectural). Graceful per-tier responses still open. |
+| 3 | Metrics, alerting, SIEM | `[x]` | Prometheus, webhooks, OCSF + CEF |
+| 4 | Trust (threat model, corpus, signed release) | `[x]` | [`threat_model.md`](threat_model.md), corpora, `make release` |
+
+### v0.2 phases
+
+| Phase | Title | Status | Notes |
+|---|---|---|---|
+| 1 | HTTP/SSE transport | `[x]` | Same `InterceptedEvent` path as STDIO |
+| 2 | Multi-session concurrency | `[x]` | PR #9 / #10; PID+start-time; race CI |
+| 3 | Real dataflow taint | `[x]` | Encodings + eBPF write/sendto overlap → Variant B EXFIL |
+| 4 | Perf + persistent evidence | `[x]` | [`performance.md`](performance.md); JSONL default, SQLite opt-in |
+
+Tags: **`v0.2.0`** / **`v0.2.1`**.
+
+---
+
+## 4. Version history
+
+Exit criteria only. Phase detail lives in the Shipped ledger.
+
+| Version | Intent | Exit state |
+|---|---|---|
+| **v0.1** | Working proof | Two-plane trifecta catch; STDIO; `connect()`-only eBPF; single session; heuristic overlap; forensic receipt |
+| **v0.2** | Usable tool | HTTP/SSE; concurrent sessions; encoded exfil; published overhead; persistent evidence |
+| **v0.3** | Adoptable product | DaemonSet deploy; metrics/SIEM; signed release + threat model + published FP rate; LSM Slice 1 opt-in |
+
+---
+
+## 5. Backlog (demand-gated)
+
+Not queued until demand. Do not treat as silent “someday” execution items.
+
+- Unix-socket and file-based exfil paths
+- Role-based access and operator audit logs
+- ARM support and cross-distro / CO-RE portability
+- Managed cloud offering
+- Third-party security audit and red-team results
+- Comparison benchmarks against static scanners
+- Larger compiled `PAYLOAD_MAX` / `tcp_sendmsg` pre-segmentation (beyond §16 improve-not-close)
+- Graceful enforcement beyond SIGKILL (block-call / quarantine-session / alert-only per verdict) — pairs with Phase 2 residual
+- GKE validation (EKS already validated)
+- Protocol dissectors — only via §21 gate
+
+---
+
+## 6. Out of scope
+
+Not backlog. Named so they are not reopened as features.
+
+| Item | Why | Where |
+|---|---|---|
+| DoH / DoT | Mitigate with network-layer DNS controls | architecture §13 |
+| Sockmap / `sk_skb` first-packet prevent | Blast-radius inversion; sync engine on SKB | §11 → detection_boundary |
+| SOCKS5 egress stream scanning | Unstructured TCP + TLS MITM; wrong layer | §11 |
+| Unbounded slow-trickle reassembly | Any finite window loses to slower trickle | §11; NamedGap pin |
+| Blind / query-pattern EXFIL | Secret never on the wire; wrong detector | §22 |
+| Protocol parsers without demand | TCB growth; Wireshark-class risk | §21 |
+
+---
+
+## 7. Cross-cutting hazards
+
+| Hazard | Why it matters |
+|---|---|
+| **Concurrency / races** | PID reuse, namespace translation, shared-map mutation. `go test -race` is not optional. |
+| **Performance vs detection depth** | Every taint/payload/session feature taxes the hot path. Benchmark continuously. |
+| **Scope-infinity** | Taint and validation are bottomless. Bound with KnownGap tests. |
+| **Blast-radius inversion** | In-kernel block turns bugs from “missed detection” into “broke the host.” |
+
+Highest-risk surface remains LSM/KRSI (Phase 2): prototype on throwaway VMs; never hard-prevent on soft `SUSPICIOUS` — EXFIL-tier only (§1).

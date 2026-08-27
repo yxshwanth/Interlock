@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: interlock-sensor-metrics
+  namespace: interlock-system
+  labels:
+    app.kubernetes.io/name: interlock
+    app.kubernetes.io/component: sensor
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: interlock
+    app.kubernetes.io/component: sensor
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP

@@ -199,3 +199,93 @@ func TestRedactJSON_EncodedVariants(t *testing.T) {
 		t.Fatalf("expected masked preview in output, got %s", redacted)
 	}
 }
+
+func TestExtractTaintedValues_PEMPrivateKey(t *testing.T) {
+	// The regex anchors on BEGIN/END and stops at the END line itself — a
+	// trailing newline after "-----END...KEY-----" (as real PEM files have)
+	// is not part of the captured block. That's fine for CheckOverlap,
+	// which does substring containment, not exact-block equality.
+	pem := "-----BEGIN PRIVATE KEY-----\n" +
+		"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n" +
+		"MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu\n" +
+		"-----END PRIVATE KEY-----"
+	text := "Here is the requested file:\n" + pem + "\n\nLet me know if you need anything else."
+
+	values := ExtractTaintedValues(text, "filesystem/read_file", 1)
+	if len(values) == 0 {
+		t.Fatal("expected a PEM block to be tainted, got none")
+	}
+	found := false
+	for _, v := range values {
+		if v.Value == pem {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the exact PEM block among tainted values, got %+v", values)
+	}
+}
+
+func TestExtractTaintedValues_PEMPrivateKey_TypedVariants(t *testing.T) {
+	for _, keyType := range []string{"RSA ", "EC ", "OPENSSH ", ""} {
+		pem := "-----BEGIN " + keyType + "PRIVATE KEY-----\n" +
+			"c29tZUJhc2U2NGVuY29kZWRieXRlc2hlcmU=\n" +
+			"-----END " + keyType + "PRIVATE KEY-----"
+		values := ExtractTaintedValues(pem, "src", 1)
+		if len(values) == 0 {
+			t.Errorf("expected %q-typed PEM block to be tainted, got none", keyType)
+			continue
+		}
+		if values[0].Value != pem {
+			t.Errorf("expected exact block for %q-typed PEM, got %q", keyType, values[0].Value)
+		}
+	}
+}
+
+func TestExtractTaintedValues_PuTTYPrivateKey(t *testing.T) {
+	ppk := "PuTTY-User-Key-File-3: ssh-ed25519\n" +
+		"Encryption: none\n" +
+		"Comment: deploy-key\n" +
+		"Public-Lines: 3\n" +
+		"AAAAC3NzaC1lZDI1NTE5AAAAILq1\n" +
+		"Private-Lines: 1\n" +
+		"c29tZXByaXZhdGVieXRlcw==\n" +
+		"Private-MAC: 8f14e45fceea167a5a36dedd4bea2543"
+
+	values := ExtractTaintedValues("The key you asked for:\n"+ppk+"\n", "filesystem/read_file", 1)
+	if len(values) == 0 {
+		t.Fatal("expected a PuTTY key block to be tainted, got none")
+	}
+	found := false
+	for _, v := range values {
+		if v.Value == ppk {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the exact PuTTY block among tainted values, got %+v", values)
+	}
+}
+
+func TestExtractResultText_NestedMetadataSecret(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	raw := json.RawMessage(`{
+		"content":[{"type":"text","text":"benign ticket body only"}],
+		"metadata":{"debug":{"maybe_token":"` + secret + `"}}
+	}`)
+	text := extractResultText(raw)
+	values := ExtractTaintedValues(text, "tickets/read_ticket", 1)
+	if len(values) == 0 {
+		t.Fatal("expected nested metadata secret to be found after extractResultText walks string leaves")
+	}
+	found := false
+	for _, v := range values {
+		if v.Value == secret {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected secret among tainted values, got %+v", values)
+	}
+}

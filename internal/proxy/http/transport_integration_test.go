@@ -70,6 +70,7 @@ func TestDemoHTTP_VariantA_Block(t *testing.T) {
 	store := engine.NewSessionStore()
 	tagger := engine.NewTagger(cfg)
 	eng := engine.NewEngine(store, tagger, cfg.Enforcement, sink)
+	eng.Configure(cfg)
 	p := proxy.New(cfg, evLogger, eng)
 
 	ctx, cancel := context.WithCancel(context.Background())
