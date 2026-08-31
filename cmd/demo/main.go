@@ -119,7 +119,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "  The exfil call should go through. This is the breach.")
 	fmt.Fprintln(os.Stderr, "")
 
-	pass1Results := runVariantAPass(logger, projectRoot, "interlock-monitor.yaml", "monitor", false, quiet, useHTTP)
+	pass1Results := runVariantAPass(logger, projectRoot, "examples/configs/interlock-monitor.yaml", "monitor", false, quiet, useHTTP)
 
 	// ─── Pass 2: Block mode (firewall ON) ───
 	banner("PASS 2: BLOCK MODE (firewall ON) — Variant A")
@@ -213,7 +213,7 @@ func runVariantAPass(logger *log.Logger, projectRoot, cfgFile, mode string, ebpf
 	if useHTTP {
 		httpCfg := "interlock-http-monitor.yaml"
 		if mode == "block" {
-			httpCfg = "interlock-http.yaml"
+			httpCfg = "examples/configs/interlock-http.yaml"
 		}
 		return runVariantAPassHTTP(logger, projectRoot, httpCfg, mode, ebpf, quiet)
 	}
@@ -427,7 +427,7 @@ func runVariantBPass(logger *log.Logger, projectRoot string, quiet bool, useHTTP
 	os.Remove(evidenceJSON)
 
 	interlockBin := filepath.Join(projectRoot, "interlock")
-	cfgPath := filepath.Join(projectRoot, "interlock-ebpf-local.yaml")
+	cfgPath := filepath.Join(projectRoot, "examples/configs/interlock-ebpf-local.yaml")
 
 	cmd := exec.Command(interlockBin, "--config", cfgPath, "--log", evLog, "--evidence", evidenceLog, "--ebpf")
 	cmd.Dir = projectRoot

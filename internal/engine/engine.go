@@ -724,30 +724,46 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 		return model.Decision{Allow: true}
 	}
 
-	allow, action := e.variantBAction(verdict)
+	return e.finishVariantBSyscallTrip(state, ev, sessionID, verdict, confidence, overlap, containerAbort,
+		"TRIFECTA DETECTED (eBPF)",
+		func() string {
+			reason := fmt.Sprintf("trifecta %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
+			if ev.Syscall == "openat" {
+				reason = fmt.Sprintf("trifecta %s: openat %s by pid %d", verdict, ev.Path, ev.PID)
+			}
+			if verdict == model.VerdictSuspicious && containerAbort != ContainerAbortNone {
+				reason = fmt.Sprintf("trifecta %s: container_inspect_limit (%s): %s to %s:%d by pid %d",
+					verdict, containerAbort, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
+			}
+			return reason
+		}())
+}
 
+// finishVariantBSyscallTrip emits evidence and returns the enforcement decision shared by proxy-attached and sensor-only Variant B paths.
+func (e *Engine) finishVariantBSyscallTrip(
+	state *model.SessionState,
+	ev model.SyscallEvent,
+	sessionID string,
+	verdict model.Verdict,
+	confidence float64,
+	overlap *model.OverlapHit,
+	containerAbort ContainerAbortReason,
+	logLabel string,
+	reason string,
+) model.Decision {
+	allow, action := e.variantBAction(verdict)
 	state.Status = model.Tripped
 	state.Confidence = confidence
 
 	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence, overlap)
-
 	if e.sink != nil {
 		if err := e.sink.Emit(evidence); err != nil {
 			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
 		}
 	}
 
-	e.log.Printf("TRIFECTA DETECTED (eBPF): session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
-		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
-
-	reason := fmt.Sprintf("trifecta %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
-	if ev.Syscall == "openat" {
-		reason = fmt.Sprintf("trifecta %s: openat %s by pid %d", verdict, ev.Path, ev.PID)
-	}
-	if verdict == model.VerdictSuspicious && containerAbort != ContainerAbortNone {
-		reason = fmt.Sprintf("trifecta %s: container_inspect_limit (%s): %s to %s:%d by pid %d",
-			verdict, containerAbort, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
-	}
+	e.log.Printf("%s: session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
+		logLabel, sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
 
 	return model.Decision{
 		Allow:    allow,
@@ -816,33 +832,12 @@ func (e *Engine) IngestSyscallSensor(ev model.SyscallEvent) model.Decision {
 		return model.Decision{Allow: true}
 	}
 
-	allow, action := e.variantBAction(verdict)
-	state.Status = model.Tripped
-	state.Confidence = confidence
-
-	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence, overlap)
-
-	if e.sink != nil {
-		if err := e.sink.Emit(evidence); err != nil {
-			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
-		}
-	}
-
-	e.log.Printf("SENSOR TRIP: session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
-		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
-
 	reason := fmt.Sprintf("sensor %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
 	if verdict == model.VerdictSuspicious && containerAbort != ContainerAbortNone {
 		reason = fmt.Sprintf("sensor %s: container_inspect_limit (%s): %s to %s:%d by pid %d",
 			verdict, containerAbort, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
 	}
-	return model.Decision{
-		Allow:    allow,
-		Verdict:  verdict,
-		Action:   action,
-		Reason:   reason,
-		Evidence: &evidence,
-	}
+	return e.finishVariantBSyscallTrip(state, ev, sessionID, verdict, confidence, overlap, containerAbort, "SENSOR TRIP", reason)
 }
 
 // seedSensorSensitiveOpen lights sensitive_source_touched and registers taint from

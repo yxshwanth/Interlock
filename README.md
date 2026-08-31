@@ -345,8 +345,8 @@ Point the agent at `interlock` where it currently points at its MCP servers. It 
 ```bash
 make image
 kubectl apply -f deploy/k8s/rbac.yaml
-kubectl apply -f deploy/k8s/daemonset.yaml     # privileged — kind, full EXFIL
-# or deploy/k8s/daemonset-capabilities.yaml    # managed clusters, try-first + taint bridge
+kubectl apply -f deploy/k8s/daemonset.yaml              # production default (capabilities-first)
+# kind / privileged openat demo: deploy/k8s/daemonset-dev.yaml
 # or: make demo-k8s
 ```
 

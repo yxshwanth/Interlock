@@ -22,14 +22,14 @@ type EventLogger struct {
 	mu           sync.Mutex
 	backpressure string
 	queue        chan logJob
-	stats        *RuntimeStats
+	stats        *model.RuntimeStats
 	done         chan struct{}
 	wg           sync.WaitGroup
 }
 
 // NewEventLogger creates a logger that appends JSONL to the given path.
 // Pass "" to disable file logging (stderr-only).
-func NewEventLogger(path string, logCfg config.LoggingConfig, stats *RuntimeStats) (*EventLogger, error) {
+func NewEventLogger(path string, logCfg config.LoggingConfig, stats *model.RuntimeStats) (*EventLogger, error) {
 	l := &EventLogger{
 		backpressure: logCfg.Backpressure,
 		stats:        stats,

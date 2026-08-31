@@ -1,7 +1,7 @@
 # Interlock configuration (v0.1)
 # See docs/architecture.md §9 for the full specification.
 
-# transport defaults to stdio when omitted; see interlock-http.yaml for HTTP mode
+# transport defaults to stdio when omitted; see examples/configs/interlock-http.yaml for HTTP mode
 transport:
   mode: stdio
 

@@ -175,7 +175,7 @@ func TestCheckOverlap_URLEncoded(t *testing.T) {
 
 func TestCheckOverlap_Reversed(t *testing.T) {
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
-	reversed := reverseString(secret)
+	reversed := model.ReverseString(secret)
 
 	tainted := []model.TaintedValue{
 		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},

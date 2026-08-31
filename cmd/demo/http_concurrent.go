@@ -17,7 +17,7 @@ func runConcurrentHTTPDemo(logger *log.Logger, projectRoot string, quiet bool) {
 	os.Remove(evLog)
 	os.Remove(evidenceLog)
 
-	cmd, err := startHTTPInterlock(projectRoot, "interlock-http.yaml", evLog, evidenceLog, false, quiet)
+	cmd, err := startHTTPInterlock(projectRoot, "examples/configs/interlock-http.yaml", evLog, evidenceLog, false, quiet)
 	if err != nil {
 		logger.Fatalf("start HTTP interlock: %v", err)
 	}

@@ -16,8 +16,6 @@ import (
 	"github.com/yxshwanth/Interlock/internal/config"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
-
-// OCSF Detection Finding classification (schema 1.3).
 const (
 	ocsfCategoryUID = 2
 	ocsfClassUID    = 2004
@@ -25,10 +23,8 @@ const (
 	ocsfVersion     = "1.3.0"
 )
 
-// DeliveryRecorder records SIEM delivery outcomes.
-type DeliveryRecorder interface {
-	RecordAlertDelivery(kind, result string)
-}
+// DeliveryRecorder is an alias for model.DeliveryRecorder.
+type DeliveryRecorder = model.DeliveryRecorder
 
 // Exporter writes Detection Finding events (OCSF JSON or CEF text) to file and/or HTTP.
 type Exporter struct {
@@ -62,7 +58,7 @@ func (e *Exporter) OnEvidenceEmitted(rec model.EvidenceRecord) {
 	if e == nil {
 		return
 	}
-	if !meetsMinVerdict(rec.Verdict, e.cfg.MinVerdict) {
+	if !model.MeetsMinVerdict(rec.Verdict, e.cfg.MinVerdict) {
 		e.record("skipped")
 		return
 	}
@@ -178,6 +174,13 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 		rec.Variant, rec.Action, rec.Confidence, rec.SessionID)
 
 	findingUID := fmt.Sprintf("%s-%d", rec.SessionID, rec.TripTS)
+	unmapped := map[string]any{
+		"session_id": rec.SessionID,
+		"verdict":    string(rec.Verdict),
+		"action":     string(rec.Action),
+		"variant":    string(rec.Variant),
+		"confidence": rec.Confidence,
+	}
 	out := map[string]any{
 		"activity_id":   ocsfActivityID,
 		"activity_name": "Create",
@@ -204,16 +207,10 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 			"desc":        desc,
 			"product_uid": "interlock",
 		},
-		"unmapped": map[string]any{
-			"session_id": rec.SessionID,
-			"verdict":    string(rec.Verdict),
-			"action":     string(rec.Action),
-			"variant":    string(rec.Variant),
-			"confidence": rec.Confidence,
-		},
+		"unmapped": unmapped,
 	}
 	if rec.Pod != nil {
-		out["unmapped"].(map[string]any)["pod_context"] = map[string]string{
+		unmapped["pod_context"] = map[string]string{
 			"namespace": rec.Pod.Namespace,
 			"pod_name":  rec.Pod.PodName,
 			"pod_uid":   rec.Pod.PodUID,
@@ -221,7 +218,7 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 		}
 	}
 	if rec.ValueOverlap != nil {
-		out["unmapped"].(map[string]any)["value_overlap"] = map[string]string{
+		unmapped["value_overlap"] = map[string]string{
 			"preview":     rec.ValueOverlap.Preview,
 			"where_found": rec.ValueOverlap.WhereFound,
 			"match_form":  rec.ValueOverlap.MatchForm,
@@ -232,9 +229,9 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 		for k, v := range m {
 			sink[k] = v
 		}
-		out["unmapped"].(map[string]any)["sink_call"] = sink
+		unmapped["sink_call"] = sink
 	}
-	out["unmapped"].(map[string]any)["legs"] = map[string]any{
+	unmapped["legs"] = map[string]any{
 		"sensitive_source_touched":  map[string]any{"lit": rec.Legs.SensitiveSourceTouched.Lit, "detail": rec.Legs.SensitiveSourceTouched.Detail},
 		"untrusted_content_present": map[string]any{"lit": rec.Legs.UntrustedContentPresent.Lit, "detail": rec.Legs.UntrustedContentPresent.Detail},
 		"external_sink_invoked":     map[string]any{"lit": rec.Legs.ExternalSinkInvoked.Lit, "detail": rec.Legs.ExternalSinkInvoked.Detail},
@@ -247,13 +244,4 @@ func ocsfSeverity(v model.Verdict) (int, string) {
 		return 5, "Critical"
 	}
 	return 3, "Medium"
-}
-
-func meetsMinVerdict(v model.Verdict, min string) bool {
-	switch strings.ToUpper(min) {
-	case "EXFIL":
-		return v == model.VerdictExfil
-	default:
-		return v == model.VerdictExfil || v == model.VerdictSuspicious
-	}
 }

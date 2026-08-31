@@ -221,6 +221,42 @@ func TestWebhook_MinVerdictEXFIL(t *testing.T) {
 	}
 }
 
+func TestWebhook_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	rc := &recCounter{}
+	n := alerting.NewWebhookNotifier(config.WebhookConfig{
+		URL: srv.URL, Format: "generic", MinVerdict: "SUSPICIOUS", Timeout: "1s",
+	}, rc)
+	n.OnEvidenceEmitted(sampleRec(model.VerdictExfil))
+	n.Close()
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.m["webhook:error"] != 1 {
+		t.Fatalf("recorder=%v", rc.m)
+	}
+}
+
+func TestWebhook_BacklogDrop(t *testing.T) {
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block
+	}))
+	defer srv.Close()
+	defer close(block)
+
+	n := alerting.NewWebhookNotifier(config.WebhookConfig{
+		URL: srv.URL, Format: "generic", MinVerdict: "SUSPICIOUS", Timeout: "5s",
+	}, &recCounter{})
+	for i := 0; i < 20; i++ {
+		n.OnEvidenceEmitted(sampleRec(model.VerdictExfil))
+	}
+	time.Sleep(50 * time.Millisecond)
+	n.Close()
+}
+
 func TestWebhook_Disabled(t *testing.T) {
 	if alerting.NewWebhookNotifier(config.WebhookConfig{}, nil) != nil {
 		t.Fatal("expected nil")

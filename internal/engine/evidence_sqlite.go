@@ -71,13 +71,13 @@ func initEvidenceSchema(db *sql.DB) error {
 		return fmt.Errorf("init evidence schema: %w", err)
 	}
 	if err := migrateEvidenceChainColumns(db); err != nil {
-		return err
+		return fmt.Errorf("migrate evidence chain columns: %w", err)
 	}
 	if err := migrateEvidenceQueryColumns(db); err != nil {
-		return err
+		return fmt.Errorf("migrate evidence query columns: %w", err)
 	}
 	if err := backfillEvidenceQueryColumns(db); err != nil {
-		return err
+		return fmt.Errorf("backfill evidence query columns: %w", err)
 	}
 	return nil
 }
@@ -85,7 +85,7 @@ func initEvidenceSchema(db *sql.DB) error {
 func migrateEvidenceChainColumns(db *sql.DB) error {
 	cols, err := sqliteTableColumns(db, "evidence")
 	if err != nil {
-		return err
+		return fmt.Errorf("list evidence columns: %w", err)
 	}
 	add := func(name, decl string) error {
 		if cols[name] {
@@ -99,13 +99,13 @@ func migrateEvidenceChainColumns(db *sql.DB) error {
 		return nil
 	}
 	if err := add("chain_seq", "INTEGER"); err != nil {
-		return err
+		return fmt.Errorf("migrate chain_seq: %w", err)
 	}
 	if err := add("prev_hash", "TEXT"); err != nil {
-		return err
+		return fmt.Errorf("migrate prev_hash: %w", err)
 	}
 	if err := add("hash", "TEXT"); err != nil {
-		return err
+		return fmt.Errorf("migrate hash: %w", err)
 	}
 	return nil
 }
@@ -113,7 +113,7 @@ func migrateEvidenceChainColumns(db *sql.DB) error {
 func migrateEvidenceQueryColumns(db *sql.DB) error {
 	cols, err := sqliteTableColumns(db, "evidence")
 	if err != nil {
-		return err
+		return fmt.Errorf("list evidence columns: %w", err)
 	}
 	add := func(name, decl string) error {
 		if cols[name] {
@@ -127,10 +127,10 @@ func migrateEvidenceQueryColumns(db *sql.DB) error {
 		return nil
 	}
 	if err := add("verdict", "TEXT"); err != nil {
-		return err
+		return fmt.Errorf("migrate verdict: %w", err)
 	}
 	if err := add("pod_name", "TEXT"); err != nil {
-		return err
+		return fmt.Errorf("migrate pod_name: %w", err)
 	}
 	_, err = db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_evidence_session_id ON evidence(session_id);
