@@ -9,6 +9,8 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
+const jsonRPCServerError = -32000
+
 // DispatchResult is the outcome of handling one agent JSON-RPC frame.
 type DispatchResult struct {
 	Response       []byte
@@ -118,7 +120,14 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 	sess := rt.Session
 	var tc model.ToolCallParams
 	if len(msg.Params) > 0 {
-		tc, _ = model.ParseToolCallParams(msg.Params)
+		var parseErr error
+		tc, parseErr = model.ParseToolCallParams(msg.Params)
+		if parseErr != nil {
+			ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+			p.logEvent(ev)
+			data := p.buildErrorResponse(msg.ID, -32700, fmt.Sprintf("invalid tools/call params: %v", parseErr))
+			return &DispatchResult{Response: data, Blocked: true}, nil
+		}
 	}
 
 	sc, ok := rt.toolRoute[tc.Name]
@@ -136,7 +145,7 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 		ev.Decision = "blocked"
 		ev.BlockReason = blockReason
 		p.logEvent(ev)
-		data := p.buildErrorResponse(msg.ID, -32000,
+		data := p.buildErrorResponse(msg.ID, jsonRPCServerError,
 			fmt.Sprintf("call blocked by Interlock: %s", blockReason))
 		return &DispatchResult{Response: data, Blocked: true}, nil
 	}
@@ -159,7 +168,7 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 			ev.Decision = "blocked"
 			ev.BlockReason = decision.Reason
 			p.logEvent(ev)
-			data := p.buildErrorResponse(msg.ID, -32000,
+			data := p.buildErrorResponse(msg.ID, jsonRPCServerError,
 				fmt.Sprintf("call blocked by Interlock: %s", decision.Reason))
 			return &DispatchResult{Response: data, Blocked: true}, nil
 		}
@@ -168,7 +177,7 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 				frame = rewritten
 			} else {
 				p.log.Printf("[SECURITY] vault detokenize frame rewrite failed — refusing to forward: %v", err)
-				data := p.buildErrorResponse(msg.ID, -32000,
+				data := p.buildErrorResponse(msg.ID, jsonRPCServerError,
 					"call blocked by Interlock: vault forward rewrite failed")
 				return &DispatchResult{Response: data, Blocked: true}, nil
 			}

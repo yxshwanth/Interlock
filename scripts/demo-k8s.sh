@@ -50,7 +50,7 @@ kind load docker-image "${IMAGE}" --name "${CLUSTER}"
 
 log "applying manifests"
 kubectl apply -f "${ROOT}/deploy/k8s/rbac.yaml"
-kubectl apply -f "${ROOT}/deploy/k8s/daemonset.yaml"
+kubectl apply -f "${ROOT}/deploy/k8s/daemonset-dev.yaml"
 kubectl apply -f "${ROOT}/deploy/k8s/service-metrics.yaml"
 # Same tag (interlock:dev) may already be present — force pods onto the freshly loaded image.
 kubectl -n interlock-system rollout restart daemonset/interlock-sensor 2>/dev/null || true
@@ -92,7 +92,7 @@ fi
 
 echo "${EVIDENCE}" | tee /tmp/interlock-k8s-evidence.jsonl
 
-DEMO_SECRET='sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef'
+DEMO_SECRET='sk-demo-FAKE-51TxJANEd0eR3aLt0k3n9876543210abcdef'
 
 if ! echo "${EVIDENCE}" | grep -q 'pod_context'; then
   echo "FAIL: evidence missing pod_context" >&2

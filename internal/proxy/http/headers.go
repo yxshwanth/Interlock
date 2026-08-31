@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/yxshwanth/Interlock/internal/model"
@@ -67,8 +68,22 @@ func ValidateOrigin(r *http.Request, allowedHosts []string) error {
 	if origin == "" {
 		return nil
 	}
-	for _, h := range allowedHosts {
-		if strings.Contains(origin, h) {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid Origin: %s", origin)
+	}
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	for _, allowed := range allowedHosts {
+		allowed = strings.ToLower(strings.TrimSpace(allowed))
+		if allowed == "" {
+			continue
+		}
+		if host == allowed {
+			return nil
+		}
+		// Allow explicit host:port when listen address includes a port.
+		if port != "" && host+":"+port == allowed {
 			return nil
 		}
 	}

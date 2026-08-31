@@ -52,73 +52,27 @@ type Step struct {
 	AdvanceBy time.Duration          // used when Kind is StepAdvanceTime (rewind LitAt by this amount)
 }
 
-// Scenario is one corpus case: a labeled sequence of engine calls plus the
-// expected ground truth (attack or legitimate).
-//
-// Two outcome dimensions matter and are scored separately (see runner.go):
-//
-//   - TrippedAny — any step returned a non-empty Verdict (SUSPICIOUS or
-//     EXFIL). This is the OPERATIONAL signal: in block mode this is exactly
-//     when a call is refused or a process is killed. SUSPICIOUS trips on
-//     its own once all three legs are lit, regardless of whether any
-//     secret value actually appears in the sink call/payload — the legs
-//     are session-scoped, sticky, and content-blind by design (see
-//     architecture.md §7). That means many "sensitive read, then any
-//     external call" benign sequences legitimately trip SUSPICIOUS today;
-//     the corpus measures this rather than hiding it.
-//   - TrippedExfil — a step specifically achieved verdict EXFIL, meaning
-//     CheckOverlap/CheckOverlapPayload proved a tainted value appears in
-//     the sink args/payload. This is what actually exercises the encoding
-//     coverage and is the correct bar for "did detection logic work",
-//     independent of the always-on trifecta tripwire.
+// Scenario is one corpus case: labeled engine replay steps plus ground-truth category.
+// TrippedAny vs TrippedExfil are scored separately (see runner.go and docs/fp_corpus.md).
 type Scenario struct {
-	// ID must be unique across the corpus; used for report breakdowns and
-	// pinning expected outcomes in corpus_test.go. Convention:
-	// "<category>_<variant>_<short-name>", e.g. "malicious_proxy_a_base64".
+	// Unique id, convention: "<category>_<variant>_<short-name>".
 	ID          string
 	Description string
 	Category    Category
 	Variant     Variant
 	Enforcement string // "block" or "monitor"; defaults to "block" if empty
 
-	// KnownGap (malicious only) marks a scenario that is EXPECTED to miss
-	// EXFIL-tier proof under the current, documented detection scope (e.g.
-	// cross-call secret splits, depth-3 encoding nests). It may still trip
-	// SUSPICIOUS (TrippedAny) via the sticky trifecta tripwire — that is
-	// not the gap being documented. Known-gap misses are excluded from the
-	// EXFIL detection-rate denominator so a catalogued gap never
-	// masquerades as a regression, and a newly-undetected non-gap
-	// scenario still fails the build immediately.
+	// KnownGap: malicious scenario expected to miss EXFIL-tier proof under current scope.
 	KnownGap bool
-	// GapNote explains why a KnownGap scenario is expected to miss EXFIL
-	// proof, and names the corresponding *_KnownGap unit test if one
-	// exists in internal/engine.
+	// GapNote names the corresponding *_KnownGap unit test when one exists.
 	GapNote string
 
-	// PreExistingGap (KnownGap scenarios only) marks a miss that was
-	// entailed before the scenario ever ran, because it lands on a gap
-	// already catalogued in docs/architecture.md (e.g. the depth-4+
-	// recursive-decode KnownGap, the container-inspect-bomb KnownGap) rather
-	// than one this scenario itself surfaced. This matters for
-	// docs/cve_corpus.md: a CVE reconstruction that reproduces a
-	// pre-catalogued gap confirms the gap catalogue predicts real-world
-	// attack shapes — a real but different claim from a reconstruction
-	// that probed open ground and told us something new. Leave false
-	// (the default) for a scenario whose miss was not already documented
-	// as a KnownGap prior to being authored.
+	// PreExistingGap: KnownGap scenario landing on a gap already in architecture.md.
 	PreExistingGap bool
 
-	// ExpectTripByDesign (benign only) pins whether this benign scenario is
-	// expected to trip SUSPICIOUS (TrippedAny) under the CURRENT trifecta
-	// design, even though no exfiltration occurred — e.g. the sticky,
-	// content-blind leg-lighting described above, or the sensor
-	// connect-only tripwire (architecture.md §5). This distinguishes a
-	// known, documented design trade-off from a new, unexpected false
-	// positive; either direction of change fails corpus_test.go so a human
-	// notices. TrippedExfil is always expected false for benign scenarios
-	// — that invariant is not configurable.
+	// ExpectTripByDesign: benign scenario expected to trip SUSPICIOUS by current design.
 	ExpectTripByDesign bool
-	// DesignNote explains why ExpectTripByDesign is true, when set.
+	// DesignNote explains why ExpectTripByDesign is true.
 	DesignNote string
 
 	// CVERef, when non-nil, marks this scenario as reconstructed from a

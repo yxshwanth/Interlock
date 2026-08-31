@@ -76,40 +76,21 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 	logger.Printf("sensor mode: enforcement=%s evidence=%s allowlist=%d sensitive_paths=%d",
 		cfg.Enforcement, cfg.Evidence.Backend, len(cfg.EgressAllowlist), len(cfg.SensitivePaths))
 
-	stats := &proxy.RuntimeStats{}
-	evLogger, err := proxy.NewEventLogger(logPath, cfg.Logging, stats)
+	core, err := setupRuntimeCore(logger, cfg, logPath, evidencePath, nil)
 	if err != nil {
-		return fmt.Errorf("logger: %w", err)
+		return err
 	}
-	defer evLogger.Close()
+	defer core.close()
+	stats := core.stats
+	eng := core.eng
+	metrics := core.metrics
+	rt := core.rt
 
-	store := engine.NewSessionStore()
-	var evidenceSink engine.EvidenceSink
-	if evidencePath != "" {
-		evidenceSink, err = engine.NewEvidenceSinkWithStats(cfg, evidencePath, engine.AtomicEvidenceDrops{N: &stats.DroppedEvidence})
-		if err != nil {
-			return fmt.Errorf("evidence sink: %w", err)
-		}
-		if c, ok := evidenceSink.(interface{ Close() error }); ok {
-			defer c.Close()
-		}
-	}
-
-	eng := engine.NewEngine(store, nil, cfg.Enforcement, evidenceSink)
-	eng.Configure(cfg)
-	if evLogger != nil {
-		eng.SetSecurityAuditSink(evLogger)
-	}
-
-	metrics := observability.NewMetrics()
-	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg, Engine: eng}
-	if async, ok := evidenceSink.(*engine.AsyncEvidenceSink); ok {
-		rt.Async = async
-	}
-	if _, _, obsErr := attachEmitObservers(logger, cfg, rt); obsErr != nil {
+	obsCleanup, obsErr := attachObservability(logger, cfg, core)
+	if obsErr != nil {
 		return obsErr
 	}
-	defer rt.CloseNotifiers()
+	defer obsCleanup()
 
 	attr := k8s.NewPodAttribution()
 
@@ -182,7 +163,7 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 	go watchSIGHUP(ctx, logger, cfgPath, true, rt)
 
 	breaker := failclosed.New(cfg.FailClosed, logger)
-	wireFailClosed(breaker, logger, metrics, eng, sensor, nil, evidenceSink)
+	wireFailClosed(breaker, logger, metrics, eng, sensor, nil, core.evidenceSink)
 	if breaker != nil {
 		logger.Printf("fail_closed enabled (scope=all watched; requires ebpf.lsm_enforce)")
 		go breaker.WatchRingbufDrops(ctx, sensor.DropCount, sensor.CriticalDropCount, 5*time.Second)
@@ -278,8 +259,6 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 }
 
 func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, enableEBPF bool) error {
-	stats := &proxy.RuntimeStats{}
-
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -287,32 +266,23 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	logger.Printf("loaded config: %d server(s), enforcement=%s, transport=%s, evidence=%s",
 		len(cfg.Servers), cfg.Enforcement, cfg.Transport.Mode, cfg.Evidence.Backend)
 
-	evLogger, err := proxy.NewEventLogger(logPath, cfg.Logging, stats)
+	core, err := setupRuntimeCore(logger, cfg, logPath, evidencePath, engine.NewTagger(cfg))
 	if err != nil {
-		return fmt.Errorf("logger: %w", err)
+		return err
 	}
-	defer evLogger.Close()
+	defer core.close()
+	stats := core.stats
+	eng := core.eng
+	metrics := core.metrics
+	rt := core.rt
 
-	store := engine.NewSessionStore()
-	tagger := engine.NewTagger(cfg)
-
-	var evidenceSink engine.EvidenceSink
-	if evidencePath != "" {
-		evidenceSink, err = engine.NewEvidenceSinkWithStats(cfg, evidencePath, engine.AtomicEvidenceDrops{N: &stats.DroppedEvidence})
-		if err != nil {
-			return fmt.Errorf("evidence sink: %w", err)
-		}
-		if c, ok := evidenceSink.(interface{ Close() error }); ok {
-			defer c.Close()
-		}
+	obsCleanup, obsAttachErr := attachObservability(logger, cfg, core)
+	if obsAttachErr != nil {
+		return obsAttachErr
 	}
+	defer obsCleanup()
 
-	eng := engine.NewEngine(store, tagger, cfg.Enforcement, evidenceSink)
-	eng.Configure(cfg)
-	if evLogger != nil {
-		eng.SetSecurityAuditSink(evLogger)
-	}
-
+	p := proxy.New(cfg, core.evLogger, eng)
 	var bridgeClient *bridge.Client
 	if cfg.TaintBridge.Enabled {
 		podUID := strings.TrimSpace(os.Getenv("POD_UID"))
@@ -337,18 +307,6 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 				cfg.TaintBridge.SocketPathOrDefault(), podUID)
 		}
 	}
-
-	metrics := observability.NewMetrics()
-	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg, Engine: eng}
-	if async, ok := evidenceSink.(*engine.AsyncEvidenceSink); ok {
-		rt.Async = async
-	}
-	if _, _, obsAttachErr := attachEmitObservers(logger, cfg, rt); obsAttachErr != nil {
-		return obsAttachErr
-	}
-	defer rt.CloseNotifiers()
-
-	p := proxy.New(cfg, evLogger, eng)
 
 	var sensor *interlockebpf.Sensor
 	var sensorStarted bool
@@ -429,7 +387,7 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	go watchSIGHUP(ctx, logger, cfgPath, false, rt)
 
 	breaker := failclosed.New(cfg.FailClosed, logger)
-	wireFailClosed(breaker, logger, metrics, eng, sensor, p, evidenceSink)
+	wireFailClosed(breaker, logger, metrics, eng, sensor, p, core.evidenceSink)
 	if breaker != nil {
 		logger.Printf("fail_closed enabled (proxy dispatch circuit-breaker)")
 		if sensor != nil {
@@ -477,7 +435,7 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	return nil
 }
 
-func logRuntimeStats(logger *log.Logger, stats *proxy.RuntimeStats) {
+func logRuntimeStats(logger *log.Logger, stats *model.RuntimeStats) {
 	if stats == nil {
 		return
 	}

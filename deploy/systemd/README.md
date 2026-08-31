@@ -9,7 +9,7 @@ Bare-metal / VM install. **Kubernetes remains the primary deploy path** — see 
 go build -o /usr/local/bin/interlock ./cmd/interlock
 
 sudo mkdir -p /etc/interlock
-sudo cp interlock-sensor.yaml /etc/interlock/interlock.yaml   # or your config
+sudo cp examples/configs/interlock-sensor.yaml /etc/interlock/interlock.yaml   # or your config
 # optional: sudo cp interlock.env.example /etc/interlock/interlock.env
 
 sudo cp deploy/systemd/interlock-sensor.service /etc/systemd/system/

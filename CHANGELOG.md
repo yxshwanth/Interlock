@@ -10,6 +10,12 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - **Cross-session evidence query (ROADMAP §5)** — SQLite `Query` by `session_id` / `verdict` / `pod_name`; `make query-evidence`; viewer multi-record list mode
 - **Shannon entropy dark measurement (ROADMAP §12)** — corpus-only would-fire rates in `docs/fp_corpus.md`; not wired to verdicts/alerts
 - **Post-attach capability drop (ROADMAP §13)** — clear `CAP_SYS_ADMIN` after eBPF attach; keep `KILL`/`BPF`/`PERFMON`; netns keeps SYS_ADMIN
+- HTTP MCP optional `transport.bearer_token` and `transport.rate_limit_rps`; example configs moved to `examples/configs/`
+- `.editorconfig` for non-Go file formatting
+
+### Changed
+
+- **Audit remediation (2026-08-31)** — capabilities-first `daemonset.yaml` default; `daemonset-dev.yaml` for privileged kind demos; strict Origin hostname validation; `ParseToolCallParams` errors surfaced on proxy path; shared `model.MeetsMinVerdict` / `RuntimeStats`; Dockerfile defaults to non-root user (sensor sets `runAsUser: 0`)
 
 ### Removed
 

@@ -17,7 +17,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-	&& rm -rf /var/lib/apt/lists/*
+	&& rm -rf /var/lib/apt/lists/* \
+	&& useradd -r -u 65532 -g nogroup interlock 2>/dev/null || useradd -r -u 65532 interlock
 COPY --from=build /out/interlock /interlock
 COPY --from=build /out/k8s-exfil-demo /k8s-exfil-demo
+# Default non-root for proxy mode. Sensor/eBPF DaemonSets must set securityContext.runAsUser: 0.
+USER 65532
 ENTRYPOINT ["/interlock"]

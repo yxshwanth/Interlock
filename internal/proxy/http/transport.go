@@ -18,9 +18,10 @@ import (
 
 // Server serves Streamable HTTP MCP (2025-11-25) for the proxy.
 type Server struct {
-	proxy *proxy.Proxy
-	cfg   *config.Config
-	log   *log.Logger
+	proxy   *proxy.Proxy
+	cfg     *config.Config
+	log     *log.Logger
+	limiter *ipRateLimiter
 }
 
 // NewServer creates an HTTP MCP front-end for p.
@@ -29,6 +30,7 @@ func NewServer(p *proxy.Proxy, cfg *config.Config, logger *log.Logger) *Server {
 		proxy: p,
 		cfg:   cfg,
 		log:   logger,
+		limiter: newIPRateLimiter(cfg.Transport.RateLimitRPS),
 	}
 }
 
@@ -78,6 +80,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !validateBearer(r, s.cfg.Transport.BearerToken) {
+		WriteJSONRPCError(w, http.StatusUnauthorized, -32600, "unauthorized")
+		return
+	}
+	if s.limiter != nil && !s.limiter.allow(clientIP(r)) {
+		WriteJSONRPCError(w, http.StatusTooManyRequests, -32600, "rate limit exceeded")
 		return
 	}
 

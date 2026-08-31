@@ -197,7 +197,7 @@ func runVariantBPassHTTP(logger *log.Logger, projectRoot string, quiet bool) *va
 	os.Remove(evidenceLog)
 	os.Remove(evidenceJSON)
 
-	cmd, err := startHTTPInterlock(projectRoot, "interlock-http.yaml", evLog, evidenceLog, true, quiet)
+	cmd, err := startHTTPInterlock(projectRoot, "examples/configs/interlock-http.yaml", evLog, evidenceLog, true, quiet)
 	if err != nil {
 		logger.Fatalf("start HTTP interlock: %v", err)
 	}

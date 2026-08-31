@@ -6,7 +6,7 @@ metadata:
   namespace: default
 data:
   demo-token: |
-    sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef
+    sk-demo-FAKE-51TxJANEd0eR3aLt0k3n9876543210abcdef
 ---
 apiVersion: v1
 kind: Pod

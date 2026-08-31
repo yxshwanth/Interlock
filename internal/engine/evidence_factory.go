@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/yxshwanth/Interlock/internal/config"
 	"github.com/yxshwanth/Interlock/internal/model"
@@ -32,7 +33,7 @@ func NewEvidenceSink(cfg *config.Config, pathOverride string) (EvidenceSink, err
 }
 
 // NewEvidenceSinkWithStats is like NewEvidenceSink but records drop-mode overflows on drops.
-func NewEvidenceSinkWithStats(cfg *config.Config, pathOverride string, drops EvidenceDropCounter) (EvidenceSink, error) {
+func NewEvidenceSinkWithStats(cfg *config.Config, pathOverride string, drops *atomic.Uint64) (EvidenceSink, error) {
 	path := cfg.Evidence.Path
 	if pathOverride != "" {
 		path = pathOverride
