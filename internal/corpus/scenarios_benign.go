@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -492,7 +493,7 @@ func benignOperationalStress() []Scenario {
 		}
 		for i := 0; i < 50; i++ {
 			steps = append(steps, resultStep(sid(id), "fetch_page", "web", nextSeq(),
-				resultJSON("high-throughput noise page #"+itoa(i)+" status=ok")))
+				resultJSON("high-throughput noise page #"+strconv.Itoa(i)+" status=ok")))
 		}
 		steps = append(steps, requestStep(sid(id), "send_message", "messenger", nextSeq(),
 			argsJSON(map[string]string{"to": "ops", "body": "batch complete, 50 pages indexed"})))

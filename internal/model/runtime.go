@@ -1,4 +1,4 @@
-package proxy
+package model
 
 import "sync/atomic"
 
@@ -8,4 +8,9 @@ type RuntimeStats struct {
 	DroppedEvidence          atomic.Uint64
 	EBPFRingbufDrops         atomic.Uint64
 	EBPFCriticalRingbufDrops atomic.Uint64
+}
+
+// DeliveryRecorder records webhook/SIEM delivery outcomes (ok|error|skipped).
+type DeliveryRecorder interface {
+	RecordAlertDelivery(kind, result string)
 }

@@ -10,26 +10,9 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
-// EvidenceDropCounter is incremented when drop-mode evidence enqueue fails.
-type EvidenceDropCounter interface {
-	Add(delta uint64)
-}
-
 // EvidenceEmitObserver is notified after a successful evidence persist (async worker).
 type EvidenceEmitObserver interface {
 	OnEvidenceEmitted(rec model.EvidenceRecord)
-}
-
-// AtomicEvidenceDrops adapts sync/atomic.Uint64 to EvidenceDropCounter.
-type AtomicEvidenceDrops struct {
-	N *atomic.Uint64
-}
-
-// Add increments the counter.
-func (a AtomicEvidenceDrops) Add(delta uint64) {
-	if a.N != nil {
-		a.N.Add(delta)
-	}
 }
 
 // AsyncEvidenceSink decorates an EvidenceSink with a background worker so
@@ -42,7 +25,7 @@ type AsyncEvidenceSink struct {
 	inner        EvidenceSink
 	backpressure string
 	queue        chan model.EvidenceRecord
-	drops        EvidenceDropCounter
+	drops        *atomic.Uint64
 	observer     EvidenceEmitObserver
 	log          *log.Logger
 	done         chan struct{}
@@ -57,7 +40,8 @@ type AsyncEvidenceSink struct {
 
 // NewAsyncEvidenceSink wraps inner with an async emit queue.
 // queueSize defaults to 256 when <= 0. backpressure defaults to "block".
-func NewAsyncEvidenceSink(inner EvidenceSink, backpressure string, queueSize int, drops EvidenceDropCounter) *AsyncEvidenceSink {
+// drops may be nil; when set, drop-mode overflow increments it.
+func NewAsyncEvidenceSink(inner EvidenceSink, backpressure string, queueSize int, drops *atomic.Uint64) *AsyncEvidenceSink {
 	if backpressure == "" {
 		backpressure = "block"
 	}

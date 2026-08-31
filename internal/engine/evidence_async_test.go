@@ -51,7 +51,7 @@ func TestAsyncEvidenceSink_DrainOnClose(t *testing.T) {
 func TestAsyncEvidenceSink_DropOverflow(t *testing.T) {
 	inner := &countingSink{delay: 50 * time.Millisecond}
 	var dropped atomic.Uint64
-	async := NewAsyncEvidenceSink(inner, "drop", 2, AtomicEvidenceDrops{N: &dropped})
+	async := NewAsyncEvidenceSink(inner, "drop", 2, &dropped)
 
 	// Fill queue + keep worker busy; further emits should drop.
 	for i := 0; i < 20; i++ {

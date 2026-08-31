@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"net/url"
 	"testing"
+
+	"github.com/yxshwanth/Interlock/internal/model"
 )
 
 func TestCanonicalEncodings_Deterministic(t *testing.T) {
@@ -21,11 +23,11 @@ func TestCanonicalEncodings_Deterministic(t *testing.T) {
 		string(FormBase64):     base64.StdEncoding.EncodeToString([]byte(secret)),
 		string(FormHex):        hex.EncodeToString([]byte(secret)),
 		string(FormURLEncoded): url.QueryEscape(secret),
-		string(FormReversed):   reverseString(secret),
+		string(FormReversed):   model.ReverseString(secret),
 		string(FormBase64Hex):  base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString([]byte(secret)))),
 		string(FormHexBase64):  hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(secret)))),
 		string(FormBase64URL):  base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(secret))),
-		string(FormBase64Rev):  base64.StdEncoding.EncodeToString([]byte(reverseString(secret))),
+		string(FormBase64Rev):  base64.StdEncoding.EncodeToString([]byte(model.ReverseString(secret))),
 	}
 	for _, pair := range []struct {
 		form EncodingForm
