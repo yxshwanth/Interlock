@@ -17,10 +17,8 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
-// DeliveryRecorder records webhook delivery outcomes (ok|error|skipped).
-type DeliveryRecorder interface {
-	RecordAlertDelivery(kind, result string)
-}
+// DeliveryRecorder is an alias for model.DeliveryRecorder.
+type DeliveryRecorder = model.DeliveryRecorder
 
 // WebhookNotifier posts trip alerts to a configured HTTP endpoint.
 type WebhookNotifier struct {
@@ -53,7 +51,7 @@ func (n *WebhookNotifier) OnEvidenceEmitted(rec model.EvidenceRecord) {
 	if n == nil {
 		return
 	}
-	if !meetsMinVerdict(rec.Verdict, n.cfg.MinVerdict) {
+	if !model.MeetsMinVerdict(rec.Verdict, n.cfg.MinVerdict) {
 		n.record("skipped")
 		return
 	}
@@ -127,22 +125,7 @@ func (n *WebhookNotifier) buildBody(rec model.EvidenceRecord) ([]byte, string, e
 		payload := map[string]any{
 			"routing_key":  n.cfg.PagerDutyRoutingKey,
 			"event_action": "trigger",
-			// Session-scoped AND verdict-scoped — deliberately NOT
-			// session-only. Session-only was tried and reverted: PagerDuty
-			// sets severity/urgency from the triggering event and a
-			// still-open, already-acknowledged incident does not generally
-			// re-escalate on a later dedup'd trigger, so a session-only key
-			// let a later, higher-confidence EXFIL silently merge into an
-			// already-acked, lower-severity SUSPICIOUS incident instead of
-			// paging at the severity it deserves — the highest-confidence
-			// detection landing as a quiet update on a medium ticket. Keying
-			// on verdict too means: repeated SUSPICIOUS trips in one session
-			// (e.g. a chatty pod making several non-allowlisted connects,
-			// see docs/cve_corpus.md's volume finding) still merge into one
-			// incident — the noise case this exists to fix — but an
-			// escalation to EXFIL always gets its own fresh, correctly
-			// `critical`-severity incident that cannot be absorbed into a
-			// stale, already-acked one.
+			// Session+verdict dedup_key: same-tier repeats merge; EXFIL escalation gets a fresh incident.
 			"dedup_key": rec.SessionID + ":" + string(rec.Verdict),
 			"payload": map[string]any{
 				"summary":        formatSummary(rec),
@@ -157,15 +140,6 @@ func (n *WebhookNotifier) buildBody(rec model.EvidenceRecord) ([]byte, string, e
 	default: // generic
 		b, err := json.Marshal(compactDetails(rec))
 		return b, "application/json", err
-	}
-}
-
-func meetsMinVerdict(v model.Verdict, min string) bool {
-	switch strings.ToUpper(min) {
-	case "EXFIL":
-		return v == model.VerdictExfil
-	default:
-		return v == model.VerdictExfil || v == model.VerdictSuspicious
 	}
 }
 

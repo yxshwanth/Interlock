@@ -7,9 +7,7 @@ import (
 	"time"
 )
 
-// ---------------------------------------------------------------------------
 // Plane 1: proxy
-// ---------------------------------------------------------------------------
 
 // Direction indicates which way a JSON-RPC frame is traveling.
 type Direction string
@@ -70,6 +68,9 @@ type ToolCallParams struct {
 
 // ParseToolCallParams extracts tool name and arguments from a tools/call params blob.
 func ParseToolCallParams(params json.RawMessage) (ToolCallParams, error) {
+	if len(params) == 0 {
+		return ToolCallParams{}, nil
+	}
 	var tc ToolCallParams
 	if err := json.Unmarshal(params, &tc); err != nil {
 		return tc, err
@@ -77,9 +78,7 @@ func ParseToolCallParams(params json.RawMessage) (ToolCallParams, error) {
 	return tc, nil
 }
 
-// ---------------------------------------------------------------------------
 // Plane 2: kernel (eBPF sensor — Week 3)
-// ---------------------------------------------------------------------------
 
 // PodContext identifies the Kubernetes pod that owns a monitored process.
 // Present on sensor-mode Variant B evidence; omitted for proxy-local demos.
@@ -128,9 +127,7 @@ type ShadowEvent struct {
 	SessionID      string `json:"session_id"`
 }
 
-// ---------------------------------------------------------------------------
 // Engine state: trifecta state machine
-// ---------------------------------------------------------------------------
 
 // Leg represents one leg of the trifecta: a boolean flag plus the event
 // that lit it and a human-readable detail string.
@@ -231,9 +228,7 @@ type VaultEntry struct {
 	Class string // v1: "extracted"
 }
 
-// ---------------------------------------------------------------------------
 // Evidence (feeds the viewer)
-// ---------------------------------------------------------------------------
 
 // Verdict describes what was concluded — the detection result, independent
 // of what enforcement action was taken. Separated from Action so Week 3's
@@ -311,9 +306,7 @@ type TimelineItem struct {
 	Ref         uint64 `json:"ref,omitempty"`
 }
 
-// ---------------------------------------------------------------------------
 // Engine interfaces / decision types (architecture.md §11)
-// ---------------------------------------------------------------------------
 
 // Decision is the engine's response to a pre-forward evaluation.
 type Decision struct {

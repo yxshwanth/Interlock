@@ -69,10 +69,12 @@ The second row is the one that means anything. A perfect score against scenarios
 - [What counts as proof](#what-counts-as-proof)
 - [The thirteen shapes a secret can wear](#the-thirteen-shapes-a-secret-can-wear)
 - [The receipt](#the-receipt)
+- [Key decisions and trade-offs](#key-decisions-and-trade-offs)
 - [Bring it up](#bring-it-up)
 - [Kubernetes](#kubernetes)
 - [Configuration](#configuration)
 - [Measured](#measured)
+- [Assumptions and biases](#assumptions-and-biases)
 - [Where it fails](#where-it-fails)
 - [Map of the repo](#map-of-the-repo)
 - [Tests](#tests)
@@ -208,6 +210,39 @@ Payload capture defaults to **1024 bytes**, the compiled `PAYLOAD_MAX`. Events a
 | Proxy with opt-in `sandbox.netns` | **prevented** — children are spawned into `CLONE_NEWNET` and have no network to reach |
 | Sensor-only DaemonSet | **contained** — kill, plus optional LSM. Interlock did not spawn the pod, so netns does not apply |
 
+**How taint flows through the engine:**
+
+```mermaid
+flowchart LR
+    subgraph ingest ["Taint registration"]
+        Read["Tool result<br/>(sensitive_source)"]
+        Path["openat on<br/>sensitive_path"]
+        Bridge["Taint bridge<br/>register_taint"]
+    end
+
+    Expand["Expand into<br/>13 canonical forms"]
+    Store["In-memory<br/>TaintedValue set"]
+
+    subgraph check ["Sink-time check"]
+        Decode["Recursive decode<br/>depth 5"]
+        Overlap["CheckOverlap<br/>string scan"]
+        Fragment["Fragment + egress<br/>reassembly"]
+        Container["Container descent<br/>ZIP/gzip/tar"]
+    end
+
+    Verdict{{"Overlap?<br/>→ EXFIL 0.95<br/>No overlap + AllLit?<br/>→ SUSPICIOUS 0.60"}}
+
+    Read --> Expand
+    Path --> Expand
+    Bridge --> Expand
+    Expand --> Store
+    Store --> Overlap
+    Decode --> Overlap
+    Fragment --> Overlap
+    Container --> Overlap
+    Overlap --> Verdict
+```
+
 **Trust boundaries.** The proxy, engine, sensor, and config are the TCB. Untrusted: the MCP servers, all tool results, fetched content, and the agent's own output, because the agent is the thing being hijacked. Interlock performs no network egress of its own beyond local evidence and configured alerting. Self-threat model T1–T6: [`docs/threat_model.md`](docs/threat_model.md).
 
 ---
@@ -298,6 +333,25 @@ Open [`web/viewer.html`](web/viewer.html) on any evidence file. It is one local 
 
 ---
 
+## Key decisions and trade-offs
+
+These are the consequential choices baked into the codebase. Each traded something real for something that mattered more.
+
+| Decision | What was chosen | What was not | Why |
+| --- | --- | --- | --- |
+| **Detection model** | Byte-overlap proof against precomputed encodings | LLM-judged semantic analysis on the hot path | Semantic detection trusts another model, explodes the FP surface, and still loses to clever rewrites. Byte overlap is deterministic, auditable, and 0% EXFIL-tier FP. The gap (paraphrased exfil) is named, not papered over. |
+| **Enforcement split** | `EXFIL` hard-blocks; `SUSPICIOUS` never does | Single verdict with a tunable threshold | A nervous heuristic that can kill your agent is worse than the attack. Soft signals are for evidence; hard signals are for enforcement. Mixing them means every FP is an outage. |
+| **Two planes** | MCP proxy (Variant A) + eBPF sensor (Variant B) | Proxy-only or kernel-only | The proxy sees MCP semantics but is blind to side channels. The kernel sees all egress but has no MCP context. Neither is a fallback — they are blind in opposite directions. |
+| **Transport** | STDIO child-process spawning; Streamable HTTP for multi-session | Sidecar proxy with network intercept | STDIO gives Interlock the PID tree (spawn pinning, netns sandbox, eBPF PID filter). Network intercept would require parsing MCP from a tap, losing hold-before-forward and the TCB boundary. |
+| **Evidence format** | Append-only JSONL (default) or SQLite with hash chain | External log aggregator as primary store | Evidence must be tamper-evident locally. A remote SIEM is complementary (OCSF/CEF export exists), but the hash chain must live where the sensor runs. |
+| **Taint expansion** | 13 precomputed forms at registration, not at scan time | On-demand decoding only | Precomputation makes `CheckOverlap` a string scan (~70 ns), not a decompression pass. Memory cost is bounded: 13 variants per secret per session. |
+| **Leg decay** | TTL (30m) + call-count (32) dim trifecta legs | Sticky-forever legs | A long-lived agent session with sticky legs is a false-positive machine. Decay ensures soft verdicts reflect recent context, not ancient history. Taint (the hard signal) outlives decay intentionally. |
+| **Language** | Go, single static binary | Rust, Python, or polyglot | Go compiles to one binary with no runtime deps, has mature eBPF libraries (cilium/ebpf), and the stdlib covers HTTP, JSON-RPC, process management, and crypto without external deps. 11 direct dependencies total. |
+| **No external dependencies for core detection** | stdlib `compress/gzip`, `encoding/base64`, `crypto/sha256`, etc. | Third-party DLP libraries, ML classifiers | The detection engine's correctness is auditable in ~1400 lines of Go with zero non-stdlib imports. Adding a classifier would make it a black box. |
+| **Container descent limits** | 10 MiB, depth 2, 100 members, 50ms — abort → `SUSPICIOUS` | Unbounded extraction or skip entirely | Unbounded extraction is a zip bomb. Skipping means an attacker wraps the secret in a tarball. The compromise: walk what is cheap, abort what is not, and never claim proof from an aborted walk. |
+
+---
+
 ## Bring it up
 
 **Need:** Go 1.25+, and for the kernel plane, Linux with BTF (`ls /sys/kernel/btf/vmlinux` should succeed — Ubuntu 6.x works). The eBPF path does not build or run on macOS or Windows.
@@ -345,8 +399,8 @@ Point the agent at `interlock` where it currently points at its MCP servers. It 
 ```bash
 make image
 kubectl apply -f deploy/k8s/rbac.yaml
-kubectl apply -f deploy/k8s/daemonset.yaml     # privileged — kind, full EXFIL
-# or deploy/k8s/daemonset-capabilities.yaml    # managed clusters, try-first + taint bridge
+kubectl apply -f deploy/k8s/daemonset-capabilities.yaml   # production (capabilities-first, non-privileged)
+# kind / Docker Desktop: deploy/k8s/daemonset.yaml (privileged, dev only)
 # or: make demo-k8s
 ```
 
@@ -406,7 +460,7 @@ Everything else is commented out in [`interlock.yaml`](interlock.yaml) and off b
 | `server_defaults.inherit_sink_suspicion` | gate every tool on a sensitive server unless explicitly allowlisted |
 | `sensitive_paths` | `openat` prefixes the sensor treats as sensitive sources |
 
-For Streamable HTTP, swap the transport block — see [`interlock-http.yaml`](interlock-http.yaml). Backend servers stay STDIO children either way. Config reloads on `SIGHUP`.
+For Streamable HTTP, swap the transport block — set `transport.mode: http` and configure `transport.http.*` (see commented examples in [`interlock.yaml`](interlock.yaml)). Backend servers stay STDIO children either way. Config reloads on `SIGHUP`.
 
 ---
 
@@ -448,6 +502,26 @@ Live production numbers come from Prometheus rather than benchmarks — scrape `
 ```bash
 make bench && make bench-http && make fp-corpus && make cve-corpus
 ```
+
+---
+
+## Assumptions and biases
+
+This section names what the project takes for granted, so you can decide whether those assumptions hold in your environment.
+
+**Platform.** Linux with BTF, x86_64. The eBPF plane does not compile on macOS, Windows, or ARM. The proxy plane works anywhere Go compiles, but without the kernel plane you are proxy-only and Variant B side channels are invisible.
+
+**Scale.** Designed for tens of concurrent sessions, not thousands. `sessions.max_concurrent` defaults to 32. The taint set, trifecta state, and fragment buffers are per-session and in-memory. A deployment handling hundreds of simultaneous agent sessions would need to profile memory, and the session manager's process table is the first bottleneck.
+
+**Threat model.** The host kernel is trusted — no defense against a rootkit rewriting eBPF maps. The agent is untrusted (it is the thing being hijacked). MCP servers are untrusted. The network boundary is **not** trusted — Interlock does not assume network policy will stop exfil, which is the whole point. Interlock itself performs no outbound network calls except configured alerting endpoints.
+
+**Detection.** Optimizes for **zero EXFIL-tier false positives** at the cost of detection coverage. The 13-form transform set is closed and finite. Custom ciphers, nests deeper than depth 5, secrets entirely beyond the 1024-byte capture window, and paraphrased exfil are all outside the detection boundary. This is a deliberate trade: a missed exfil is bad, but a false block on a production agent is worse, because false blocks erode trust and get the tool turned off.
+
+**Deployment.** Assumes the operator will configure tags correctly. An untagged sensitive source is a blind spot Interlock cannot warn about — it does not know what it does not know. Tag review is the first adoption task, and the configuration section says so.
+
+**Data shape.** Expects secrets to be byte strings (tokens, keys, credentials). Structured data (database rows, JSON objects) is tainted only if it contains a string that matches a secret pattern or was returned from a sensitive-tagged tool. There is no row-level or field-level taint tracking.
+
+**Observability.** Prometheus metrics, webhook alerts, and OCSF/CEF export are all opt-in. The default is local-only: evidence files and stderr. There is no built-in dashboard — [`web/viewer.html`](web/viewer.html) is a read-only receipt viewer, not a monitoring UI.
 
 ---
 
@@ -513,7 +587,7 @@ Interlock/
 
 ## Tests
 
-**336 test functions**, 11 of them `KnownGap` pins that assert what Interlock does **not** catch. CI runs `test` and `race` on `main`. Live eBPF saturation and LSM tests are gated on root and BPF-LSM.
+**345 test functions**, 11 of them `KnownGap` pins that assert what Interlock does **not** catch. CI runs `test` and `race` on `main`. Live eBPF saturation and LSM tests are gated on root and BPF-LSM.
 
 ```bash
 make test
@@ -538,9 +612,11 @@ Next, per [`docs/ROADMAP.md`](docs/ROADMAP.md): protocol-aware egress parsers re
 
 ## Further reading
 
+
 | Document | When to open it |
 | --- | --- |
 | **[docs/INTERLOCK.md](docs/INTERLOCK.md)** | **the definitive reference** — mechanisms, TCB, full gap ledger. Start here for depth |
+| [docs/architecture.md](docs/architecture.md) | component topology, data flow, state machine, and all the internal wiring |
 | [docs/detection_boundary.md](docs/detection_boundary.md) | what is caught and what is not, argued rather than asserted |
 | [docs/fp_corpus.md](docs/fp_corpus.md) · [docs/cve_corpus.md](docs/cve_corpus.md) | the numbers, and what they are worth |
 | [docs/performance.md](docs/performance.md) | what the benchmarks measure and which figures not to quote |

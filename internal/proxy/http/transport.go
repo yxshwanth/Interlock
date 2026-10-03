@@ -18,9 +18,10 @@ import (
 
 // Server serves Streamable HTTP MCP (2025-11-25) for the proxy.
 type Server struct {
-	proxy *proxy.Proxy
-	cfg   *config.Config
-	log   *log.Logger
+	proxy   *proxy.Proxy
+	cfg     *config.Config
+	log     *log.Logger
+	limiter *ipRateLimiter
 }
 
 // NewServer creates an HTTP MCP front-end for p.
@@ -29,6 +30,7 @@ func NewServer(p *proxy.Proxy, cfg *config.Config, logger *log.Logger) *Server {
 		proxy: p,
 		cfg:   cfg,
 		log:   logger,
+		limiter: newIPRateLimiter(cfg.Transport.RateLimitRPS),
 	}
 }
 
@@ -81,11 +83,17 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowedHosts := []string{"localhost", "127.0.0.1"}
-	if host := strings.Split(s.cfg.Transport.Listen, ":")[0]; host != "" {
-		allowedHosts = append(allowedHosts, host)
+	if !validateBearer(r, s.cfg.Transport.BearerToken) {
+		WriteJSONRPCError(w, http.StatusUnauthorized, -32600, "unauthorized")
+		return
 	}
-	if err := ValidateOrigin(r, allowedHosts); err != nil {
+	if s.limiter != nil && !s.limiter.allow(clientIP(r)) {
+		WriteJSONRPCError(w, http.StatusTooManyRequests, -32600, "rate limit exceeded")
+		return
+	}
+
+	host := strings.Split(s.cfg.Transport.Listen, ":")[0]
+	if err := ValidateOrigin(r, []string{host, "localhost", "127.0.0.1"}); err != nil {
 		WriteJSONRPCError(w, http.StatusForbidden, -32600, err.Error())
 		return
 	}

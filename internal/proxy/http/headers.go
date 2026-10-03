@@ -72,11 +72,21 @@ func ValidateOrigin(r *http.Request, allowedHosts []string) error {
 		return nil
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Hostname() == "" {
+	if err != nil || u.Host == "" {
 		return fmt.Errorf("invalid Origin: %s", origin)
 	}
-	for _, h := range allowedHosts {
-		if h != "" && u.Hostname() == h {
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	for _, allowed := range allowedHosts {
+		allowed = strings.ToLower(strings.TrimSpace(allowed))
+		if allowed == "" {
+			continue
+		}
+		if host == allowed {
+			return nil
+		}
+		// Allow explicit host:port when listen address includes a port.
+		if port != "" && host+":"+port == allowed {
 			return nil
 		}
 	}

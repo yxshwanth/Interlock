@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/yxshwanth/Interlock/internal/proxy"
+	"github.com/yxshwanth/Interlock/internal/model"
 )
 
 // DropCountFunc returns the current eBPF ringbuf drop count.
@@ -15,7 +15,7 @@ type FilterCountFunc func() (pids, cgroups int, err error)
 
 // PollRuntime syncs RuntimeStats, eBPF drops, and filter sizes into Prometheus gauges/counters.
 // Stops when ctx is cancelled. criticalDropCount may be nil.
-func PollRuntime(ctx context.Context, m *Metrics, stats *proxy.RuntimeStats, dropCount, criticalDropCount DropCountFunc, filters FilterCountFunc, every time.Duration) {
+func PollRuntime(ctx context.Context, m *Metrics, stats *model.RuntimeStats, dropCount, criticalDropCount DropCountFunc, filters FilterCountFunc, every time.Duration) {
 	if m == nil || every <= 0 {
 		return
 	}

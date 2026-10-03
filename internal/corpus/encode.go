@@ -8,10 +8,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
+	"strconv"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4/v4"
+	"github.com/yxshwanth/Interlock/internal/model"
 )
 
 // Independent encoding helpers for scenario construction. Deliberately not
@@ -25,13 +27,7 @@ func b64(s string) string    { return base64.StdEncoding.EncodeToString([]byte(s
 func hx(s string) string     { return hex.EncodeToString([]byte(s)) }
 func urlEnc(s string) string { return url.QueryEscape(s) }
 
-func reversed(s string) string {
-	b := []byte(s)
-	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
-		b[i], b[j] = b[j], b[i]
-	}
-	return string(b)
-}
+func reversed(s string) string { return model.ReverseString(s) }
 
 func gzipB64(s string) string {
 	var buf bytes.Buffer
@@ -91,7 +87,7 @@ func zipManyParts(n int) string {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for i := 0; i < n; i++ {
-		name := "p" + itoa(i) + ".txt"
+		name := "p" + strconv.Itoa(i) + ".txt"
 		w, err := zw.Create(name)
 		if err != nil {
 			_ = zw.Close()

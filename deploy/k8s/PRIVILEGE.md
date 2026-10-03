@@ -17,8 +17,9 @@ terminate MCP traffic or run the Interlock proxy.
 
 | Manifest | Posture | When to use |
 |---|---|---|
-| [`daemonset.yaml`](daemonset.yaml) | `privileged: true` | kind / `make demo-k8s`; **EKS full EXFIL** (taint seed via `/proc/<pid>/root` → trip → kill) |
-| [`daemonset-capabilities.yaml`](daemonset-capabilities.yaml) | drop ALL; add `BPF`, `PERFMON`, `SYS_ADMIN`, `KILL` | Managed clusters try-first — load, health, cross-pod `connect`/`write` capture |
+| [`daemonset.yaml`](daemonset.yaml) | drop ALL; add `BPF`, `PERFMON`, `SYS_ADMIN`, `KILL` | **Production default** — capabilities-first + taint bridge |
+| [`daemonset-dev.yaml`](daemonset-dev.yaml) | `privileged: true` | kind / `make demo-k8s`; **EKS full EXFIL** (openat seed via `/proc/<pid>/root`) |
+| [`daemonset-capabilities.yaml`](daemonset-capabilities.yaml) | same as `daemonset.yaml` | Alias kept for EKS/GKE helper scripts |
 
 Capabilities-first `securityContext`:
 

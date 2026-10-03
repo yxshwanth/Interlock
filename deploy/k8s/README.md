@@ -53,8 +53,9 @@ See [PRIVILEGE.md](PRIVILEGE.md) for `hostPID`, capabilities, and the
 
 | Manifest | Use |
 |---|---|
-| `daemonset.yaml` | kind / `make demo-k8s`; privileged openat-seed EXFIL |
-| `daemonset-capabilities.yaml` | Managed try-first + **taint bridge** for EXFIL without privileged root |
+| `daemonset.yaml` | Production default — capabilities-first + taint bridge |
+| `daemonset-dev.yaml` | kind / `make demo-k8s` — privileged openat-seed EXFIL |
+| `daemonset-capabilities.yaml` | Alias of `daemonset.yaml` (EKS/GKE helper scripts) |
 | `proxy-taint-bridge-example.yaml` | Agent pod mount + `POD_UID` wiring |
 
 GKE helper: [`gke/setup-cluster.sh`](gke/setup-cluster.sh) (requires `gcloud auth login` + `PROJECT_ID`).
@@ -77,7 +78,7 @@ kubectl apply -f deploy/k8s/service-metrics.yaml
 ./deploy/k8s/eks/validate.sh
 
 # Full EXFIL demo (privileged + fresh pod):
-kubectl apply -f /tmp/interlock-daemonset.yaml
+kubectl apply -f /tmp/interlock-daemonset-dev.yaml
 kubectl delete pod interlock-exfil-demo -n default --ignore-not-found --wait=true
 # apply deploy/k8s/demo/exfil-pod.yaml with image rewritten to the ECR tag from push-image
 # tear down when done: ./deploy/k8s/eks/delete-cluster.sh
