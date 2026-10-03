@@ -81,8 +81,11 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := strings.Split(s.cfg.Transport.Listen, ":")[0]
-	if err := ValidateOrigin(r, []string{host, "localhost", "127.0.0.1"}); err != nil {
+	allowedHosts := []string{"localhost", "127.0.0.1"}
+	if host := strings.Split(s.cfg.Transport.Listen, ":")[0]; host != "" {
+		allowedHosts = append(allowedHosts, host)
+	}
+	if err := ValidateOrigin(r, allowedHosts); err != nil {
 		WriteJSONRPCError(w, http.StatusForbidden, -32600, err.Error())
 		return
 	}

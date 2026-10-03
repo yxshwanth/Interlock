@@ -10,6 +10,16 @@ import (
 const (
 	defaultChunkMatchBytes = 32
 	defaultChunkMatchMinLen = 64
+
+	// minChunkEntropyBitsPerByte gates chunk minting against low-entropy runs
+	// (comment dividers, repeated indentation, ASCII banners, base64 zero
+	// padding) that are common in exactly the credential/config files
+	// path-driven whole-file taint registers, and would otherwise become a
+	// "proof of exfiltration" chunk that any unrelated egress sharing the
+	// same divider trips as EXFIL. 3 bits/byte comfortably passes real
+	// secrets (base64/hex/token bodies) while rejecting single-character or
+	// near-uniform runs.
+	minChunkEntropyBitsPerByte = 3.0
 )
 
 // AttachChunks populates tv.Chunks with non-overlapping contiguous N-byte
@@ -45,9 +55,17 @@ func ContiguousChunks(value string, n, minLen int) []model.TaintedVariant {
 	form := chunkMatchForm(n)
 	out := make([]model.TaintedVariant, 0, len(body)/n)
 	for i := 0; i+n <= len(body); i += n {
+		chunk := body[i : i+n]
+		if ShannonEntropy([]byte(chunk)) < minChunkEntropyBitsPerByte {
+			// Low-entropy chunk (divider, padding, repeated indentation) is
+			// not distinctive enough to prove this specific secret moved —
+			// skip minting it rather than letting it become a false-EXFIL
+			// trigger against unrelated egress that happens to share it.
+			continue
+		}
 		out = append(out, model.TaintedVariant{
 			Form:  form,
-			Value: body[i : i+n],
+			Value: chunk,
 		})
 	}
 	return out
