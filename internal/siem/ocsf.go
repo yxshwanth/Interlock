@@ -16,8 +16,6 @@ import (
 	"github.com/yxshwanth/Interlock/internal/config"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
-
-// OCSF Detection Finding classification (schema 1.3).
 const (
 	ocsfCategoryUID = 2
 	ocsfClassUID    = 2004
@@ -25,12 +23,10 @@ const (
 	ocsfVersion     = "1.3.0"
 )
 
-// DeliveryRecorder records SIEM delivery outcomes.
-type DeliveryRecorder interface {
-	RecordAlertDelivery(kind, result string)
-}
+// DeliveryRecorder is an alias for model.DeliveryRecorder.
+type DeliveryRecorder = model.DeliveryRecorder
 
-// Exporter writes OCSF Detection Finding events to file and/or HTTP.
+// Exporter writes Detection Finding events (OCSF JSON or CEF text) to file and/or HTTP.
 type Exporter struct {
 	cfg      config.SIEMConfig
 	client   *http.Client
@@ -62,7 +58,7 @@ func (e *Exporter) OnEvidenceEmitted(rec model.EvidenceRecord) {
 	if e == nil {
 		return
 	}
-	if !meetsMinVerdict(rec.Verdict, e.cfg.MinVerdict) {
+	if !model.MeetsMinVerdict(rec.Verdict, e.cfg.MinVerdict) {
 		e.record("skipped")
 		return
 	}
@@ -101,8 +97,7 @@ func (e *Exporter) record(result string) {
 }
 
 func (e *Exporter) deliver(rec model.EvidenceRecord) error {
-	ev := ToOCSF(rec)
-	data, err := json.Marshal(ev)
+	data, contentType, err := e.encode(rec)
 	if err != nil {
 		return err
 	}
@@ -112,11 +107,23 @@ func (e *Exporter) deliver(rec model.EvidenceRecord) error {
 		}
 	}
 	if e.cfg.URL != "" {
-		if err := e.postHTTP(data); err != nil {
+		if err := e.postHTTP(data, contentType); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (e *Exporter) encode(rec model.EvidenceRecord) ([]byte, string, error) {
+	if strings.EqualFold(e.cfg.Format, "cef") {
+		return []byte(ToCEF(rec)), "text/plain", nil
+	}
+	ev := ToOCSF(rec)
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, "application/json", nil
 }
 
 func (e *Exporter) appendFile(data []byte) error {
@@ -133,12 +140,15 @@ func (e *Exporter) appendFile(data []byte) error {
 	return nil
 }
 
-func (e *Exporter) postHTTP(data []byte) error {
+func (e *Exporter) postHTTP(data []byte, contentType string) error {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, e.cfg.URL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	req.Header.Set("Content-Type", contentType)
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return err
@@ -164,6 +174,13 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 		rec.Variant, rec.Action, rec.Confidence, rec.SessionID)
 
 	findingUID := fmt.Sprintf("%s-%d", rec.SessionID, rec.TripTS)
+	unmapped := map[string]any{
+		"session_id": rec.SessionID,
+		"verdict":    string(rec.Verdict),
+		"action":     string(rec.Action),
+		"variant":    string(rec.Variant),
+		"confidence": rec.Confidence,
+	}
 	out := map[string]any{
 		"activity_id":   ocsfActivityID,
 		"activity_name": "Create",
@@ -190,16 +207,10 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 			"desc":        desc,
 			"product_uid": "interlock",
 		},
-		"unmapped": map[string]any{
-			"session_id": rec.SessionID,
-			"verdict":    string(rec.Verdict),
-			"action":     string(rec.Action),
-			"variant":    string(rec.Variant),
-			"confidence": rec.Confidence,
-		},
+		"unmapped": unmapped,
 	}
 	if rec.Pod != nil {
-		out["unmapped"].(map[string]any)["pod_context"] = map[string]string{
+		unmapped["pod_context"] = map[string]string{
 			"namespace": rec.Pod.Namespace,
 			"pod_name":  rec.Pod.PodName,
 			"pod_uid":   rec.Pod.PodUID,
@@ -207,7 +218,7 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 		}
 	}
 	if rec.ValueOverlap != nil {
-		out["unmapped"].(map[string]any)["value_overlap"] = map[string]string{
+		unmapped["value_overlap"] = map[string]string{
 			"preview":     rec.ValueOverlap.Preview,
 			"where_found": rec.ValueOverlap.WhereFound,
 			"match_form":  rec.ValueOverlap.MatchForm,
@@ -218,9 +229,9 @@ func ToOCSF(rec model.EvidenceRecord) map[string]any {
 		for k, v := range m {
 			sink[k] = v
 		}
-		out["unmapped"].(map[string]any)["sink_call"] = sink
+		unmapped["sink_call"] = sink
 	}
-	out["unmapped"].(map[string]any)["legs"] = map[string]any{
+	unmapped["legs"] = map[string]any{
 		"sensitive_source_touched":  map[string]any{"lit": rec.Legs.SensitiveSourceTouched.Lit, "detail": rec.Legs.SensitiveSourceTouched.Detail},
 		"untrusted_content_present": map[string]any{"lit": rec.Legs.UntrustedContentPresent.Lit, "detail": rec.Legs.UntrustedContentPresent.Detail},
 		"external_sink_invoked":     map[string]any{"lit": rec.Legs.ExternalSinkInvoked.Lit, "detail": rec.Legs.ExternalSinkInvoked.Detail},
@@ -233,13 +244,4 @@ func ocsfSeverity(v model.Verdict) (int, string) {
 		return 5, "Critical"
 	}
 	return 3, "Medium"
-}
-
-func meetsMinVerdict(v model.Verdict, min string) bool {
-	switch strings.ToUpper(min) {
-	case "EXFIL":
-		return v == model.VerdictExfil
-	default:
-		return v == model.VerdictExfil || v == model.VerdictSuspicious
-	}
 }

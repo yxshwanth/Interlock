@@ -16,10 +16,12 @@ import (
 )
 
 const (
-	DefaultSocketPath = "/var/run/interlock/taint.sock"
-	OpRegisterTaint   = "register_taint"
-	maxLineBytes      = 256 * 1024
-	maxValueBytes     = 64 * 1024
+	DefaultSocketPath   = "/var/run/interlock/taint.sock"
+	OpRegisterTaint     = "register_taint"
+	OpRegisterUntrusted = "register_untrusted"
+	maxLineBytes        = 256 * 1024
+	maxValueBytes       = 64 * 1024
+	maxSourceBytes      = 4 * 1024
 )
 
 // VariantWire is a serializable encoding form for the bridge protocol.
@@ -40,36 +42,61 @@ type RegisterTaintMsg struct {
 	Variants []VariantWire `json:"variants"`
 }
 
+// RegisterUntrustedMsg is one NDJSON line on the Unix socket, mirroring
+// RegisterTaintMsg but for the "untrusted content observed" signal —
+// deliberately carries no excerpt/raw content, just enough for the sensor to
+// light untrusted_content_present (see engine.RegisterRemoteUntrusted).
+type RegisterUntrustedMsg struct {
+	Op     string `json:"op"`
+	PodUID string `json:"pod_uid"`
+	Source string `json:"source"`
+	Seq    uint64 `json:"seq"`
+}
+
 // Handler receives validated register_taint messages on the sensor.
 type Handler func(msg RegisterTaintMsg) error
 
-// Server listens on a Unix socket and dispatches NDJSON register_taint messages.
-type Server struct {
-	path    string
-	handler Handler
-	ln      net.Listener
-	logf    func(string, ...any)
+// UntrustedHandler receives validated register_untrusted messages on the sensor.
+type UntrustedHandler func(msg RegisterUntrustedMsg) error
 
-	mu       sync.Mutex
-	closed   bool
-	wg       sync.WaitGroup
+// Server listens on a Unix socket and dispatches NDJSON register_taint /
+// register_untrusted messages.
+type Server struct {
+	path             string
+	handler          Handler
+	untrustedHandler UntrustedHandler
+	auth             AuthPolicy
+	ln               net.Listener
+	logf             func(string, ...any)
+
+	mu     sync.Mutex
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // NewServer creates a bridge server. Call Listen then Serve.
-func NewServer(socketPath string, handler Handler, logf func(string, ...any)) *Server {
+// auth must be Active() when the bridge is used in production (config validation).
+// untrustedHandler may be nil (register_untrusted messages are then rejected
+// like any other unknown op) — callers that don't wire it just don't get the
+// sensor-mode SUSPICIOUS-tier restoration described on RegisterRemoteUntrusted.
+func NewServer(socketPath string, handler Handler, untrustedHandler UntrustedHandler, logf func(string, ...any), auth AuthPolicy) *Server {
 	if socketPath == "" {
 		socketPath = DefaultSocketPath
 	}
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Server{path: socketPath, handler: handler, logf: logf}
+	return &Server{path: socketPath, handler: handler, untrustedHandler: untrustedHandler, auth: auth, logf: logf}
 }
 
 // Listen creates the socket directory and binds the Unix listener.
 func (s *Server) Listen() error {
 	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dirMode := os.FileMode(0o700)
+	if s.auth.DirGroupOK || s.auth.SocketGID > 0 {
+		dirMode = 0o750
+	}
+	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return fmt.Errorf("bridge mkdir %s: %w", dir, err)
 	}
 	_ = os.Remove(s.path)
@@ -81,8 +108,14 @@ func (s *Server) Listen() error {
 		_ = ln.Close()
 		return fmt.Errorf("bridge chmod %s: %w", s.path, err)
 	}
+	if s.auth.SocketGID > 0 {
+		if err := chownSocket(s.path, s.auth.SocketGID); err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("bridge chown gid %d: %w", s.auth.SocketGID, err)
+		}
+	}
 	s.ln = ln
-	s.logf("taint bridge listening on %s", s.path)
+	s.logf("taint bridge listening on %s (peercred active=%v)", s.path, s.auth.Active())
 	return nil
 }
 
@@ -99,6 +132,19 @@ func (s *Server) Serve() {
 			}
 			s.logf("taint bridge accept: %v", err)
 			continue
+		}
+		if s.auth.Active() {
+			uid, gid, cerr := peerCreds(conn)
+			if cerr != nil {
+				s.logf("taint bridge peercred: %v — closing", cerr)
+				_ = conn.Close()
+				continue
+			}
+			if !s.auth.Allow(uid, gid) {
+				s.logf("taint bridge reject peer uid=%d gid=%d", uid, gid)
+				_ = conn.Close()
+				continue
+			}
 		}
 		s.wg.Add(1)
 		go func(c net.Conn) {
@@ -142,17 +188,45 @@ func (s *Server) handleConn(conn net.Conn) {
 		if len(line) == 0 {
 			continue
 		}
-		msg, err := parseRegisterLine(line)
-		if err != nil {
-			s.logf("taint bridge reject: %v", err)
+
+		var env opEnvelope
+		if err := json.Unmarshal(line, &env); err != nil {
+			s.logf("taint bridge reject: json: %v", err)
 			continue
 		}
-		if s.handler != nil {
-			if herr := s.handler(msg); herr != nil {
-				s.logf("taint bridge handler: %v", herr)
+		switch env.Op {
+		case OpRegisterTaint:
+			msg, err := parseRegisterLine(line)
+			if err != nil {
+				s.logf("taint bridge reject: %v", err)
+				continue
 			}
+			if s.handler != nil {
+				if herr := s.handler(msg); herr != nil {
+					s.logf("taint bridge handler: %v", herr)
+				}
+			}
+		case OpRegisterUntrusted:
+			msg, err := parseRegisterUntrustedLine(line)
+			if err != nil {
+				s.logf("taint bridge reject: %v", err)
+				continue
+			}
+			if s.untrustedHandler != nil {
+				if herr := s.untrustedHandler(msg); herr != nil {
+					s.logf("taint bridge untrusted handler: %v", herr)
+				}
+			}
+		default:
+			s.logf("taint bridge reject: unknown op %q", env.Op)
 		}
 	}
+}
+
+// opEnvelope reads just enough of a line to dispatch on Op before parsing
+// the full, op-specific message shape.
+type opEnvelope struct {
+	Op string `json:"op"`
 }
 
 func parseRegisterLine(line []byte) (RegisterTaintMsg, error) {
@@ -172,6 +246,24 @@ func parseRegisterLine(line []byte) (RegisterTaintMsg, error) {
 	}
 	if len(msg.Value) > maxValueBytes {
 		return msg, fmt.Errorf("value too large (%d bytes)", len(msg.Value))
+	}
+	return msg, nil
+}
+
+func parseRegisterUntrustedLine(line []byte) (RegisterUntrustedMsg, error) {
+	var msg RegisterUntrustedMsg
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return msg, fmt.Errorf("json: %w", err)
+	}
+	if msg.Op != OpRegisterUntrusted {
+		return msg, fmt.Errorf("unknown op %q", msg.Op)
+	}
+	msg.PodUID = strings.TrimSpace(msg.PodUID)
+	if msg.PodUID == "" {
+		return msg, fmt.Errorf("empty pod_uid")
+	}
+	if len(msg.Source) > maxSourceBytes {
+		return msg, fmt.Errorf("source too large (%d bytes)", len(msg.Source))
 	}
 	return msg, nil
 }
@@ -250,6 +342,27 @@ func (c *Client) Register(podUID string, tv model.TaintedValue) error {
 	for _, v := range tv.Variants {
 		msg.Variants = append(msg.Variants, VariantWire{Form: v.Form, Value: v.Value})
 	}
+	return c.sendJSON(msg)
+}
+
+// RegisterUntrusted sends one "untrusted content observed" signal for
+// podUID, mirroring Register — see engine.RegisterRemoteUntrusted for why
+// this exists and what it deliberately does not carry (no excerpt text).
+func (c *Client) RegisterUntrusted(podUID, source string, seq uint64) error {
+	podUID = strings.TrimSpace(podUID)
+	if podUID == "" {
+		return fmt.Errorf("bridge: empty pod_uid")
+	}
+	msg := RegisterUntrustedMsg{
+		Op:     OpRegisterUntrusted,
+		PodUID: podUID,
+		Source: source,
+		Seq:    seq,
+	}
+	return c.sendJSON(msg)
+}
+
+func (c *Client) sendJSON(msg any) error {
 	line, err := json.Marshal(msg)
 	if err != nil {
 		return err

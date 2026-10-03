@@ -1,6 +1,6 @@
 # Contributing to Interlock
 
-Thanks for your interest. Interlock is at v0.1 — early, deliberately scoped, and open to contributions that match the project's honesty standard.
+Thanks for your interest. Interlock is post-v0.4 — a working detection product with an explicit honesty standard about what it does and does not catch.
 
 ## Prerequisites
 
@@ -61,7 +61,7 @@ CI runs `go build`, `go vet`, and `go test` on every push to `main`. eBPF probe 
 
 ## Known-gap discipline
 
-Detection features must ship with tests that name what they **do not** catch. Example: `TestCheckOverlap_EncodedExfil_KnownGap` documents that raw-substring overlap misses base64-encoded exfil. This is Interlock's signature standard — uphold it in every PR that adds detection logic.
+Detection features must ship with tests that name what they **do not** catch. Example: `TestCheckOverlap_CustomCipher_KnownGap` documents that arbitrary ciphers (e.g. XOR) are not decoded — only registered canonical forms (base64, hex, gzip, brotli, etc.) participate in overlap. This is Interlock's signature standard — uphold it in every PR that adds detection logic.
 
 ## Runtime output — never commit
 
@@ -138,14 +138,12 @@ PR checklist:
 
 ## What to work on
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for v0.2 and v0.3 plans. Open an issue before starting significant work so we can coordinate.
+See [docs/ROADMAP.md](docs/ROADMAP.md) **Active queue** for open work (stable `§N` IDs in the Shipped ledger). Open an issue before starting significant work so we can coordinate.
 
 High-value areas:
 
-- LSM/KRSI in-kernel blocking (v0.3 Phase 2 — demand-gated, highest risk/reward)
-- Fail-closed, CEF SIEM, cross-session evidence query (ROADMAP Next §5)
-- eBPF gaps: IPv6, `sendmsg`/`writev`, larger payload capture
-- Dataflow taint: depth-4+ nests, non-gzip compressors
+- Dataflow taint residuals: depth-6+ nests (beyond clamp), custom ciphers, container bomb/encrypted/depth>2; git wire protocol remains Named §21
+- Already shipped (do not re-open): LSM Slice 1, fail-closed, dual ringbufs, hash chain, taint bridge + SO_PEERCRED, writev/sendmsg/IPv6, path-driven taint + container descent (§18/§20), chunk match, egress reassembly, CEF SIEM + SQLite cross-session query (§5), Shannon entropy dark measurement (§12), post-attach cap drop (§13) — see [`docs/INTERLOCK.md`](docs/INTERLOCK.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md)
 - Phase 4 Trust **met** — [`docs/threat_model.md`](docs/threat_model.md), [`docs/reproducible_builds.md`](docs/reproducible_builds.md), [`docs/fp_corpus.md`](docs/fp_corpus.md)
 ## Security
 

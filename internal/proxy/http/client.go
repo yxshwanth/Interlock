@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const maxHTTPResponseBytes = 16 << 20 // 16 MiB
+
 // Client is a minimal Streamable HTTP MCP client (2025-11-25).
 type Client struct {
 	BaseURL         string
@@ -107,7 +109,7 @@ func (c *Client) postDuration(data []byte, method, mcpName string) (CallResult, 
 		return CallResult{Duration: time.Since(start)}, nil
 	}
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseBytes))
 		return CallResult{Duration: time.Since(start)}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
 	}
 
@@ -116,7 +118,7 @@ func (c *Client) postDuration(data []byte, method, mcpName string) (CallResult, 
 	}
 
 	ct := resp.Header.Get("Content-Type")
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseBytes))
 	dur := time.Since(start)
 	if err != nil {
 		return CallResult{Duration: dur}, err

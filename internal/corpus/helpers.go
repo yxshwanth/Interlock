@@ -3,6 +3,7 @@ package corpus
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,12 +105,12 @@ func resultJSON(text string) string {
 func nestedLargeTicketResult(ticketText string) string {
 	meta := map[string]any{}
 	for i := 0; i < 40; i++ {
-		meta["field_"+itoa(i)] = map[string]any{
-			"label":  "nested-label-" + itoa(i),
-			"values": []string{"a", "b", "c", "padding-" + itoa(i)},
+		meta["field_"+strconv.Itoa(i)] = map[string]any{
+			"label":  "nested-label-" + strconv.Itoa(i),
+			"values": []string{"a", "b", "c", "padding-" + strconv.Itoa(i)},
 			"child": map[string]any{
 				"depth2": map[string]any{
-					"depth3": "leaf-" + itoa(i),
+					"depth3": "leaf-" + strconv.Itoa(i),
 				},
 			},
 		}
@@ -166,21 +167,6 @@ var seqCounter uint64
 func nextSeq() uint64 {
 	seqCounter++
 	return seqCounter
-}
-
-// itoa avoids strconv import churn for small loop labels in scenario builders.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [12]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
 
 // sid generates a readable, unique session ID scoped to a scenario ID.

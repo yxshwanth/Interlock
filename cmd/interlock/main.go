@@ -17,6 +17,7 @@ import (
 	"github.com/yxshwanth/Interlock/internal/config"
 	interlockebpf "github.com/yxshwanth/Interlock/internal/ebpf"
 	"github.com/yxshwanth/Interlock/internal/engine"
+	"github.com/yxshwanth/Interlock/internal/failclosed"
 	"github.com/yxshwanth/Interlock/internal/k8s"
 	"github.com/yxshwanth/Interlock/internal/model"
 	"github.com/yxshwanth/Interlock/internal/observability"
@@ -75,40 +76,21 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 	logger.Printf("sensor mode: enforcement=%s evidence=%s allowlist=%d sensitive_paths=%d",
 		cfg.Enforcement, cfg.Evidence.Backend, len(cfg.EgressAllowlist), len(cfg.SensitivePaths))
 
-	stats := &proxy.RuntimeStats{}
-	evLogger, err := proxy.NewEventLogger(logPath, cfg.Logging, stats)
+	core, err := setupRuntimeCore(logger, cfg, logPath, evidencePath, nil)
 	if err != nil {
-		return fmt.Errorf("logger: %w", err)
+		return err
 	}
-	defer evLogger.Close()
+	defer core.close()
+	stats := core.stats
+	eng := core.eng
+	metrics := core.metrics
+	rt := core.rt
 
-	store := engine.NewSessionStore()
-	var evidenceSink engine.EvidenceSink
-	if evidencePath != "" {
-		evidenceSink, err = engine.NewEvidenceSinkWithStats(cfg, evidencePath, engine.AtomicEvidenceDrops{N: &stats.DroppedEvidence})
-		if err != nil {
-			return fmt.Errorf("evidence sink: %w", err)
-		}
-		if c, ok := evidenceSink.(interface{ Close() error }); ok {
-			defer c.Close()
-		}
-	}
-
-	eng := engine.NewEngine(store, nil, cfg.Enforcement, evidenceSink)
-	eng.Configure(cfg)
-	if evLogger != nil {
-		eng.SetSecurityAuditSink(evLogger)
-	}
-
-	metrics := observability.NewMetrics()
-	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg}
-	if async, ok := evidenceSink.(*engine.AsyncEvidenceSink); ok {
-		rt.Async = async
-	}
-	if _, _, obsErr := attachEmitObservers(logger, cfg, rt); obsErr != nil {
+	obsCleanup, obsErr := attachObservability(logger, cfg, core)
+	if obsErr != nil {
 		return obsErr
 	}
-	defer rt.CloseNotifiers()
+	defer obsCleanup()
 
 	attr := k8s.NewPodAttribution()
 
@@ -142,13 +124,18 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 		return eng.IngestSyscallSensor(ev)
 	}
 
-	sensor, err := interlockebpf.NewSensor(cfg.EgressAllowlist, cfg.SensitivePaths, handler)
+	sensor, err := interlockebpf.NewSensor(cfg.EgressAllowlist, cfg.SensitivePaths, cfg.EBPF.LSMEnforce, handler)
 	if err != nil {
 		return fmt.Errorf("eBPF sensor: %w", err)
 	}
 	if err := sensor.SetPayloadCaptureBytes(cfg.EBPF.PayloadCaptureBytesOrDefault()); err != nil {
 		sensor.Stop()
 		return fmt.Errorf("eBPF payload_capture_bytes: %w", err)
+	}
+	if cfg.EBPF.LSMEnforce && sensor.LSMEnforced() {
+		logger.Printf("LSM kernel quarantine active (ebpf.lsm_enforce)")
+	} else if cfg.EBPF.LSMEnforce {
+		logger.Printf("[SECURITY] ebpf.lsm_enforce requested but LSM hook not active — see startup warnings above")
 	}
 	sensor.SetKillResolver(func(cgroupID uint64, bpfPID int) []int {
 		if pids := attr.NodePIDsForCgroup(cgroupID); len(pids) > 0 {
@@ -159,6 +146,9 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 	defer func() {
 		if drops, dropErr := sensor.DropCount(); dropErr == nil {
 			stats.EBPFRingbufDrops.Store(drops)
+		}
+		if drops, dropErr := sensor.CriticalDropCount(); dropErr == nil {
+			stats.EBPFCriticalRingbufDrops.Store(drops)
 		}
 		sensor.Stop()
 		logRuntimeStats(logger, stats)
@@ -172,19 +162,38 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 	defer cancel()
 	go watchSIGHUP(ctx, logger, cfgPath, true, rt)
 
+	breaker := failclosed.New(cfg.FailClosed, logger)
+	wireFailClosed(breaker, logger, metrics, eng, sensor, nil, core.evidenceSink)
+	if breaker != nil {
+		logger.Printf("fail_closed enabled (scope=all watched; requires ebpf.lsm_enforce)")
+		go breaker.WatchRingbufDrops(ctx, sensor.DropCount, sensor.CriticalDropCount, 5*time.Second)
+		sensor.OnHandlerPanic = func(any) { breaker.RecordPanic() }
+	}
+
 	if cfg.TaintBridge.Enabled {
 		sock := cfg.TaintBridge.SocketPathOrDefault()
+		auth := bridge.AuthPolicy{
+			AllowedUIDs: append([]int(nil), cfg.TaintBridge.AllowedUIDs...),
+			AllowedGIDs: append([]int(nil), cfg.TaintBridge.AllowedGIDs...),
+			SocketGID:   cfg.TaintBridge.SocketGID,
+			DirGroupOK:  cfg.TaintBridge.SocketGID > 0 || len(cfg.TaintBridge.AllowedGIDs) > 0,
+		}
 		bridgeSrv := bridge.NewServer(sock, func(msg bridge.RegisterTaintMsg) error {
 			sid := k8s.SessionIDForPod(msg.PodUID)
 			eng.RegisterRemoteTaint(sid, bridge.ToTaintedValue(msg))
 			return nil
-		}, logger.Printf)
+		}, func(msg bridge.RegisterUntrustedMsg) error {
+			sid := k8s.SessionIDForPod(msg.PodUID)
+			eng.RegisterRemoteUntrusted(sid, msg.Source, msg.Seq)
+			return nil
+		}, logger.Printf, auth)
 		if err := bridgeSrv.Listen(); err != nil {
 			return fmt.Errorf("taint bridge: %w", err)
 		}
 		defer bridgeSrv.Close()
 		go bridgeSrv.Serve()
-		logger.Printf("taint bridge enabled (listen %s)", sock)
+		logger.Printf("taint bridge enabled (listen %s; peercred allow uids=%v gids=%v)",
+			sock, auth.AllowedUIDs, auth.AllowedGIDs)
 	}
 
 	obsSrv, err := observability.Start(cfg.Observability.Listen, cfg.Observability.MetricsPath, cfg.Observability.HealthPath, func() bool {
@@ -197,7 +206,7 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 		defer obsSrv.Close()
 		logger.Printf("observability listening on %s (metrics=%s health=%s)",
 			cfg.Observability.Listen, cfg.Observability.MetricsPath, cfg.Observability.HealthPath)
-		go observability.PollRuntime(ctx, metrics, stats, sensor.DropCount, sensor.FilterCounts, 5*time.Second)
+		go observability.PollRuntime(ctx, metrics, stats, sensor.DropCount, sensor.CriticalDropCount, sensor.FilterCounts, 5*time.Second)
 	}
 
 	hooks := k8s.PIDHooks{
@@ -250,8 +259,6 @@ func runSensorMode(logger *log.Logger, cfgPath, logPath, evidencePath string, en
 }
 
 func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, enableEBPF bool) error {
-	stats := &proxy.RuntimeStats{}
-
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -259,32 +266,23 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	logger.Printf("loaded config: %d server(s), enforcement=%s, transport=%s, evidence=%s",
 		len(cfg.Servers), cfg.Enforcement, cfg.Transport.Mode, cfg.Evidence.Backend)
 
-	evLogger, err := proxy.NewEventLogger(logPath, cfg.Logging, stats)
+	core, err := setupRuntimeCore(logger, cfg, logPath, evidencePath, engine.NewTagger(cfg))
 	if err != nil {
-		return fmt.Errorf("logger: %w", err)
+		return err
 	}
-	defer evLogger.Close()
+	defer core.close()
+	stats := core.stats
+	eng := core.eng
+	metrics := core.metrics
+	rt := core.rt
 
-	store := engine.NewSessionStore()
-	tagger := engine.NewTagger(cfg)
-
-	var evidenceSink engine.EvidenceSink
-	if evidencePath != "" {
-		evidenceSink, err = engine.NewEvidenceSinkWithStats(cfg, evidencePath, engine.AtomicEvidenceDrops{N: &stats.DroppedEvidence})
-		if err != nil {
-			return fmt.Errorf("evidence sink: %w", err)
-		}
-		if c, ok := evidenceSink.(interface{ Close() error }); ok {
-			defer c.Close()
-		}
+	obsCleanup, obsAttachErr := attachObservability(logger, cfg, core)
+	if obsAttachErr != nil {
+		return obsAttachErr
 	}
+	defer obsCleanup()
 
-	eng := engine.NewEngine(store, tagger, cfg.Enforcement, evidenceSink)
-	eng.Configure(cfg)
-	if evLogger != nil {
-		eng.SetSecurityAuditSink(evLogger)
-	}
-
+	p := proxy.New(cfg, core.evLogger, eng)
 	var bridgeClient *bridge.Client
 	if cfg.TaintBridge.Enabled {
 		podUID := strings.TrimSpace(os.Getenv("POD_UID"))
@@ -300,22 +298,15 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 					}
 				}
 			})
+			eng.SetUntrustedForwarder(func(source string, seq uint64) {
+				if err := bridgeClient.RegisterUntrusted(podUID, source, seq); err != nil {
+					logger.Printf("WARNING: taint bridge untrusted forward: %v", err)
+				}
+			})
 			logger.Printf("taint bridge enabled (dial %s, pod_uid=%s)",
 				cfg.TaintBridge.SocketPathOrDefault(), podUID)
 		}
 	}
-
-	metrics := observability.NewMetrics()
-	rt := &reload.Runtime{Logger: logger, Metrics: metrics, Cfg: cfg}
-	if async, ok := evidenceSink.(*engine.AsyncEvidenceSink); ok {
-		rt.Async = async
-	}
-	if _, _, obsAttachErr := attachEmitObservers(logger, cfg, rt); obsAttachErr != nil {
-		return obsAttachErr
-	}
-	defer rt.CloseNotifiers()
-
-	p := proxy.New(cfg, evLogger, eng)
 
 	var sensor *interlockebpf.Sensor
 	var sensorStarted bool
@@ -329,7 +320,11 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 			}
 			return eng.IngestSyscall(ev)
 		}
-		s, sErr := interlockebpf.NewSensor(cfg.EgressAllowlist, cfg.SensitivePaths, handler)
+		var sensorOpts []interlockebpf.SensorOption
+		if cfg.Sandbox.NetNS {
+			sensorOpts = append(sensorOpts, interlockebpf.WithKeepSYSAdmin())
+		}
+		s, sErr := interlockebpf.NewSensor(cfg.EgressAllowlist, cfg.SensitivePaths, cfg.EBPF.LSMEnforce, handler, sensorOpts...)
 		if sErr != nil {
 			logger.Printf("WARNING: eBPF sensor failed to initialize: %v", sErr)
 			logger.Printf("  (this is expected if not running as root)")
@@ -339,9 +334,17 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 			if capErr := sensor.SetPayloadCaptureBytes(cfg.EBPF.PayloadCaptureBytesOrDefault()); capErr != nil {
 				logger.Printf("WARNING: eBPF payload_capture_bytes: %v", capErr)
 			}
+			if cfg.EBPF.LSMEnforce && sensor.LSMEnforced() {
+				logger.Printf("LSM kernel quarantine active (ebpf.lsm_enforce)")
+			} else if cfg.EBPF.LSMEnforce {
+				logger.Printf("[SECURITY] ebpf.lsm_enforce requested but LSM hook not active — see startup warnings above")
+			}
 			defer func() {
 				if drops, err := sensor.DropCount(); err == nil {
 					stats.EBPFRingbufDrops.Store(drops)
+				}
+				if drops, err := sensor.CriticalDropCount(); err == nil {
+					stats.EBPFCriticalRingbufDrops.Store(drops)
 				}
 				sensor.Stop()
 				logRuntimeStats(logger, stats)
@@ -383,6 +386,17 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	defer cancel()
 	go watchSIGHUP(ctx, logger, cfgPath, false, rt)
 
+	breaker := failclosed.New(cfg.FailClosed, logger)
+	wireFailClosed(breaker, logger, metrics, eng, sensor, p, core.evidenceSink)
+	if breaker != nil {
+		logger.Printf("fail_closed enabled (proxy dispatch circuit-breaker)")
+		if sensor != nil {
+			go breaker.WatchRingbufDrops(ctx, sensor.DropCount, sensor.CriticalDropCount, 5*time.Second)
+			sensor.OnHandlerPanic = func(any) { breaker.RecordPanic() }
+		}
+		p.SetOnEnginePanic(func(any) { breaker.RecordPanic() })
+	}
+
 	obsSrv, obsErr := observability.Start(cfg.Observability.Listen, cfg.Observability.MetricsPath, cfg.Observability.HealthPath, func() bool {
 		return true
 	})
@@ -392,13 +406,14 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	if obsSrv != nil {
 		defer obsSrv.Close()
 		logger.Printf("observability listening on %s", cfg.Observability.Listen)
-		var dropFn observability.DropCountFunc
+		var dropFn, criticalDropFn observability.DropCountFunc
 		var filterFn observability.FilterCountFunc
 		if sensor != nil {
 			dropFn = sensor.DropCount
+			criticalDropFn = sensor.CriticalDropCount
 			filterFn = sensor.FilterCounts
 		}
-		go observability.PollRuntime(ctx, metrics, stats, dropFn, filterFn, 5*time.Second)
+		go observability.PollRuntime(ctx, metrics, stats, dropFn, criticalDropFn, filterFn, 5*time.Second)
 	}
 
 	defer logRuntimeStats(logger, stats)
@@ -420,16 +435,17 @@ func runProxyMode(logger *log.Logger, cfgPath, logPath, evidencePath string, ena
 	return nil
 }
 
-func logRuntimeStats(logger *log.Logger, stats *proxy.RuntimeStats) {
+func logRuntimeStats(logger *log.Logger, stats *model.RuntimeStats) {
 	if stats == nil {
 		return
 	}
 	dropped := stats.DroppedEvents.Load()
 	droppedEvidence := stats.DroppedEvidence.Load()
 	ebpfDrops := stats.EBPFRingbufDrops.Load()
-	if dropped > 0 || droppedEvidence > 0 || ebpfDrops > 0 {
-		logger.Printf("runtime stats: dropped_events=%d dropped_evidence=%d ebpf_ringbuf_drops=%d",
-			dropped, droppedEvidence, ebpfDrops)
+	ebpfCritDrops := stats.EBPFCriticalRingbufDrops.Load()
+	if dropped > 0 || droppedEvidence > 0 || ebpfDrops > 0 || ebpfCritDrops > 0 {
+		logger.Printf("runtime stats: dropped_events=%d dropped_evidence=%d ebpf_ringbuf_drops=%d ebpf_critical_ringbuf_drops=%d",
+			dropped, droppedEvidence, ebpfDrops, ebpfCritDrops)
 		if dropped > 0 {
 			logger.Printf("[SECURITY] event log backpressure dropped %d events", dropped)
 		}
@@ -437,7 +453,10 @@ func logRuntimeStats(logger *log.Logger, stats *proxy.RuntimeStats) {
 			logger.Printf("[SECURITY] evidence emit backpressure dropped %d records", droppedEvidence)
 		}
 		if ebpfDrops > 0 {
-			logger.Printf("[SECURITY] eBPF ring buffer dropped %d connect events in kernel", ebpfDrops)
+			logger.Printf("[SECURITY] eBPF routine ring buffer dropped %d connect/openat events in kernel", ebpfDrops)
+		}
+		if ebpfCritDrops > 0 {
+			logger.Printf("[SECURITY] eBPF critical ring buffer dropped %d write/sendto/lsm_deny events in kernel", ebpfCritDrops)
 		}
 	}
 }
@@ -460,6 +479,38 @@ func attachEmitObservers(logger *log.Logger, cfg *config.Config, rt *reload.Runt
 		rt.Async.SetEmitObserver(engine.MultiEmitObserver{rt.Metrics, webhook, siemExp})
 	}
 	return webhook, siemExp, nil
+}
+
+// wireFailClosed connects the breaker to sensor/proxy enforcement, metrics, and audit.
+func wireFailClosed(
+	breaker *failclosed.Breaker,
+	logger *log.Logger,
+	metrics *observability.Metrics,
+	eng *engine.Engine,
+	sensor *interlockebpf.Sensor,
+	p *proxy.Proxy,
+	evidenceSink engine.EvidenceSink,
+) {
+	if breaker == nil {
+		return
+	}
+	if async, ok := evidenceSink.(*engine.AsyncEvidenceSink); ok {
+		async.OnFailure = func(error) { breaker.RecordSinkFailure() }
+		async.OnSuccess = func() { breaker.RecordSinkSuccess() }
+	}
+	breaker.OnTransition = func(tripped bool, reason string) {
+		metrics.SetFailClosedActive(tripped)
+		metrics.RecordFailClosedTransition(tripped, reason)
+		eng.RecordFailClosedTransition(tripped, reason)
+		if sensor != nil && sensor.LSMEnforced() {
+			if err := sensor.SetFailClosedActive(tripped); err != nil {
+				logger.Printf("[SECURITY] fail-closed sensor quarantine: %v", err)
+			}
+		}
+		if p != nil {
+			p.SetFailClosed(tripped, reason)
+		}
+	}
 }
 
 func watchSIGHUP(ctx context.Context, logger *log.Logger, cfgPath string, sensorMode bool, rt *reload.Runtime) {

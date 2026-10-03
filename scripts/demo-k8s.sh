@@ -50,7 +50,7 @@ kind load docker-image "${IMAGE}" --name "${CLUSTER}"
 
 log "applying manifests"
 kubectl apply -f "${ROOT}/deploy/k8s/rbac.yaml"
-kubectl apply -f "${ROOT}/deploy/k8s/daemonset.yaml"
+kubectl apply -f "${ROOT}/deploy/k8s/daemonset-dev.yaml"
 kubectl apply -f "${ROOT}/deploy/k8s/service-metrics.yaml"
 # Same tag (interlock:dev) may already be present — force pods onto the freshly loaded image.
 kubectl -n interlock-system rollout restart daemonset/interlock-sensor 2>/dev/null || true
@@ -65,7 +65,8 @@ kubectl apply -f "${ROOT}/deploy/k8s/demo/exfil-pod.yaml"
 log "waiting for demo pod to start"
 kubectl wait --for=condition=Ready pod/interlock-exfil-demo --timeout=60s || true
 
-# Wait for DELAY_SEC (12) + dials + deferred kill window.
+# Wait for demo DELAY_SEC (~12s) + dials + sensor drain. Containment is
+# immediate SIGKILL on EXFIL (no deferred-kill window; that path was removed).
 sleep 25
 
 SENSOR_POD="$(kubectl -n interlock-system get pod -l app.kubernetes.io/component=sensor -o jsonpath='{.items[0].metadata.name}')"
@@ -91,7 +92,7 @@ fi
 
 echo "${EVIDENCE}" | tee /tmp/interlock-k8s-evidence.jsonl
 
-DEMO_SECRET='sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef'
+DEMO_SECRET='sk-demo-FAKE-51TxJANEd0eR3aLt0k3n9876543210abcdef'
 
 if ! echo "${EVIDENCE}" | grep -q 'pod_context'; then
   echo "FAIL: evidence missing pod_context" >&2

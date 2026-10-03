@@ -53,8 +53,9 @@ See [PRIVILEGE.md](PRIVILEGE.md) for `hostPID`, capabilities, and the
 
 | Manifest | Use |
 |---|---|
-| `daemonset.yaml` | kind / `make demo-k8s`; privileged openat-seed EXFIL |
-| `daemonset-capabilities.yaml` | Managed try-first + **taint bridge** for EXFIL without privileged root |
+| `daemonset.yaml` | Production default — capabilities-first + taint bridge |
+| `daemonset-dev.yaml` | kind / `make demo-k8s` — privileged openat-seed EXFIL |
+| `daemonset-capabilities.yaml` | Alias of `daemonset.yaml` (EKS/GKE helper scripts) |
 | `proxy-taint-bridge-example.yaml` | Agent pod mount + `POD_UID` wiring |
 
 GKE helper: [`gke/setup-cluster.sh`](gke/setup-cluster.sh) (requires `gcloud auth login` + `PROJECT_ID`).
@@ -77,7 +78,7 @@ kubectl apply -f deploy/k8s/service-metrics.yaml
 ./deploy/k8s/eks/validate.sh
 
 # Full EXFIL demo (privileged + fresh pod):
-kubectl apply -f /tmp/interlock-daemonset.yaml
+kubectl apply -f /tmp/interlock-daemonset-dev.yaml
 kubectl delete pod interlock-exfil-demo -n default --ignore-not-found --wait=true
 # apply deploy/k8s/demo/exfil-pod.yaml with image rewritten to the ECR tag from push-image
 # tear down when done: ./deploy/k8s/eks/delete-cluster.sh
@@ -119,7 +120,10 @@ No auth on the metrics port — restrict with NetworkPolicy in production. No Se
 
 Key series: `interlock_up`, `interlock_detections_total{verdict,variant,action}`,
 `interlock_evidence_dropped_total`, `interlock_events_dropped_total`,
-`interlock_ebpf_ringbuf_drops_total`, `interlock_watched_pids`, `interlock_watched_cgroups`,
+`interlock_ebpf_ringbuf_drops_total` (routine: connect/openat),
+`interlock_ebpf_critical_ringbuf_drops_total` (critical: write/sendto/lsm_deny),
+`interlock_watched_pids`, `interlock_watched_cgroups`,
+`interlock_fail_closed_active`, `interlock_fail_closed_transitions_total{direction,reason}`,
 `interlock_alert_deliveries_total{kind,result}`.
 
 Bare-metal hosts: see [`../systemd/README.md`](../systemd/README.md) for systemd units and SIGHUP config reload.
@@ -139,10 +143,10 @@ alerting:
     # url: https://events.pagerduty.com/v2/enqueue
     # pagerduty_routing_key: <from Secret>
 siem:
-  format: ocsf
+  format: ocsf   # or cef
   path: /var/log/interlock/ocsf.jsonl
   # url: https://siem.example/ingest
   min_verdict: SUSPICIOUS
 ```
 
-Trips fan out after evidence persist: Slack Incoming Webhook / PagerDuty Events API v2 / generic JSON, plus OCSF Detection Finding (class_uid 2004) to file and/or HTTP. CEF is not shipped yet.
+Trips fan out after evidence persist: Slack Incoming Webhook / PagerDuty Events API v2 / generic JSON, plus SIEM export (`siem.format: ocsf` or `cef`) to file and/or HTTP. With `evidence.backend: sqlite`, query by session/verdict/pod via `make query-evidence` (JSON array for `web/viewer.html`).

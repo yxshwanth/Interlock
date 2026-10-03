@@ -17,10 +17,8 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
-// DeliveryRecorder records webhook delivery outcomes (ok|error|skipped).
-type DeliveryRecorder interface {
-	RecordAlertDelivery(kind, result string)
-}
+// DeliveryRecorder is an alias for model.DeliveryRecorder.
+type DeliveryRecorder = model.DeliveryRecorder
 
 // WebhookNotifier posts trip alerts to a configured HTTP endpoint.
 type WebhookNotifier struct {
@@ -53,7 +51,7 @@ func (n *WebhookNotifier) OnEvidenceEmitted(rec model.EvidenceRecord) {
 	if n == nil {
 		return
 	}
-	if !meetsMinVerdict(rec.Verdict, n.cfg.MinVerdict) {
+	if !model.MeetsMinVerdict(rec.Verdict, n.cfg.MinVerdict) {
 		n.record("skipped")
 		return
 	}
@@ -127,12 +125,13 @@ func (n *WebhookNotifier) buildBody(rec model.EvidenceRecord) ([]byte, string, e
 		payload := map[string]any{
 			"routing_key":  n.cfg.PagerDutyRoutingKey,
 			"event_action": "trigger",
-			"dedup_key":    fmt.Sprintf("%s-%d", rec.SessionID, rec.TripTS),
+			// Session+verdict dedup_key: same-tier repeats merge; EXFIL escalation gets a fresh incident.
+			"dedup_key": rec.SessionID + ":" + string(rec.Verdict),
 			"payload": map[string]any{
-				"summary":   formatSummary(rec),
-				"severity": pdSeverity(rec.Verdict),
-				"source":    "interlock",
-				"timestamp": time.Unix(0, rec.TripTS).UTC().Format(time.RFC3339),
+				"summary":        formatSummary(rec),
+				"severity":       pdSeverity(rec.Verdict),
+				"source":         "interlock",
+				"timestamp":      time.Unix(0, rec.TripTS).UTC().Format(time.RFC3339),
 				"custom_details": compactDetails(rec),
 			},
 		}
@@ -141,15 +140,6 @@ func (n *WebhookNotifier) buildBody(rec model.EvidenceRecord) ([]byte, string, e
 	default: // generic
 		b, err := json.Marshal(compactDetails(rec))
 		return b, "application/json", err
-	}
-}
-
-func meetsMinVerdict(v model.Verdict, min string) bool {
-	switch strings.ToUpper(min) {
-	case "EXFIL":
-		return v == model.VerdictExfil
-	default:
-		return v == model.VerdictExfil || v == model.VerdictSuspicious
 	}
 }
 

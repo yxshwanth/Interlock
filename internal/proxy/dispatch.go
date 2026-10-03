@@ -9,6 +9,8 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
+const jsonRPCServerError = -32000
+
 // DispatchResult is the outcome of handling one agent JSON-RPC frame.
 type DispatchResult struct {
 	Response       []byte
@@ -118,7 +120,14 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 	sess := rt.Session
 	var tc model.ToolCallParams
 	if len(msg.Params) > 0 {
-		tc, _ = model.ParseToolCallParams(msg.Params)
+		var parseErr error
+		tc, parseErr = model.ParseToolCallParams(msg.Params)
+		if parseErr != nil {
+			ev := sess.CreateEvent(frame, model.AgentToServer, "proxy", 0)
+			p.logEvent(ev)
+			data := p.buildErrorResponse(msg.ID, -32700, fmt.Sprintf("invalid tools/call params: %v", parseErr))
+			return &DispatchResult{Response: data, Blocked: true}, nil
+		}
 	}
 
 	sc, ok := rt.toolRoute[tc.Name]
@@ -131,12 +140,25 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 
 	ev := sess.CreateEvent(frame, model.AgentToServer, sc.proc.ID, sc.proc.PID)
 
+	if active, reason := p.FailClosed(); active {
+		blockReason := "fail_closed: " + reason
+		ev.Decision = "blocked"
+		ev.BlockReason = blockReason
+		p.logEvent(ev)
+		data := p.buildErrorResponse(msg.ID, jsonRPCServerError,
+			fmt.Sprintf("call blocked by Interlock: %s", blockReason))
+		return &DispatchResult{Response: data, Blocked: true}, nil
+	}
+
 	if p.engine != nil {
 		var decision model.Decision
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — FAIL-OPEN, call forwarded: %v", r)
+					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — FAIL-OPEN for this call, notifying fail-closed breaker: %v", r)
+					if p.onEnginePanic != nil {
+						p.onEnginePanic(r)
+					}
 					decision = model.Decision{Allow: true}
 				}
 			}()
@@ -146,9 +168,19 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 			ev.Decision = "blocked"
 			ev.BlockReason = decision.Reason
 			p.logEvent(ev)
-			data := p.buildErrorResponse(msg.ID, -32000,
+			data := p.buildErrorResponse(msg.ID, jsonRPCServerError,
 				fmt.Sprintf("call blocked by Interlock: %s", decision.Reason))
 			return &DispatchResult{Response: data, Blocked: true}, nil
+		}
+		if len(decision.ForwardArgs) > 0 {
+			if rewritten, err := replaceToolCallArguments(frame, decision.ForwardArgs); err == nil {
+				frame = rewritten
+			} else {
+				p.log.Printf("[SECURITY] vault detokenize frame rewrite failed — refusing to forward: %v", err)
+				data := p.buildErrorResponse(msg.ID, jsonRPCServerError,
+					"call blocked by Interlock: vault forward rewrite failed")
+				return &DispatchResult{Response: data, Blocked: true}, nil
+			}
 		}
 	}
 
@@ -197,6 +229,31 @@ func (p *Proxy) buildErrorResponse(id json.RawMessage, code int, message string)
 	return data
 }
 
+// replaceToolCallArguments sets params.arguments on a tools/call frame to args.
+// Used after vault detokenization so the child receives real secrets only when
+// EvaluateRequest allowed an authorized sink.
+func replaceToolCallArguments(frame []byte, args json.RawMessage) ([]byte, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(frame, &root); err != nil {
+		return nil, err
+	}
+	paramsRaw, ok := root["params"]
+	if !ok {
+		return nil, fmt.Errorf("tools/call frame missing params")
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		return nil, err
+	}
+	params["arguments"] = args
+	newParams, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	root["params"] = newParams
+	return json.Marshal(root)
+}
+
 func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []byte) {
 	sess := rt.Session
 	ev := sess.CreateEvent(frame, model.ServerToAgent, sc.proc.ID, sc.proc.PID)
@@ -214,6 +271,9 @@ func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []b
 
 	if p.engine != nil && ev.ToolName != "" {
 		p.engine.IngestResult(ev)
+		if p.engine.VaultEnabled() {
+			frame = p.engine.VaultRewriteFrame(ev.SessionID, frame)
+		}
 	}
 	p.logEvent(ev)
 

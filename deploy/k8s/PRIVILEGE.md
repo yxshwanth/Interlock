@@ -9,7 +9,7 @@ terminate MCP traffic or run the Interlock proxy.
 | Setting | Why |
 |---|---|
 | `hostPID: true` | eBPF `bpf_get_current_pid_tgid` and `/proc` scans use host PIDs |
-| hostPath `/sys/kernel/btf` | CO-RE / BTF for loading committed BPF objects |
+| hostPath `/sys/kernel/btf` | Kernel BTF for loading committed BPF objects (`bpf_probe_read_user` in probe body; no `BPF_CORE_READ` uses) |
 | hostPath `/sys/fs/bpf`, `/sys/kernel/tracing` | map pin / tracepoint attach |
 | Elevated privileges | load/attach programs and observe other pods' syscalls |
 
@@ -17,8 +17,9 @@ terminate MCP traffic or run the Interlock proxy.
 
 | Manifest | Posture | When to use |
 |---|---|---|
-| [`daemonset.yaml`](daemonset.yaml) | `privileged: true` | kind / `make demo-k8s`; **EKS full EXFIL** (taint seed via `/proc/<pid>/root` → trip → kill) |
-| [`daemonset-capabilities.yaml`](daemonset-capabilities.yaml) | drop ALL; add `BPF`, `PERFMON`, `SYS_ADMIN`, `KILL` | Managed clusters try-first — load, health, cross-pod `connect`/`write` capture |
+| [`daemonset.yaml`](daemonset.yaml) | drop ALL; add `BPF`, `PERFMON`, `SYS_ADMIN`, `KILL` | **Production default** — capabilities-first + taint bridge |
+| [`daemonset-dev.yaml`](daemonset-dev.yaml) | `privileged: true` | kind / `make demo-k8s`; **EKS full EXFIL** (openat seed via `/proc/<pid>/root`) |
+| [`daemonset-capabilities.yaml`](daemonset-capabilities.yaml) | same as `daemonset.yaml` | Alias kept for EKS/GKE helper scripts |
 
 Capabilities-first `securityContext`:
 
@@ -31,18 +32,85 @@ securityContext:
     drop: ["ALL"]
 ```
 
+## Optional: kernel-level connect() quarantine (`ebpf.lsm_enforce`)
+
+v0.3 Phase 2 Slice 1 adds an **opt-in** (default `false`) `BPF_PROG_TYPE_LSM`
+hook on `security_socket_connect`: once the existing write/`sendto`
+payload-overlap path confirms **EXFIL** for a PID/cgroup, any further
+`connect()` from it is denied in-kernel with `-EPERM`. It does **not** change
+what the required-settings table above needs — no new hostPath, no new RBAC —
+but it adds a **kernel prerequisite** that is not guaranteed even on the node
+images already validated above:
+
+| Requirement | Check | Notes |
+|---|---|---|
+| `CONFIG_BPF_LSM=y` | `zgrep CONFIG_BPF_LSM /boot/config-$(uname -r)` (or check the kernel's `/proc/config.gz` if enabled) | Compiled-in kernel support for BPF-based LSMs |
+| `"bpf"` active in the LSM stack | `cat /sys/kernel/security/lsm` — must contain `bpf` | **Not on by default** even on a stock Ubuntu 24.04 kernel; confirmed only after a GRUB `lsm=` cmdline edit + reboot on the throwaway EC2 VM used to validate this feature ([`deploy/ec2/`](../../deploy/ec2/)) |
+
+**Day-1 checklist item:** before enabling `ebpf.lsm_enforce` on a fleet,
+confirm both of the above on a representative node image — do not assume
+parity with the EKS/kind validation already documented in this file, which
+predates this feature and did not exercise it.
+
+**Fails soft, like everything else in this doc's posture:** if the prerequisite
+isn't met (or the DaemonSet lacks the capability to attach), the sensor logs a
+`[SECURITY]` warning and keeps running tracepoint-only — `ebpf.lsm_enforce`
+never blocks sensor startup, and the existing kill-on-detect containment is
+unaffected either way. Check `sensor.LSMEnforced()` / the `[SECURITY]` log line
+to confirm whether the hook actually attached, don't assume the config flag
+alone means it's active.
+
+**Honest scope:** this only stops *repeat* connection attempts after an EXFIL
+trip (forked children sharing the cgroup, a kill that races, a respawned
+process) — it does not move detection earlier or catch the first
+EXFIL-carrying packet. See [`docs/detection_boundary.md`](../../docs/detection_boundary.md).
+
+## Optional: fail-closed (`fail_closed.enabled`)
+
+When Interlock's own health degrades (routine or critical ringbuf drop rate,
+consecutive evidence sink failures, or engine/sensor panic), opt-in fail-closed
+blocks **all currently watched** egress instead of failing open with
+`[SECURITY]` warnings.
+
+| Mode | Deny path | Prerequisite |
+|---|---|---|
+| Sensor (`--mode=sensor`) | Mass-quarantine watched PIDs/cgroups via the same LSM `socket_connect` maps | `ebpf.lsm_enforce: true` **and** a live LSM attach (config validation refuses otherwise) |
+| Proxy | Deny `tools/call` before `EvaluateRequest` | None beyond `fail_closed.enabled` |
+
+Named limitations: scope is always all watched workloads (drop counters are
+severity-class globals, not per-pod); deny is `connect()`-only via LSM. Dual
+ringbufs mean a connect flood no longer blinds EXFIL/`lsm_deny` evidence —
+see [`docs/threat_model.md`](../../docs/threat_model.md) T1.
+
 **EKS finding (2026-07-12):** capabilities are enough for probe load and cross-pod
 syscall visibility (`connect` / `write` payload). Reading another container’s
 root via `/proc/<pid>/root` for taint seed returned `permission denied` — without
-seed contents, egress stays SUSPICIOUS (not EXFIL).
+seed contents, and without a proxy sidecar forwarding anything over the taint
+bridge, egress on this posture reaches **no verdict at all — not even
+`SUSPICIOUS`.** `IngestSyscallSensor` never lights `untrusted_content_present`
+on its own (no MCP untrusted-content plane inside a privileged, proxy-less pod),
+so the soft tripwire is structurally unreachable here regardless of syscall
+type — see [`docs/architecture.md`](../../docs/architecture.md) §13's
+"Sensor-only DaemonSet" section. (An earlier version of this doc claimed
+`SUSPICIOUS` still fired here; it did not, and never had — corrected.)
 
 **Production fix (ROADMAP §4 — shipped):** enable the **sensor↔proxy taint bridge**.
 An unprivileged MCP proxy in the agent pod forwards hashed/masked `TaintedValue`s
-(with in-memory `Value`/`Variants` over the node-local Unix socket) to the sensor.
-Mount hostPath `/var/run/interlock` on both DaemonSet and proxy; set `POD_UID` via
-the Downward API. See [`proxy-taint-bridge-example.yaml`](proxy-taint-bridge-example.yaml).
-With the bridge, capabilities DaemonSet can reach EXFIL without privileged root reads.
-`privileged: true` remains available for openat `/proc` seed demos without a proxy.
+(with in-memory `Value`/`Variants` over the node-local Unix socket) to the sensor,
+**and** — since this is a prerequisite, not an optional enhancement — also
+forwards an "untrusted content observed" signal (`RegisterRemoteUntrusted` /
+`register_untrusted`) so the sensor session can light `untrusted_content_present`
+too. Mount hostPath `/var/run/interlock` on both DaemonSet and proxy; set `POD_UID` via
+the Downward API. Sensor config must set `allowed_uids` and/or `allowed_gids`
+(SO_PEERCRED); use `socket_gid` + pod `fsGroup`/`supplementalGroups` for non-root
+proxies (`0660` + shared GID, dir `0750`). See
+[`proxy-taint-bridge-example.yaml`](proxy-taint-bridge-example.yaml).
+With the bridge, capabilities DaemonSet can reach **both** `EXFIL` (taint seed,
+without privileged root reads) **and** the soft connect-only `SUSPICIOUS` tripwire
+(untrusted-content forwarding) — neither is reachable without it on this posture.
+`privileged: true` remains available for openat `/proc` seed demos without a proxy,
+but a demo without a proxy still cannot reach `SUSPICIOUS` either, for the same
+structural reason.
 
 ## Validation status
 
@@ -89,6 +157,52 @@ Run against a real EKS or GKE node (not kind). Prefer
 ## What we deliberately avoid
 
 - **No MCP proxy in the DaemonSet** — smaller blast radius; integrators keep their own proxy/sidecar.
+
+## Proxy mode: `sandbox.netns` (CLONE_NEWNET)
+
+When Interlock runs as an **MCP proxy** (not this DaemonSet) and
+`sandbox.netns: true`, each child MCP server is spawned with `CLONE_NEWNET`:
+a fresh network namespace with **no route to the host NIC** and **no DNS
+resolver**. Non-loopback `connect()` fails with `ENETUNREACH` /
+`EHOSTUNREACH`. This **prevents** Variant B's uncontrolled side-channel by
+construction when Interlock controls spawning.
+
+| Requirement | Notes |
+|---|---|
+| `CAP_SYS_ADMIN` (or root) at spawn | Needed for `CLONE_NEWNET`. Nested user-namespace fallback is **not** implemented in this pass. |
+| Linux only | Non-Linux builds reject `sandbox.netns: true` at spawn. |
+| Default `false` | Opt-in; SIGHUP cannot flip it for already-running children (restart / new sessions). |
+
+**This DaemonSet does not gain this prevention.** Sensor-only mode watches
+workloads Interlock did not spawn — eBPF Variant B (payload overlap + kill /
+LSM quarantine) remains the mechanism there. See
+[`docs/architecture.md`](../../docs/architecture.md) §2 trust boundaries.
+
+## Post-attach capability drop (ROADMAP §13)
+
+Startup still requires the caps-first set above (`BPF`, `PERFMON`, `SYS_ADMIN`,
+`KILL`) so load/attach succeeds. After a successful `NewLoader` / `NewSensor`,
+Interlock calls `DropPostAttach` and **clears `CAP_SYS_ADMIN`** from the
+process effective and permitted sets.
+
+| Capability | After attach | Why |
+|---|---|---|
+| `KILL` | **kept** | `KillProcess` / `contained_by_kill` |
+| `BPF` | **kept** | Conservative residual for live map updates (`AddPID`, `SetPayloadCaptureBytes`); SIGHUP does not re-attach probes |
+| `PERFMON` | **kept** | Companion to `BPF` on modern kernels |
+| `SYS_ADMIN` | **dropped** | No longer needed once programs are attached |
+
+**Verified:** Linux root-gated test `TestDropPostAttach_RootGated` in
+`internal/ebpf` — after drop, `CapEff` lacks `SYS_ADMIN`, and map
+`Put`/`AddPID` still succeed. Target posture matches the EKS AL2023 caps
+DaemonSet (kernel `6.1.x` class); re-check CapEff logs (`[SECURITY] caps
+post-attach:…`) on each new node image.
+
+**Exception:** proxy mode with `sandbox.netns: true` keeps `SYS_ADMIN`
+(`WithKeepSYSAdmin`) because child spawn still needs `CLONE_NEWNET`.
+
+DaemonSet YAML startup `securityContext` is unchanged — caps are still
+granted at container start; drop is in-process only.
 
 ## RBAC
 

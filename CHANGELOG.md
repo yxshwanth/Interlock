@@ -4,6 +4,58 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- **CEF SIEM export (ROADMAP §5)** — `siem.format: cef` ArcSight CEF 0 text lines beside existing OCSF; OCSF path unchanged
+- **Cross-session evidence query (ROADMAP §5)** — SQLite `Query` by `session_id` / `verdict` / `pod_name`; `make query-evidence`; viewer multi-record list mode
+- **Shannon entropy dark measurement (ROADMAP §12)** — corpus-only would-fire rates in `docs/fp_corpus.md`; not wired to verdicts/alerts
+- **Post-attach capability drop (ROADMAP §13)** — clear `CAP_SYS_ADMIN` after eBPF attach; keep `KILL`/`BPF`/`PERFMON`; netns keeps SYS_ADMIN
+- HTTP MCP optional `transport.bearer_token` and `transport.rate_limit_rps`; example configs moved to `examples/configs/`
+- `.editorconfig` for non-Go file formatting
+
+### Changed
+
+- **Audit remediation (2026-08-31)** — capabilities-first `daemonset.yaml` default; `daemonset-dev.yaml` for privileged kind demos; strict Origin hostname validation; `ParseToolCallParams` errors surfaced on proxy path; shared `model.MeetsMinVerdict` / `RuntimeStats`; Dockerfile defaults to non-root user (sensor sets `runAsUser: 0`)
+
+### Removed
+
+- Dead code: `ContainerIDFromPID`, `PodAttribution.Register`, `SessionStore.Delete`, `PIDRegistry.AllPIDs`, `PayloadMax`, `Loader.PayloadCaptureBytes`, unused `Proxy.mu`
+- Orphan `deploy/k8s/configmap-sensor.yaml` (live sensor ConfigMap is `interlock-sensor-config` in `deploy/k8s/rbac.yaml`)
+
+## [0.4.0] - 2026-07-30
+
+**v0.4 — Detection depth + definitive reference.** LSM Slice 1, fail-closed, dual ringbufs, and evidence hash chain from the post-v0.3 tree, plus ROADMAP §§7–20 detection/hardening work and [`docs/INTERLOCK.md`](docs/INTERLOCK.md) as the code-backed architecture SoT.
+
+### Added
+
+- **Definitive technical reference** — [`docs/INTERLOCK.md`](docs/INTERLOCK.md): two-plane architecture, taint/verdict/action model, TCB scenarios, gap ledger, considered-and-rejected; discrepancy index vs stale docs; measured-state snapshot pointing at `make fp-corpus` / `make cve-corpus`
+- **CVE-derived corpus** — [`docs/cve_corpus.md`](docs/cve_corpus.md) / `internal/corpus/scenarios_cve.go`: 7 families, 15 genuine reconstructions (12/15 EXFIL); found connect-only tripwire deletion and PEM taint gap
+- **LSM/KRSI kernel quarantine** (Phase 2 Slice 1) — opt-in `ebpf.lsm_enforce`: repeat `connect()` after EXFIL → in-kernel `-EPERM` (`prevented`); first EXFIL packet remains `contained_by_kill`
+- **Fail-closed mode** — opt-in `fail_closed.enabled` (`internal/failclosed`): ringbuf drop-rate hysteresis, sink failures, panic → block monitored egress; flap damping; global-scope named limitation
+- **Ring-buffer segregation** — dual 256 KiB BPF rings (routine connect/openat vs critical write/writev/sendto/sendmsg/lsm_deny); fail-closed watches both drop rates
+- **Tamper-evident evidence hash chain** — `chain_seq` / `prev_hash` / `hash`; `make verify-evidence`
+- **Variant B `writev` / `sendmsg` / IPv6** — critical-ring probes; family + 16-byte dest on connect/sendto/named-sendmsg
+- **Taint bridge SO_PEERCRED** — `allowed_uids` / `allowed_gids`; optional `register_untrusted` for sensor soft SUSPICIOUS
+- **Standard compressors as canonical forms (ROADMAP §9)** — `brotli_base64` / `zstd_base64` / `lz4_base64` (+ `gzip_base64`); custom cipher remains KnownGap
+- **Token vaulting (ROADMAP §10)** — opt-in `vault.enabled`; `ilk.vault.*` dummies; authorize-list detokenize-then-scan
+- **Zero-route netns (ROADMAP §7)** — opt-in `sandbox.netns` → `CLONE_NEWNET` for spawned children (proxy mode; default off)
+- **Spawn pinning (ROADMAP §17)** — resolve/pin `servers[].command` at config load; reject mismatched binaries; optional `spawn_allowlist`
+- **Long-secret chunk matching (ROADMAP §8)** — contiguous body chunks for values ≥64 B; closes truncated-capture PEM EXFIL when a chunk is in-window
+- **Inherit sink suspicion (ROADMAP §14)** — opt-in `server_defaults.inherit_sink_suspicion` + `sink_suspicion_allowlist`
+- **Configurable decode depth (ROADMAP §15)** — `trifecta.max_decode_depth` default **5**, clamp `[3,5]`; FP curve 0% EXFIL at 3/4/5
+- **Payload capture default 1024 (ROADMAP §16)** — equals compiled `PAYLOAD_MAX`; runtime reduce-only clamp `[64,1024]`
+- **Path-driven taint (ROADMAP §18)** — sensitive path heuristics / config prefixes → whole-blob taint (xlsx whole-file relay)
+- **Egress flow reassembly (ROADMAP §19)** — bounded per-(pid,dest) buffers; closes normal DNS/write fragmentation; slow-trickle / cross-dest remain KnownGaps
+- **Bounded container descent (ROADMAP §20)** — ZIP/gzip/zlib/tar under streaming caps; abort → soft SUSPICIOUS only; bomb/encrypted/depth NamedGaps
+- **Boundary writeups (ROADMAP §11 / §21 / §22)** — sockmap/SOCKS5/unbounded trickle rejected; protocol dissectors Named/demand-gated; blind side-channel rejected for EXFIL
+
+### Changed
+
+- Connect-only soft SUSPICIOUS restored via `classifyTrip` `hasPayloadChannel` (CVE corpus finding); deferred-kill subsystem removed (unreachable after §1)
+- PEM/PuTTY private-key patterns in `secretPatterns`; any-trip FP published at **18.9% (7/37)** with EXFIL-tier FP **0%**
+- Docs: three-doc model (architecture gaps / ROADMAP queue / project overview pitch); SUMMARY.md removed; INTERLOCK.md is the definitive reference
+- README / PRIVILEGE / threat model / detection_boundary / performance / demo-k8s.sh aligned with immediate EXFIL kill and current capture defaults
+
 ## [0.3.0] - 2026-07-12
 
 **v0.3 — Adoptable Product** (Phase 1 DaemonSet, Phase 3 operability, Phase 4 Trust). Phase 2 LSM/KRSI remains demand-gated.
@@ -19,7 +71,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - `IngestSyscallSensor`: sensitive `openat` seeds taint via `/proc/<pid>/root` file read (no kill); egress `connect`/`write`/`sendto`/DNS contain; payload overlap → `EXFIL` 0.95 with redacted `payload_excerpt`
 - Evidence `pod_context` (`namespace`, `pod_name`, `pod_uid`, `node_name`); sensor session ID is `k8s:<podUID>`
 - `cmd/k8s-exfil-demo` — demo workload that reads a mounted secret then exfiltrates it over TCP, for the kind e2e path
-- Multi-stage `Dockerfile` + `make image`; `deploy/k8s/` — `daemonset.yaml`, `daemonset-capabilities.yaml`, `rbac.yaml`, `configmap-sensor.yaml`, `service-metrics.yaml`, `demo/exfil-pod.yaml`; [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md) privilege surface doc
+- Multi-stage `Dockerfile` + `make image`; `deploy/k8s/` — `daemonset.yaml`, `daemonset-capabilities.yaml`, `rbac.yaml` (includes `interlock-sensor-config` ConfigMap), `service-metrics.yaml`, `demo/exfil-pod.yaml`; [`deploy/k8s/PRIVILEGE.md`](deploy/k8s/PRIVILEGE.md) privilege surface doc
 - `deploy/k8s/eks/` — EKS cluster/IAM/push/validate/delete helpers; `push-image-kaniko.sh` for builds without local Docker
 - `make demo-k8s` / `scripts/demo-k8s.sh` — kind load, apply, labeled exfil pod, asserts EXFIL evidence with redacted excerpt
 - **Prometheus metrics + health** (`internal/observability`): `/metrics` (`promhttp`) and `/healthz` on `observability.listen`; detection and drop counters; DaemonSet liveness/readiness probes + headless `interlock-sensor-metrics` Service
@@ -60,7 +112,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - README / architecture / ROADMAP: Variant B dual claim (tripwire or payload-backed EXFIL); sendto/openat/DNS; bounded overlap expansion
 - Taint registration path: `CanonicalEncodings` → `[]TaintedVariant` directly; cheaper `HashValue`; `extractResultText` via `strings.Builder`
 - [`docs/performance.md`](docs/performance.md) — async evidence, ingest opts, concurrent load snapshot, ringbuf test honesty; encoding form-count growth note
-- Docs: consolidated historical week/v0.2 summaries into [`docs/SUMMARY.md`](docs/SUMMARY.md)
+- Docs: consolidated historical week/v0.2 summaries (later superseded by [`docs/INTERLOCK.md`](docs/INTERLOCK.md))
 
 ## [0.2.1] - 2026-07-05
 
@@ -103,7 +155,7 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - HTTP demo path: `make demo-http`, `make demo-http-ebpf`, `make demo-quiet-http`, `make demo-quiet-http-ebpf`
 - Example configs: `interlock-http.yaml`, `interlock-http-monitor.yaml`
 - Auth header redaction helpers for HTTP request metadata
-- Current product summary: [`docs/SUMMARY.md`](docs/SUMMARY.md) (replaces historical week/v0.2 summary docs)
+- Current product summary docs (later superseded by [`docs/INTERLOCK.md`](docs/INTERLOCK.md))
 
 ### Changed
 
@@ -153,7 +205,8 @@ First release — a working proof that runtime trifecta detection works across t
 - Redaction is pattern-matched — treat runtime event/evidence logs as sensitive artifacts
 - eBPF integration tested locally (root + BTF kernel), not in CI
 
-[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/yxshwanth/Interlock/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/yxshwanth/Interlock/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/yxshwanth/Interlock/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/yxshwanth/Interlock/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/yxshwanth/Interlock/compare/v0.2.0...v0.2.1

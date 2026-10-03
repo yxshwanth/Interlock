@@ -1,3 +1,4 @@
+# Production-default sensor DaemonSet (capabilities-first). For kind / privileged openat demos use daemonset-dev.yaml.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -18,9 +19,8 @@ spec:
         app.kubernetes.io/component: sensor
     spec:
       serviceAccountName: interlock-sensor
+      # Required: eBPF attribution reads /proc/<pid>/stat across host processes (full host PID namespace).
       hostPID: true
-      # Capabilities-first is preferred; kind/Docker Desktop often needs privileged
-      # for tracepoint programs to observe other pods. See PRIVILEGE.md.
       containers:
         - name: sensor
           image: interlock:dev
@@ -53,11 +53,12 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
           securityContext:
-            # kind / Docker Desktop: privileged needed for cross-pod tracepoint visibility.
-            # Production: try capabilities-only + taint_bridge (see PRIVILEGE.md).
-            # Privileged still used for openat /proc/<pid>/root seed demos without a proxy.
-            privileged: true
+            runAsUser: 0
+            allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["BPF", "PERFMON", "SYS_ADMIN", "KILL"]
           volumeMounts:
             - name: config
               mountPath: /etc/interlock
@@ -83,6 +84,7 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+              # CPU limits omitted intentionally: throttling hurts syscall monitoring on DaemonSets.
       volumes:
         - name: config
           configMap:

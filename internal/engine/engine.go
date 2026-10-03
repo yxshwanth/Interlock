@@ -16,10 +16,14 @@ import (
 )
 
 const (
-	maxUntrustedExcerpts = 8
-	maxUntrustedExcerpt  = 4096
+	maxUntrustedExcerpts  = 8
+	maxUntrustedExcerpt   = 4096
 	defaultFragmentChunks = 16
 	defaultFragmentBytes  = 64 * 1024
+	defaultEgressFragmentChunks = 16
+	defaultEgressFragmentBytes  = 4 * 1024
+	defaultEgressFragmentAge    = 10 * time.Second
+	defaultEgressMaxFlows       = 32
 )
 
 // EvidenceSink receives evidence records when a trifecta trips.
@@ -35,6 +39,15 @@ type SecurityAuditSink interface {
 // TaintForwarder is invoked (outside Engine.mu) after new tainted values are
 // registered from a sensitive_source result. Used by the proxy→sensor bridge.
 type TaintForwarder func(tvs []model.TaintedValue)
+
+// UntrustedForwarder is invoked (outside Engine.mu) the first time a proxy
+// session lights untrusted_content_present, so a sensor-only session sharing
+// the same taint_bridge can light its own copy of the leg. Without this,
+// IngestSyscallSensor can never light untrusted_content_present at all —
+// AllLit() is permanently false in sensor-only mode, so the entire soft
+// SUSPICIOUS tier is inert there regardless of the connect-only classifyTrip
+// fix. See docs/cve_corpus.md and docs/architecture.md §13.
+type UntrustedForwarder func(source string, seq uint64)
 
 // Engine is the core trifecta policy engine. It evaluates tool calls against
 // the three-leg state machine and emits verdicts + evidence.
@@ -53,8 +66,20 @@ type Engine struct {
 	contentBindMinLen    int
 	fragmentMaxChunks    int
 	fragmentMaxBytes     int
+	chunkMatchBytes      int
+	chunkMatchMinLen     int
+	egressReassemblyEnabled bool
+	egressFragmentMaxChunks int
+	egressFragmentMaxBytes  int
+	egressFragmentMaxAge    time.Duration
+	egressMaxFlows          int
+	vaultEnabled         bool
+	vaultAuthorize       []config.VaultAuthorizeEntry
+	sensitivePaths       []string
+	containerLimits      ContainerLimits
 
-	taintForwarder TaintForwarder
+	taintForwarder     TaintForwarder
+	untrustedForwarder UntrustedForwarder
 }
 
 // NewEngine creates an engine wired to the given store, tagger, and mode.
@@ -87,6 +112,14 @@ func NewEngine(store *SessionStore, tagger *Tagger, mode string, sink EvidenceSi
 		contentBindMinLen:    defaultContentBindMinLen,
 		fragmentMaxChunks:    defaultFragmentChunks,
 		fragmentMaxBytes:     defaultFragmentBytes,
+		chunkMatchBytes:      defaultChunkMatchBytes,
+		chunkMatchMinLen:     defaultChunkMatchMinLen,
+		egressReassemblyEnabled: true,
+		egressFragmentMaxChunks: defaultEgressFragmentChunks,
+		egressFragmentMaxBytes:  defaultEgressFragmentBytes,
+		egressFragmentMaxAge:    defaultEgressFragmentAge,
+		egressMaxFlows:          defaultEgressMaxFlows,
+		containerLimits:         DefaultContainerLimits(),
 	}
 }
 
@@ -104,6 +137,24 @@ func (e *Engine) Configure(cfg *config.Config) {
 	e.contentBindMinLen = cfg.Trifecta.ContentBindMinLenOrDefault()
 	e.fragmentMaxChunks = cfg.Trifecta.FragmentMaxChunksOrDefault()
 	e.fragmentMaxBytes = cfg.Trifecta.FragmentMaxBytesOrDefault()
+	e.chunkMatchBytes = cfg.Trifecta.ChunkMatchBytesOrDefault()
+	e.chunkMatchMinLen = cfg.Trifecta.ChunkMatchMinLenOrDefault()
+	e.egressReassemblyEnabled = cfg.Trifecta.EgressReassemblyEnabledOrDefault()
+	e.egressFragmentMaxChunks = cfg.Trifecta.EgressFragmentMaxChunksOrDefault()
+	e.egressFragmentMaxBytes = cfg.Trifecta.EgressFragmentMaxBytesOrDefault()
+	e.egressFragmentMaxAge = cfg.Trifecta.EgressFragmentMaxAgeOrDefault()
+	e.egressMaxFlows = cfg.Trifecta.EgressMaxDestinationsOrDefault()
+	SetMaxDecodeDepth(cfg.Trifecta.MaxDecodeDepthOrDefault())
+	e.vaultEnabled = cfg.Vault.Enabled
+	e.vaultAuthorize = applyVaultAuthorize(cfg.Vault.Authorize)
+	e.sensitivePaths = append([]string(nil), cfg.SensitivePaths...)
+	e.containerLimits = ContainerLimits{
+		Enabled:              cfg.Trifecta.ContainerInspectEnabledOrDefault(),
+		MaxDecompressedBytes: cfg.Trifecta.ContainerMaxDecompressedBytesOrDefault(),
+		MaxDescentDepth:      cfg.Trifecta.ContainerMaxDescentDepthOrDefault(),
+		MaxParts:             cfg.Trifecta.ContainerMaxPartsOrDefault(),
+		MaxInspect:           time.Duration(cfg.Trifecta.ContainerMaxInspectMsOrDefault()) * time.Millisecond,
+	}
 }
 
 // SetSecurityAuditSink wires optional JSONL audit logging for security events.
@@ -117,6 +168,15 @@ func (e *Engine) SetTaintForwarder(fn TaintForwarder) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.taintForwarder = fn
+}
+
+// SetUntrustedForwarder wires an optional callback fired the first time a
+// proxy session lights untrusted_content_present (proxy→sensor Unix-socket
+// bridge). Invoked outside Engine.mu. See RegisterRemoteUntrusted.
+func (e *Engine) SetUntrustedForwarder(fn UntrustedForwarder) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.untrustedForwarder = fn
 }
 
 // RegisterRemoteTaint seeds taint into a sensor session (typically k8s:<podUID>)
@@ -148,6 +208,9 @@ func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
 	if len(tv.Variants) == 0 {
 		tv.Variants = CanonicalEncodings(tv.Value)
 	}
+	if len(tv.Chunks) == 0 {
+		AttachChunks(&tv, e.chunkMatchBytes, e.chunkMatchMinLen)
+	}
 	if tv.Hash == "" {
 		tv.Hash = HashValue(tv.Value)
 	}
@@ -167,12 +230,52 @@ func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
 		sessionID, tv.Source, len(added))
 }
 
+// RegisterRemoteUntrusted lights untrusted_content_present in a sensor
+// session (typically k8s:<podUID>) from the node-local taint bridge, mirroring
+// RegisterRemoteTaint. Without this, IngestSyscallSensor can never light this
+// leg on its own — AllLit() would be permanently false in sensor-only mode,
+// making the entire soft SUSPICIOUS tier inert there (see docs/architecture.md
+// §13, docs/cve_corpus.md). Does not carry the excerpt text itself (bridge
+// stays a boolean "untrusted content was observed" signal, not a channel for
+// raw tool-result content) — content-bound SUSPICIOUS for payload-bearing
+// sensor-observed egress still requires a real excerpt, which is not
+// currently forwarded; the payload-less connect-only tripwire this restores
+// does not need one (classifyTrip fires on AllLit alone for those).
+func (e *Engine) RegisterRemoteUntrusted(sessionID string, source string, seq uint64) {
+	if sessionID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	state := e.store.GetOrCreate(sessionID)
+	e.touchSession(state, seq, "remote untrusted content registered")
+
+	if state.Legs.UntrustedContentPresent.Lit {
+		return
+	}
+	now := time.Now().UnixNano()
+	detail := "proxy taint bridge: untrusted content observed"
+	if source != "" {
+		detail = "proxy taint bridge: untrusted content observed (" + source + ")"
+	}
+	state.Legs.UntrustedContentPresent = model.Leg{
+		Lit:         true,
+		Detail:      detail,
+		LitAt:       now,
+		EventsAtLit: state.EventCount,
+	}
+	e.log.Printf("remote untrusted: session=%s source=%s leg lit", sessionID, source)
+}
+
 // IngestResult is called when a server→agent result arrives. It updates
 // the trifecta legs (sensitive_source_touched, untrusted_content_present),
 // extracts tainted values from sensitive sources, and appends to the timeline.
 func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 	var toForward []model.TaintedValue
 	var forwarder TaintForwarder
+	var newlyUntrusted bool
+	var untrustedForwarder UntrustedForwarder
 
 	e.mu.Lock()
 	state := e.store.GetOrCreate(ev.SessionID)
@@ -190,22 +293,39 @@ func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 			// Reassembly-first: secrets split across calls may only match
 			// secretPatterns on the concatenated fragment buffer.
 			reassembled := ExtractTaintedValues(strings.Join(state.FragmentChunks, ""), source, ev.Seq)
-			added := appendUniqueTainted(state.Tainted, append(tainted, reassembled...)...)
+			combined := append(tainted, reassembled...)
+			if readPath := consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName); readPath != "" &&
+				IsSensitiveResourcePath(readPath, e.sensitivePaths) {
+				combined = append(combined, TaintPathDrivenContent(resultText, readPath, source, ev.Seq)...)
+			}
+			combined = append(combined, e.taintFromContainer(resultText, source, ev.Seq)...)
+			e.attachChunksAll(combined)
+			added := appendUniqueTainted(state.Tainted, combined...)
 			state.Tainted = append(state.Tainted, added...)
+			e.vaultMint(state, added)
 			if len(added) > 0 {
 				e.log.Printf("extracted %d tainted value(s) from %s (session=%s)",
 					len(added), source, ev.SessionID)
 				toForward = added
 				forwarder = e.taintForwarder
 			}
+		} else {
+			consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName)
 		}
 	} else if e.untrustedToolResults {
+		if !state.Legs.UntrustedContentPresent.Lit {
+			newlyUntrusted = true
+			untrustedForwarder = e.untrustedForwarder
+		}
 		e.setUntrustedContentPresent(state, ev, extractResultText(ev.Result))
 	}
 	e.mu.Unlock()
 
 	if len(toForward) > 0 && forwarder != nil {
 		forwarder(toForward)
+	}
+	if newlyUntrusted && untrustedForwarder != nil {
+		untrustedForwarder(ev.ToolName, ev.Seq)
 	}
 }
 
@@ -217,6 +337,7 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 
 	state := e.store.GetOrCreate(ev.SessionID)
 	e.touchSession(state, ev.Seq, fmt.Sprintf("%s called", ev.ToolName))
+	e.stashSensitiveReadPath(state, ev)
 
 	if e.tagger == nil || !e.tagger.IsExternalSink(ev.ToolName, ev.ServerID) {
 		return model.Decision{Allow: true}
@@ -224,10 +345,28 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 
 	e.setExternalSinkInvoked(state, ev)
 
-	overlap := CheckOverlap(state.Tainted, ev.ToolArgs)
-	verdict, confidence, ok := e.classifyTrip(state, overlap, string(ev.ToolArgs))
+	args := ev.ToolArgs
+	var forwardArgs json.RawMessage
+	if e.vaultEnabled {
+		if ok, allowClass := e.vaultToolAuthorized(ev.ToolName); ok {
+			detok := vaultDetokenize(args, state.Vault, allowClass)
+			if string(detok) != string(args) {
+				args = detok
+				forwardArgs = detok
+			}
+		}
+	}
+
+	overlap, containerAbort := CheckOverlapLimited(state.Tainted, args, e.containerLimits)
+	// A tools/call always has an args channel (even if this call's args are
+	// short/empty) — content-bind gates SUSPICIOUS here unconditionally.
+	verdict, confidence, ok := e.classifyTrip(state, overlap, string(args), true, containerAbort)
 	if !ok {
-		return model.Decision{Allow: true}
+		dec := model.Decision{Allow: true}
+		if forwardArgs != nil {
+			dec.ForwardArgs = forwardArgs
+		}
+		return dec
 	}
 
 	allow, action := e.proxyAction(verdict)
@@ -235,6 +374,8 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 	state.Status = model.Tripped
 	state.Confidence = confidence
 
+	// buildEvidence uses ev.ToolArgs for redaction; scan used detokenized args
+	// when vault authorized. Overlap hit already carries the match form.
 	evidence := e.buildEvidence(state, ev, verdict, action, confidence, overlap)
 
 	if e.sink != nil {
@@ -246,13 +387,23 @@ func (e *Engine) EvaluateRequest(ev model.InterceptedEvent) model.Decision {
 	e.log.Printf("TRIFECTA DETECTED: session=%s tool=%s verdict=%s action=%s",
 		ev.SessionID, ev.ToolName, verdict, action)
 
-	return model.Decision{
+	reason := fmt.Sprintf("trifecta %s: %s", verdict, ev.ToolName)
+	if verdict == model.VerdictSuspicious && containerAbort != ContainerAbortNone {
+		reason = fmt.Sprintf("trifecta %s: container_inspect_limit (%s): %s", verdict, containerAbort, ev.ToolName)
+	}
+	dec := model.Decision{
 		Allow:    allow,
 		Verdict:  verdict,
 		Action:   action,
-		Reason:   fmt.Sprintf("trifecta %s: %s", verdict, ev.ToolName),
+		Reason:   reason,
 		Evidence: &evidence,
 	}
+	// Only hand detokenized args to the proxy when the call is allowed —
+	// never rehydrate the real secret on a blocked path.
+	if allow && forwardArgs != nil {
+		dec.ForwardArgs = forwardArgs
+	}
+	return dec
 }
 
 // RedactEvent scrubs known tainted values from the ToolArgs and Result
@@ -337,12 +488,40 @@ func (e *Engine) RewindLegClocks(sessionID string, d time.Duration) {
 
 // classifyTrip decides EXFIL / SUSPICIOUS / no-trip.
 // EXFIL: value overlap against registered taint (sensitive leg may have decayed).
-// SUSPICIOUS: AllLit + content bind between untrusted excerpts and sink.
-func (e *Engine) classifyTrip(state *model.SessionState, overlap *model.OverlapHit, sinkPayload string) (model.Verdict, float64, bool) {
+// SUSPICIOUS: AllLit, plus one of —
+//   - the sink event carries a payload/args channel at all, and that channel
+//     shares byte-level content with an untrusted excerpt (CheckContentBind);
+//   - the sink event has NO payload channel by construction (a bare
+//     connect() — TCP/UDP handshakes carry no application data, that's what
+//     the follow-up write()/sendto() is for). Content-bind cannot apply to
+//     "nothing"; requiring it here made the connect()-only tripwire
+//     structurally unreachable (an empty sink string always fails
+//     CheckContentBind's length check), silently deleting the signal a
+//     malicious subprocess opening its own raw socket is supposed to trip —
+//     see cve_2025_53967_figma_reverse_shell_connect_only_gap in
+//     internal/corpus/scenarios_cve.go and docs/cve_corpus.md.
+//
+// hasPayloadChannel is false only for events that structurally never carry
+// data (eBPF "connect"); true for anything that does (write/writev/sendto/
+// sendmsg/dns PayloadExcerpt, and Variant A tool-call args), even if this
+// particular instance's payload happens to be empty or unrelated — for
+// those, content-bind still gates SUSPICIOUS exactly as ROADMAP §1 intends.
+func (e *Engine) classifyTrip(state *model.SessionState, overlap *model.OverlapHit, sinkPayload string, hasPayloadChannel bool, containerAbort ContainerAbortReason) (model.Verdict, float64, bool) {
 	if overlap != nil {
 		return model.VerdictExfil, 0.95, true
 	}
-	if state.Legs.AllLit() && CheckContentBind(state.UntrustedExcerpts, sinkPayload, e.contentBindMinLen) {
+	if !state.Legs.AllLit() {
+		return "", 0, false
+	}
+	if !hasPayloadChannel {
+		return model.VerdictSuspicious, 0.6, true
+	}
+	if CheckContentBind(state.UntrustedExcerpts, sinkPayload, e.contentBindMinLen) {
+		return model.VerdictSuspicious, 0.6, true
+	}
+	// Opaque container left but inspection hit a hard limit — soft signal only
+	// (ROADMAP §20). Never EXFIL from an aborted walk.
+	if containerAbort != ContainerAbortNone {
 		return model.VerdictSuspicious, 0.6, true
 	}
 	return "", 0, false
@@ -494,6 +673,10 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if ev.Syscall == "lsm_deny" {
+		return e.ingestLSMDeny(ev)
+	}
+
 	sessionID := ev.SessionID
 	if sessionID == "" {
 		e.recordUnattributedSyscall(ev, "no session attribution for monitored PID")
@@ -525,35 +708,62 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 	}
 
 	var overlap *model.OverlapHit
+	var containerAbort ContainerAbortReason
+	payloadForOverlap := ev.PayloadExcerpt
 	if ev.Syscall != "openat" && ev.PayloadExcerpt != "" {
-		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
+		payloadForOverlap = e.egressCandidatePayload(state, ev)
+		overlap, containerAbort = CheckOverlapPayloadLimited(state.Tainted, payloadForOverlap, e.containerLimits)
 	}
 
-	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt)
+	// connect() is a bare TCP/UDP handshake — it never carries application
+	// data at the eBPF level (no Payload field on the raw event at all), so
+	// content-bind cannot apply to it; every other syscall type here
+	// (write/writev/sendto/sendmsg/dns) does carry a payload channel.
+	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt, ev.Syscall != "connect", containerAbort)
 	if !ok {
 		return model.Decision{Allow: true}
 	}
 
-	allow, action := e.variantBAction(verdict)
+	return e.finishVariantBSyscallTrip(state, ev, sessionID, verdict, confidence, overlap, containerAbort,
+		"TRIFECTA DETECTED (eBPF)",
+		func() string {
+			reason := fmt.Sprintf("trifecta %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
+			if ev.Syscall == "openat" {
+				reason = fmt.Sprintf("trifecta %s: openat %s by pid %d", verdict, ev.Path, ev.PID)
+			}
+			if verdict == model.VerdictSuspicious && containerAbort != ContainerAbortNone {
+				reason = fmt.Sprintf("trifecta %s: container_inspect_limit (%s): %s to %s:%d by pid %d",
+					verdict, containerAbort, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
+			}
+			return reason
+		}())
+}
 
+// finishVariantBSyscallTrip emits evidence and returns the enforcement decision shared by proxy-attached and sensor-only Variant B paths.
+func (e *Engine) finishVariantBSyscallTrip(
+	state *model.SessionState,
+	ev model.SyscallEvent,
+	sessionID string,
+	verdict model.Verdict,
+	confidence float64,
+	overlap *model.OverlapHit,
+	containerAbort ContainerAbortReason,
+	logLabel string,
+	reason string,
+) model.Decision {
+	allow, action := e.variantBAction(verdict)
 	state.Status = model.Tripped
 	state.Confidence = confidence
 
 	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence, overlap)
-
 	if e.sink != nil {
 		if err := e.sink.Emit(evidence); err != nil {
 			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
 		}
 	}
 
-	e.log.Printf("TRIFECTA DETECTED (eBPF): session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
-		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
-
-	reason := fmt.Sprintf("trifecta %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
-	if ev.Syscall == "openat" {
-		reason = fmt.Sprintf("trifecta %s: openat %s by pid %d", verdict, ev.Path, ev.PID)
-	}
+	e.log.Printf("%s: session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
+		logLabel, sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
 
 	return model.Decision{
 		Allow:    allow,
@@ -573,6 +783,10 @@ func (e *Engine) IngestSyscall(ev model.SyscallEvent) model.Decision {
 func (e *Engine) IngestSyscallSensor(ev model.SyscallEvent) model.Decision {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if ev.Syscall == "lsm_deny" {
+		return e.ingestLSMDeny(ev)
+	}
 
 	sessionID := ev.SessionID
 	if sessionID == "" {
@@ -604,38 +818,26 @@ func (e *Engine) IngestSyscallSensor(ev model.SyscallEvent) model.Decision {
 	}
 
 	var overlap *model.OverlapHit
+	var containerAbort ContainerAbortReason
+	payloadForOverlap := ev.PayloadExcerpt
 	if ev.PayloadExcerpt != "" {
-		overlap = CheckOverlapPayload(state.Tainted, ev.PayloadExcerpt)
+		payloadForOverlap = e.egressCandidatePayload(state, ev)
+		overlap, containerAbort = CheckOverlapPayloadLimited(state.Tainted, payloadForOverlap, e.containerLimits)
 	}
 
-	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt)
+	// See IngestSyscall's identical comment: connect() has no payload
+	// channel at all; every other syscall reaching this point does.
+	verdict, confidence, ok := e.classifyTrip(state, overlap, ev.PayloadExcerpt, ev.Syscall != "connect", containerAbort)
 	if !ok {
 		return model.Decision{Allow: true}
 	}
 
-	allow, action := e.variantBAction(verdict)
-	state.Status = model.Tripped
-	state.Confidence = confidence
-
-	evidence := e.buildEvidenceVariantB(state, ev, verdict, action, confidence, overlap)
-
-	if e.sink != nil {
-		if err := e.sink.Emit(evidence); err != nil {
-			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
-		}
-	}
-
-	e.log.Printf("SENSOR TRIP: session=%s syscall=%s dest=%s:%d path=%s verdict=%s action=%s",
-		sessionID, ev.Syscall, ev.DestIP, ev.DestPort, ev.Path, verdict, action)
-
 	reason := fmt.Sprintf("sensor %s: %s to %s:%d by pid %d", verdict, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
-	return model.Decision{
-		Allow:    allow,
-		Verdict:  verdict,
-		Action:   action,
-		Reason:   reason,
-		Evidence: &evidence,
+	if verdict == model.VerdictSuspicious && containerAbort != ContainerAbortNone {
+		reason = fmt.Sprintf("sensor %s: container_inspect_limit (%s): %s to %s:%d by pid %d",
+			verdict, containerAbort, ev.Syscall, ev.DestIP, ev.DestPort, ev.PID)
 	}
+	return e.finishVariantBSyscallTrip(state, ev, sessionID, verdict, confidence, overlap, containerAbort, "SENSOR TRIP", reason)
 }
 
 // seedSensorSensitiveOpen lights sensitive_source_touched and registers taint from
@@ -663,11 +865,16 @@ func (e *Engine) seedSensorSensitiveOpen(state *model.SessionState, ev model.Sys
 
 	source := "sensor:" + path
 	tainted := ExtractTaintedValues(ev.FileContents, source, 0)
+	if len(tainted) == 0 && IsSensitiveResourcePath(path, e.sensitivePaths) {
+		tainted = TaintPathDrivenContent(ev.FileContents, path, source, 0)
+	}
+	tainted = append(tainted, e.taintFromContainer(ev.FileContents, source, 0)...)
 	if len(tainted) == 0 {
-		e.log.Printf("sensor seed: openat %s session=%s — no secret patterns in file (%d bytes)",
+		e.log.Printf("sensor seed: openat %s session=%s — no taint registered (%d bytes)",
 			path, state.SessionID, len(ev.FileContents))
 		return
 	}
+	e.attachChunksAll(tainted)
 	state.Tainted = append(state.Tainted, tainted...)
 	e.log.Printf("sensor seed: openat %s session=%s — registered %d tainted value(s)",
 		path, state.SessionID, len(tainted))
@@ -703,6 +910,25 @@ func (e *Engine) RecordToolShadowing(ev model.ShadowEvent) {
 	}
 	rec := model.SecurityAuditEvent{
 		Kind:   "tool_shadowing",
+		Reason: reason,
+		TSWall: time.Now(),
+	}
+	if err := e.audit.EmitSecurityAudit(rec); err != nil {
+		e.log.Printf("[SECURITY] security audit write failed: %v", err)
+	}
+}
+
+// RecordFailClosedTransition audit-logs fail-closed engage/clear transitions.
+func (e *Engine) RecordFailClosedTransition(engaged bool, reason string) {
+	kind := "fail_closed_cleared"
+	if engaged {
+		kind = "fail_closed_engaged"
+	}
+	if e.audit == nil {
+		return
+	}
+	rec := model.SecurityAuditEvent{
+		Kind:   kind,
 		Reason: reason,
 		TSWall: time.Now(),
 	}
@@ -783,6 +1009,106 @@ func (e *Engine) buildEvidenceVariantB(
 	}
 }
 
+// ingestLSMDeny handles a kernel-side connect() denial reported by the
+// opt-in LSM quarantine hook (v0.3 Phase 2, Slice 1 — ebpf.lsm_enforce).
+// The engine already confirmed EXFIL to arm the quarantine (see
+// internal/ebpf/sensor.go's Quarantine call alongside containPIDs); this is
+// purely a follow-up record that a *repeat* connection attempt from the same
+// PID/cgroup was denied in-kernel before the socket formed — no
+// leg/overlap re-classification, no new containment decision. Known gap:
+// the very first EXFIL-carrying packet is never caught here — it is always
+// contained_by_kill, since detection is payload-driven and necessarily lands
+// after connect() has already succeeded.
+func (e *Engine) ingestLSMDeny(ev model.SyscallEvent) model.Decision {
+	reason := fmt.Sprintf("lsm quarantine denied repeat connect() by pid %d (%s)", ev.PID, ev.Comm)
+
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		e.recordUnattributedSyscall(ev, "no session attribution for LSM-denied connect")
+		return model.Decision{Allow: true, Verdict: model.VerdictExfil, Action: model.ActionPrevented, Reason: reason}
+	}
+
+	state := e.store.Get(sessionID)
+	if state == nil || state.Status != model.Tripped {
+		e.log.Printf("[SECURITY] lsm_deny for session=%s pid=%d comm=%s but session not tripped locally — "+
+			"quarantine entry may be stale (kernel denied the connect regardless)", sessionID, ev.PID, ev.Comm)
+		return model.Decision{Allow: false, Verdict: model.VerdictExfil, Action: model.ActionPrevented, Reason: reason}
+	}
+
+	evidence := e.buildLSMDenyEvidence(state, ev)
+
+	if e.sink != nil {
+		if err := e.sink.Emit(evidence); err != nil {
+			e.log.Printf("[SECURITY] evidence sink write failed — enforcement continues but forensic record is incomplete: %v", err)
+		}
+	}
+
+	e.log.Printf("LSM QUARANTINE HELD: session=%s pid=%d comm=%s — repeat connect() denied in-kernel",
+		sessionID, ev.PID, ev.Comm)
+
+	return model.Decision{
+		Allow:    false,
+		Verdict:  model.VerdictExfil,
+		Action:   model.ActionPrevented,
+		Reason:   reason,
+		Evidence: &evidence,
+	}
+}
+
+// buildLSMDenyEvidence builds a lightweight follow-up EvidenceRecord for an
+// already-tripped session, recording that the kernel denied a repeat
+// connect() attempt. Mirrors buildEvidenceVariantB's shape without
+// re-deriving legs/overlap (the session already tripped for those).
+func (e *Engine) buildLSMDenyEvidence(state *model.SessionState, ev model.SyscallEvent) model.EvidenceRecord {
+	sinkCall := map[string]any{
+		"syscall": "lsm_deny",
+		"pid":     ev.PID,
+		"comm":    ev.Comm,
+	}
+
+	timeline := make([]model.TimelineItem, 0, len(state.Timeline)+1)
+	for i, seq := range state.Timeline {
+		item := model.TimelineItem{
+			TimelineSeq: i + 1,
+			TSMono:      time.Now().UnixNano(),
+			Kind:        "intercepted",
+			Ref:         seq,
+		}
+		switch {
+		case seq == state.Legs.SensitiveSourceTouched.TriggerSeq:
+			item.Label = fmt.Sprintf("sensitive_source_touched: %s", state.Legs.SensitiveSourceTouched.Detail)
+		case seq == state.Legs.UntrustedContentPresent.TriggerSeq:
+			item.Label = fmt.Sprintf("untrusted_content_present: %s", state.Legs.UntrustedContentPresent.Detail)
+		default:
+			if label, ok := state.TimelineLabels[seq]; ok {
+				item.Label = label
+			} else {
+				item.Label = fmt.Sprintf("event #%d", seq)
+			}
+		}
+		timeline = append(timeline, item)
+	}
+	timeline = append(timeline, model.TimelineItem{
+		TimelineSeq: len(state.Timeline) + 1,
+		TSMono:      ev.TSMono,
+		Kind:        "syscall",
+		Label:       fmt.Sprintf("lsm_deny: kernel denied repeat connect() by %s (pid %d)", ev.Comm, ev.PID),
+	})
+
+	return model.EvidenceRecord{
+		SessionID:  state.SessionID,
+		TripTS:     time.Now().UnixNano(),
+		Verdict:    model.VerdictExfil,
+		Action:     model.ActionPrevented,
+		Variant:    model.VariantB,
+		Confidence: state.Confidence,
+		Legs:       state.Legs,
+		SinkCall:   sinkCall,
+		Timeline:   timeline,
+		Pod:        ev.Pod,
+	}
+}
+
 // appendFragment pushes a sensitive-source text chunk into the session's
 // rolling FIFO, enforcing chunk-count and total-byte caps.
 func (e *Engine) appendFragment(state *model.SessionState, chunk string) {
@@ -823,6 +1149,167 @@ func fragmentBytes(chunks []string) int {
 		n += len(c)
 	}
 	return n
+}
+
+// egressCandidatePayload returns the payload to scan for overlap on this egress
+// event. When reassembly is enabled, it appends the normalized fragment to a
+// bounded per-(pid,destination) flow buffer and returns the concatenated window.
+func (e *Engine) egressCandidatePayload(state *model.SessionState, ev model.SyscallEvent) string {
+	if ev.Syscall == "openat" || ev.PayloadExcerpt == "" {
+		return ev.PayloadExcerpt
+	}
+	fragment := normalizedEgressFragment(ev)
+	if fragment == "" {
+		return ev.PayloadExcerpt
+	}
+	if !e.egressReassemblyEnabled {
+		return fragment
+	}
+	return e.appendEgressFlowFragment(state, ev, fragment)
+}
+
+func normalizedEgressFragment(ev model.SyscallEvent) string {
+	if ev.Syscall != "dns" {
+		return ev.PayloadExcerpt
+	}
+	// DNS exfil commonly puts payload bytes in the left-most label(s):
+	// "<frag>.exfil.evil.example". Reassemble on that fragment, not the whole
+	// query string, so repeated suffixes do not drown the signal.
+	q := strings.TrimSpace(strings.TrimSuffix(ev.PayloadExcerpt, "."))
+	if q == "" {
+		return ""
+	}
+	if i := strings.IndexByte(q, '.'); i > 0 {
+		return q[:i]
+	}
+	return q
+}
+
+func (e *Engine) appendEgressFlowFragment(state *model.SessionState, ev model.SyscallEvent, fragment string) string {
+	if state.EgressFlows == nil {
+		state.EgressFlows = make(map[string]*model.EgressFlowBuffer)
+	}
+	now := e.egressEventTime(ev)
+	e.pruneEgressFlows(state, now)
+
+	key, dest := e.egressFlowKey(ev)
+	flow, ok := state.EgressFlows[key]
+	if !ok {
+		e.enforceEgressFlowCap(state)
+		flow = &model.EgressFlowBuffer{
+			PID:         ev.PID,
+			Destination: dest,
+		}
+		state.EgressFlows[key] = flow
+	}
+
+	// Slow-trickle boundary: if the flow sat idle longer than the window,
+	// restart accumulation for this destination.
+	maxAge := e.egressFragmentMaxAge
+	if maxAge <= 0 {
+		maxAge = defaultEgressFragmentAge
+	}
+	if flow.LastAppendNS > 0 && now-flow.LastAppendNS > maxAge.Nanoseconds() {
+		flow.Chunks = nil
+	}
+	flow.LastAppendNS = now
+
+	maxBytes := e.egressFragmentMaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultEgressFragmentBytes
+	}
+	maxChunks := e.egressFragmentMaxChunks
+	if maxChunks <= 0 {
+		maxChunks = defaultEgressFragmentChunks
+	}
+
+	if len(fragment) > maxBytes {
+		fragment = fragment[len(fragment)-maxBytes:]
+	}
+	flow.Chunks = append(flow.Chunks, fragment)
+	for len(flow.Chunks) > maxChunks || fragmentBytes(flow.Chunks) > maxBytes {
+		if len(flow.Chunks) == 0 {
+			break
+		}
+		flow.Chunks = flow.Chunks[1:]
+	}
+
+	return strings.Join(flow.Chunks, "")
+}
+
+func (e *Engine) pruneEgressFlows(state *model.SessionState, now int64) {
+	if len(state.EgressFlows) == 0 {
+		return
+	}
+	maxAge := e.egressFragmentMaxAge
+	if maxAge <= 0 {
+		maxAge = defaultEgressFragmentAge
+	}
+	cutoff := now - maxAge.Nanoseconds()
+	for k, flow := range state.EgressFlows {
+		if flow == nil || flow.LastAppendNS < cutoff {
+			delete(state.EgressFlows, k)
+		}
+	}
+}
+
+func (e *Engine) enforceEgressFlowCap(state *model.SessionState) {
+	maxFlows := e.egressMaxFlows
+	if maxFlows <= 0 {
+		maxFlows = defaultEgressMaxFlows
+	}
+	if len(state.EgressFlows) < maxFlows {
+		return
+	}
+	var oldestKey string
+	oldest := int64(1<<63 - 1)
+	for k, flow := range state.EgressFlows {
+		ts := int64(0)
+		if flow != nil {
+			ts = flow.LastAppendNS
+		}
+		if ts < oldest {
+			oldest = ts
+			oldestKey = k
+		}
+	}
+	if oldestKey != "" {
+		delete(state.EgressFlows, oldestKey)
+	}
+}
+
+func (e *Engine) egressFlowKey(ev model.SyscallEvent) (key string, destination string) {
+	destination = fmt.Sprintf("%s:%d", ev.DestIP, ev.DestPort)
+	if ev.DestIP == "" && ev.DestPort == 0 {
+		destination = ev.Syscall
+	}
+	key = fmt.Sprintf("%d|%s", ev.PID, destination)
+	return key, destination
+}
+
+func (e *Engine) egressEventTime(ev model.SyscallEvent) int64 {
+	if ev.TSMono > 0 {
+		return ev.TSMono
+	}
+	return time.Now().UnixNano()
+}
+
+// attachChunksAll precomputes long-secret chunks for each tainted value using
+// the engine's configured chunk size / min-length thresholds.
+func (e *Engine) attachChunksAll(values []model.TaintedValue) {
+	n := e.chunkMatchBytes
+	minLen := e.chunkMatchMinLen
+	if n <= 0 {
+		n = defaultChunkMatchBytes
+	}
+	if minLen <= 0 {
+		minLen = defaultChunkMatchMinLen
+	}
+	for i := range values {
+		if len(values[i].Chunks) == 0 {
+			AttachChunks(&values[i], n, minLen)
+		}
+	}
 }
 
 // appendUniqueTainted returns values in candidates whose Hash is not already

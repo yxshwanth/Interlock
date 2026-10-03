@@ -8,7 +8,7 @@ import (
 )
 
 func TestEventLogger_DropBackpressure(t *testing.T) {
-	stats := &RuntimeStats{}
+	stats := &model.RuntimeStats{}
 	path := t.TempDir() + "/events.jsonl"
 	logger, err := NewEventLogger(path, config.LoggingConfig{
 		Backpressure: "drop",
