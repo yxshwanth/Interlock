@@ -7,18 +7,24 @@ import (
 	"testing"
 )
 
-// TestReadContainerFile_PathTraversalRejected pins the fix for finding #8:
-// a path crafted to walk past /proc/<pid>/root via ".." must be rejected
-// before ever being concatenated into a real filesystem read.
-func TestReadContainerFile_PathTraversalRejected(t *testing.T) {
-	cases := []string{
-		"/var/run/secrets/../../../../../etc/shadow",
-		"../../../../etc/passwd",
-		"/../etc/shadow",
+// TestReadContainerFile_PathTraversalContained pins the fix for finding #8:
+// a path crafted to walk past /proc/<pid>/root via ".." must be collapsed to
+// the container's own root, never resolved above it. Each traversal input must
+// behave identically to its cleaned, rooted equivalent (same content or same
+// error, which embeds the resolved path), so ".." has no effect.
+func TestReadContainerFile_PathTraversalContained(t *testing.T) {
+	cases := map[string]string{
+		"/var/run/secrets/../../../../../etc/shadow": "/etc/shadow",
+		"../../../../etc/passwd":                     "/etc/passwd",
+		"/../etc/shadow":                             "/etc/shadow",
 	}
-	for _, p := range cases {
-		if _, err := ReadContainerFile([]int{os.Getpid()}, p); err == nil {
-			t.Fatalf("expected traversal attempt %q to be rejected, got no error", p)
+	pids := []int{os.Getpid()}
+	for in, clean := range cases {
+		gotC, gotE := ReadContainerFile(pids, in)
+		wantC, wantE := ReadContainerFile(pids, clean)
+		if gotC != wantC || (gotE == nil) != (wantE == nil) || (gotE != nil && gotE.Error() != wantE.Error()) {
+			t.Fatalf("traversal %q not contained: got (%d bytes, %v), want same as %q (%d bytes, %v)",
+				in, len(gotC), gotE, clean, len(wantC), wantE)
 		}
 	}
 }
