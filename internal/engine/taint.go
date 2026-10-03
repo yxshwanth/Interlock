@@ -97,7 +97,41 @@ func RedactJSON(raw json.RawMessage, tainted []model.TaintedValue) json.RawMessa
 	if len(raw) == 0 || len(tainted) == 0 {
 		return raw
 	}
-	s := string(raw)
+	// Structured path: parse, redact string leaves, remarshal. This avoids
+	// string surgery on raw JSON bytes — a secret spanning a `\"` escape, or
+	// a preview containing a quote/backslash, previously emitted malformed
+	// JSON straight into evidence.jsonl / events.jsonl.
+	var v any
+	if err := json.Unmarshal(raw, &v); err == nil {
+		redactJSONValue(&v, tainted)
+		if out, err := json.Marshal(v); err == nil {
+			return json.RawMessage(out)
+		}
+	}
+	// Fallback: raw isn't valid JSON at all (e.g. an eBPF payload excerpt —
+	// arbitrary captured bytes — passed in as json.RawMessage by callers
+	// that only want it stored as a string field afterward). There's no
+	// JSON structure to walk, so fall back to byte-level replacement.
+	return redactPlainString(raw, tainted)
+}
+
+func redactJSONValue(v *any, tainted []model.TaintedValue) {
+	switch val := (*v).(type) {
+	case string:
+		*v = redactString(val, tainted)
+	case []any:
+		for i := range val {
+			redactJSONValue(&val[i], tainted)
+		}
+	case map[string]any:
+		for k, item := range val {
+			redactJSONValue(&item, tainted)
+			val[k] = item
+		}
+	}
+}
+
+func redactString(s string, tainted []model.TaintedValue) string {
 	for _, tv := range tainted {
 		if tv.Value == "" {
 			continue
@@ -109,5 +143,9 @@ func RedactJSON(raw json.RawMessage, tainted []model.TaintedValue) json.RawMessa
 			}
 		}
 	}
-	return json.RawMessage(s)
+	return s
+}
+
+func redactPlainString(raw json.RawMessage, tainted []model.TaintedValue) json.RawMessage {
+	return json.RawMessage(redactString(string(raw), tainted))
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/yxshwanth/Interlock/internal/model"
@@ -62,13 +63,20 @@ func ValidateAccept(r *http.Request) error {
 }
 
 // ValidateOrigin rejects invalid Origin headers (DNS rebinding mitigation).
+// Compares the Origin's hostname exactly against allowedHosts — never a
+// substring match, which a crafted hostname (e.g. localhost.evil.example.com)
+// or an empty allowed-host entry (e.g. from an unset bind host) can defeat.
 func ValidateOrigin(r *http.Request, allowedHosts []string) error {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return nil
 	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Hostname() == "" {
+		return fmt.Errorf("invalid Origin: %s", origin)
+	}
 	for _, h := range allowedHosts {
-		if strings.Contains(origin, h) {
+		if h != "" && u.Hostname() == h {
 			return nil
 		}
 	}

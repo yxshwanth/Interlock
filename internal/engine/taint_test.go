@@ -200,6 +200,39 @@ func TestRedactJSON_EncodedVariants(t *testing.T) {
 	}
 }
 
+// TestRedactJSON_QuoteInSecretStaysValidJSON pins the fix for finding #15:
+// the old string-surgery ReplaceAll over raw JSON bytes could emit malformed
+// JSON when a secret's replacement text landed across an escape boundary.
+// Redaction must always remarshal to valid JSON.
+func TestRedactJSON_QuoteInSecretStaysValidJSON(t *testing.T) {
+	tainted := []model.TaintedValue{{
+		Value:   `sk-live-secret"withquote`,
+		Preview: `p"review\with\backslash`,
+	}}
+	raw := json.RawMessage(`{"body":"prefix ` + `sk-live-secret\"withquote` + ` suffix"}`)
+	redacted := RedactJSON(raw, tainted)
+
+	var v any
+	if err := json.Unmarshal(redacted, &v); err != nil {
+		t.Fatalf("RedactJSON produced invalid JSON: %v\noutput: %s", err, redacted)
+	}
+	if strings.Contains(string(redacted), "sk-live-secret") {
+		t.Fatalf("secret not redacted: %s", redacted)
+	}
+}
+
+// TestRedactJSON_NonJSONPayloadFallsBack pins the fallback path used by the
+// eBPF payload-excerpt call site, which passes arbitrary non-JSON bytes into
+// RedactJSON as a json.RawMessage.
+func TestRedactJSON_NonJSONPayloadFallsBack(t *testing.T) {
+	tainted := []model.TaintedValue{{Value: "topsecret", Preview: "[REDACTED]"}}
+	raw := json.RawMessage("POST /x HTTP/1.1\r\n\r\ntopsecret-body")
+	redacted := RedactJSON(raw, tainted)
+	if strings.Contains(string(redacted), "topsecret") {
+		t.Fatalf("secret not redacted in non-JSON fallback path: %s", redacted)
+	}
+}
+
 func TestExtractTaintedValues_PEMPrivateKey(t *testing.T) {
 	// The regex anchors on BEGIN/END and stops at the END line itself — a
 	// trailing newline after "-----END...KEY-----" (as real PEM files have)

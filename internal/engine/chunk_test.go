@@ -104,6 +104,34 @@ func TestCheckOverlap_PEMHeaderAlone_NoChunkExfil(t *testing.T) {
 	}
 }
 
+// TestContiguousChunks_LowEntropyDividerNotMinted pins the fix for the
+// confirmed benign-input -> false EXFIL -> SIGKILL bug from the adversarial
+// security review (finding #10/#19): a config-file comment divider is
+// low-entropy and must never become a matchable chunk.
+func TestContiguousChunks_LowEntropyDividerNotMinted(t *testing.T) {
+	value := strings.Repeat("#", 80) // single-character run, 0 bits/byte entropy
+	chunks := ContiguousChunks(value, 32, 64)
+	if len(chunks) != 0 {
+		t.Fatalf("expected 0 chunks minted from a low-entropy divider, got %d: %+v", len(chunks), chunks)
+	}
+}
+
+// TestCheckOverlap_LowEntropyDividerNoExfil reproduces the exact confirmed
+// exploit: a "config file" whose body contains a 32x'#' divider must not
+// register that divider as taint that trips EXFIL on unrelated egress
+// containing the same ordinary comment divider.
+func TestCheckOverlap_LowEntropyDividerNoExfil(t *testing.T) {
+	configFile := "app_config:\n" + strings.Repeat("#", 80) + "\nkey: value"
+	tv := model.TaintedValue{Value: configFile, Hash: "h-config", Preview: "p"}
+	AttachChunks(&tv, 32, 64)
+
+	unrelatedEgress := "log: " + strings.Repeat("#", 37) + " done"
+	hit := CheckOverlap([]model.TaintedValue{tv}, json.RawMessage(`{"body":`+mustJSONString(unrelatedEgress)+`}`))
+	if hit != nil {
+		t.Fatalf("low-entropy divider must not chunk-EXFIL against unrelated egress, got %+v", hit)
+	}
+}
+
 func TestCheckOverlapPayload_PEMChunkInTruncatedExcerpt(t *testing.T) {
 	pem := "-----BEGIN PRIVATE KEY-----\n" +
 		strings.Repeat("MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n", 26) +

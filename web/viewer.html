@@ -461,7 +461,7 @@
           var kindCls = 'tl-kind' + (isSyscall ? ' tl-kind-syscall' : '');
           html += '<span class="' + kindCls + '">[' + esc(item.kind) + ']</span>';
         }
-        if (item.ref) html += '<span class="tl-ref">#' + item.ref + '</span>';
+        if (item.ref) html += '<span class="tl-ref">#' + esc(String(item.ref)) + '</span>';
         html += '</div>';
       }
     } else {

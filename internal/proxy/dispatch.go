@@ -261,7 +261,17 @@ func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []b
 	}
 
 	if p.engine != nil && ev.ToolName != "" {
-		p.engine.IngestResult(ev)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					p.log.Printf("[SECURITY] engine panic during IngestResult — FAIL-OPEN for this result, notifying fail-closed breaker: %v", r)
+					if p.onEnginePanic != nil {
+						p.onEnginePanic(r)
+					}
+				}
+			}()
+			p.engine.IngestResult(ev)
+		}()
 		if p.engine.VaultEnabled() {
 			frame = p.engine.VaultRewriteFrame(ev.SessionID, frame)
 		}
@@ -276,6 +286,11 @@ func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []b
 			select {
 			case ch <- frame:
 				return
+			default:
+				// Waiter already got a response for this id (or timed out and
+				// was removed) and won't drain a second one — fall through to
+				// the agent writer instead of blocking this reader goroutine
+				// forever on a full, unread channel.
 			}
 		}
 	}
