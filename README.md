@@ -16,7 +16,7 @@
   <a href="https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml"><img src="https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/yxshwanth/Interlock/releases"><img src="https://img.shields.io/github/v/release/yxshwanth/Interlock" alt="Release"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/yxshwanth/Interlock" alt="MIT"/></a>
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white" alt="Go 1.25+"/></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go 1.26+"/></a>
   <a href="internal/ebpf/bpf/connect.c"><img src="https://img.shields.io/badge/eBPF-cilium--ebpf-111111?logo=linux&logoColor=white" alt="eBPF"/></a>
   <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http"><img src="https://img.shields.io/badge/MCP-Streamable%20HTTP-5A67D8" alt="MCP"/></a>
   <a href="#bring-it-up"><img src="https://img.shields.io/badge/platform-Linux%20%2B%20BTF-FCC624?logo=linux&logoColor=black" alt="Linux + BTF"/></a>
@@ -354,7 +354,7 @@ These are the consequential choices baked into the codebase. Each traded somethi
 
 ## Bring it up
 
-**Need:** Go 1.25+, and for the kernel plane, Linux with BTF (`ls /sys/kernel/btf/vmlinux` should succeed — Ubuntu 6.x works). The eBPF path does not build or run on macOS or Windows.
+**Need:** Go 1.26+, and for the kernel plane, Linux with BTF (`ls /sys/kernel/btf/vmlinux` should succeed — Ubuntu 6.x works). The eBPF path does not build or run on macOS or Windows.
 
 ```bash
 git clone https://github.com/yxshwanth/Interlock.git

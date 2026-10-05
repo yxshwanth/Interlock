@@ -4,8 +4,8 @@
 # Build:  docker build -f deploy/build/Dockerfile.bpf -t interlock-bpf-builder .
 # Regen:  make bpf-generate
 #
-# Base: golang:1.25 (matches go.mod) + Debian clang/llvm/libbpf-dev.
-FROM golang:1.25-bookworm
+# Base: golang:1.26 (matches go.mod) + Debian clang/llvm/libbpf-dev.
+FROM golang:1.26-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	clang \

@@ -19,7 +19,7 @@ Tag verification: [`SECURITY.md`](../SECURITY.md).
 | `connect_x86_bpfel.o` (+ `.go` embed) | Committed in-tree; regen via `make bpf-generate` | Bit-identical across hosts only when using the **pinned BPF builder** image; host clang/header drift is expected |
 
 Container images (`make image`) use the same `-trimpath` / `CGO_ENABLED=0` /
-version ldflags as release binaries. Pinning `golang:1.25` / `debian:bookworm-slim`
+version ldflags as release binaries. Pinning `golang:1.26` / `debian:bookworm-slim`
 **by digest** is recommended for operator hardening but not required by the Makefile.
 
 ---
@@ -90,7 +90,7 @@ make bpf-generate
 ```
 
 Builder: [`deploy/build/Dockerfile.bpf`](../deploy/build/Dockerfile.bpf) —
-`golang:1.25-bookworm` + Debian `clang` / `llvm` / `libbpf-dev`.
+`golang:1.26-bookworm` + Debian `clang` / `llvm` / `libbpf-dev`.
 
 Generate directive: [`internal/ebpf/generate.go`](../internal/ebpf/generate.go)
 (`-Ibpf` only; libbpf headers from the image’s `/usr/include`).
