@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Build
         run: go build ./...
@@ -48,7 +48,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Build (server binaries for integration tests)
         run: make build

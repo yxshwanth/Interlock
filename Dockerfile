@@ -2,7 +2,7 @@
 # Build: make image
 # Release-aligned flags: CGO_ENABLED=0, -trimpath, version ldflags (see docs/reproducible_builds.md).
 ARG VERSION=dev
-FROM golang:1.25 AS build
+FROM golang:1.26 AS build
 ARG VERSION
 WORKDIR /src
 COPY go.mod go.sum ./
