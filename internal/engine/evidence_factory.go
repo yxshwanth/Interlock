@@ -59,7 +59,7 @@ func writeStandaloneEvidence(dir string, rec model.EvidenceRecord) error {
 		return fmt.Errorf("marshaling evidence JSON: %w", err)
 	}
 	standalone := filepath.Join(dir, "evidence.json")
-	if err := os.WriteFile(standalone, data, 0644); err != nil {
+	if err := os.WriteFile(standalone, data, 0600); err != nil {
 		return fmt.Errorf("writing evidence.json: %w", err)
 	}
 	return nil

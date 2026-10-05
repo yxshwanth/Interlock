@@ -62,6 +62,7 @@ Companion SoTs (do not duplicate their prose here):
 | ID | Title | Status | Tier |
 |---|---|---|---|
 | §21 | Protocol-aware egress parsers | `Named` | 3 |
+| §23 | Live evidence tailing (SSE) | `Named` | 2 |
 
 ---
 
@@ -78,6 +79,18 @@ Companion SoTs (do not duplicate their prose here):
 | **Done when (documentation)** | Named boundary in ROADMAP + detection_boundary + architecture §13; CVE pin still Missed; **no engine code until demand**. |
 | **Gate** | Build only if a deployment shows that MCP family in production. |
 | **Links** | Pin `cve_2025_68143_mcp_git_push_wire_protocol_gap`; flat zlib/ZIP on ToolArgs/PayloadExcerpt already closed (§20). |
+
+§23 stays Named until someone wants live monitoring over post-hoc file/CLI review.
+
+### §23 — Live evidence tailing (SSE) `Named`
+
+| | |
+|---|---|
+| **Tier** | 2 |
+| **Goal** | Stream sealed `EvidenceRecord`s to `viewer.html` in real time via SSE, using the existing `EvidenceEmitObserver` hook — no new sink, no new listener, no client library. |
+| **Done when (documentation)** | Named design in ROADMAP + [`live_evidence_tailing.md`](live_evidence_tailing.md); **no engine code until demand**. |
+| **Gate** | Build only if a deployment wants to watch verdicts arrive live rather than reviewing files/CLI after the fact. |
+| **Links** | [`live_evidence_tailing.md`](live_evidence_tailing.md) (full design + wiring sketch); hooks `engine.EvidenceEmitObserver` / `AsyncEvidenceSink.SetEmitObserver`, `internal/observability/server.go`, `web/viewer.html`. |
 
 ---
 

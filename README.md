@@ -16,7 +16,7 @@
   <a href="https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml"><img src="https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/yxshwanth/Interlock/releases"><img src="https://img.shields.io/github/v/release/yxshwanth/Interlock" alt="Release"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/yxshwanth/Interlock" alt="MIT"/></a>
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white" alt="Go 1.25+"/></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go 1.26+"/></a>
   <a href="internal/ebpf/bpf/connect.c"><img src="https://img.shields.io/badge/eBPF-cilium--ebpf-111111?logo=linux&logoColor=white" alt="eBPF"/></a>
   <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http"><img src="https://img.shields.io/badge/MCP-Streamable%20HTTP-5A67D8" alt="MCP"/></a>
   <a href="#bring-it-up"><img src="https://img.shields.io/badge/platform-Linux%20%2B%20BTF-FCC624?logo=linux&logoColor=black" alt="Linux + BTF"/></a>
@@ -73,7 +73,7 @@ The second row is the one that means anything. A perfect score against scenarios
 - [Bring it up](#bring-it-up)
 - [Kubernetes](#kubernetes)
 - [Configuration](#configuration)
-- [Metrics and measurements](#metrics-and-measurements)
+- [Measured](#measured)
 - [Assumptions and biases](#assumptions-and-biases)
 - [Where it fails](#where-it-fails)
 - [Map of the repo](#map-of-the-repo)
@@ -354,7 +354,7 @@ These are the consequential choices baked into the codebase. Each traded somethi
 
 ## Bring it up
 
-**Need:** Go 1.25+, and for the kernel plane, Linux with BTF (`ls /sys/kernel/btf/vmlinux` should succeed — Ubuntu 6.x works). The eBPF path does not build or run on macOS or Windows.
+**Need:** Go 1.26+, and for the kernel plane, Linux with BTF (`ls /sys/kernel/btf/vmlinux` should succeed — Ubuntu 6.x works). The eBPF path does not build or run on macOS or Windows.
 
 ```bash
 git clone https://github.com/yxshwanth/Interlock.git
@@ -464,11 +464,9 @@ For Streamable HTTP, swap the transport block — set `transport.mode: http` and
 
 ---
 
-## Metrics and measurements
+## Measured
 
-### Detection rates
-
-**On 75 scenarios** ([`docs/fp_corpus.md`](docs/fp_corpus.md)) — 38 malicious, 37 benign, driven straight through `internal/engine` with no kernel and no network:
+**Detection, on 75 scenarios** ([`docs/fp_corpus.md`](docs/fp_corpus.md)) — 38 malicious, 37 benign, driven straight through `internal/engine` with no kernel and no network:
 
 | Metric | Value |
 | --- | --- |
@@ -488,37 +486,22 @@ The 18.9% is the honest number to look at, and it is 18.9% of *evidence lines*, 
 
 Building that corpus found two live bugs, both since fixed, and one of them changed a number the FP corpus had already published. That correction is disclosed in the document rather than quietly absorbed.
 
-### Overhead
-
-The quotable figure is the engine delta — Interlock on versus the identical HTTP stack with the engine nil. Absolute end-to-end latency is dominated by your backend and says nothing about this project:
+**Overhead.** The quotable figure is the engine delta — Interlock on versus the identical HTTP stack with the engine nil. Absolute end-to-end latency is dominated by your backend and says nothing about this project:
 
 | Path | Engine on | Passthrough | Interlock's cost |
 | --- | ---: | ---: | ---: |
-| `read_ticket` (sensitive source, 2 secrets) | 936 us | 400 us | **~536 us** |
-| `send_message` (sink check, benign) | 492 us | 374 us | **~118 us** |
+| `read_ticket` (sensitive source, 2 secrets) | 936 µs | 400 µs | **~536 µs** |
+| `send_message` (sink check, benign) | 492 µs | 374 µs | **~118 µs** |
 
 Sub-millisecond, and backwards from intuition: the **read** path costs more than the **sink** path even though the sink path runs the full trifecta plus overlap. Taint ingestion is the expensive step; checking overlap against an already-registered set is ~70 ns. Steady-state agent traffic is mostly reads, so the higher number is the one to plan with.
 
-**And it does not hold for keyfiles.** Those figures are measured on ~40-byte token-shaped secrets. A PEM-shaped private key registers as one ~1.7–3.2 KB tainted value, and the reassembly path re-scans the joined FIFO on every sensitive read — `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` lands at **~4.1–4.3 ms/op**, roughly **12x** the token baseline, reached within about 16 reads. If your agent reads private keys in a loop, budget for that, not for the headline. Full methodology and the numbers this section deliberately does not quote: [`docs/performance.md`](docs/performance.md).
+**And it does not hold for keyfiles.** Those figures are measured on ~40-byte token-shaped secrets. A PEM-shaped private key registers as one ~1.7–3.2 KB tainted value, and the reassembly path re-scans the joined FIFO on every sensitive read — `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` lands at **~4.1–4.3 ms/op**, roughly **12×** the token baseline, reached within about 16 reads. If your agent reads private keys in a loop, budget for that, not for the headline. Full methodology and the numbers this section deliberately does not quote: [`docs/performance.md`](docs/performance.md).
 
 Live production numbers come from Prometheus rather than benchmarks — scrape `interlock_*` from `observability.listen`.
 
 ```bash
 make bench && make bench-http && make fp-corpus && make cve-corpus
 ```
-
-### Codebase
-
-| Metric | Value |
-| --- | --- |
-| Production Go | 18,378 lines across 93 files |
-| Test Go | 11,075 lines across 65 files (0.60 test-to-production ratio) |
-| Test functions | 345, plus 16 benchmarks |
-| KnownGap pins | 11 (tests that assert what Interlock does *not* catch) |
-| Internal packages | 14 (`engine`, `proxy`, `ebpf`, `config`, `bridge`, `k8s`, `corpus`, `model`, `siem`, `alerting`, `observability`, `failclosed`, `reload`, `mcpserver`) |
-| Direct dependencies | 11 (cilium/ebpf, prometheus, k8s client-go, sqlite, yaml, brotli, lz4, zstd, sys) |
-| Documentation | 3,135 lines across 13 files |
-| CI | `go test`, `go vet`, race detector, benchmark smoke, HTTP overhead smoke |
 
 ---
 
@@ -580,33 +563,24 @@ Interlock/
 │   ├── ebpf-test/          probe smoke test, root required
 │   └── k8s-exfil-demo/     in-cluster attack workload
 ├── internal/
-│   ├── engine/             taint, 13 encodings, decoder, overlap, containers,
-│   │                       vault, evidence chain, async emit  (41 files, core)
 │   ├── proxy/              framing, dispatch, spawn pinning, netns sandbox
 │   │   └── http/           Streamable HTTP, SSE, overhead harness
+│   ├── engine/             taint, 13 encodings, decoder, overlap, containers,
+│   │                       vault, evidence chain, async emit
 │   ├── ebpf/               CO-RE loader, dual ringbufs, LSM, capability drop
 │   │   └── bpf/            connect.c — the probes, read them
 │   ├── corpus/             benign, malicious, and CVE scenario suites
-│   ├── config/             YAML config, validation, spawn policy
 │   ├── bridge/             taint bridge, SO_PEERCRED peer auth
 │   ├── k8s/                cgroup and pod attribution, watcher
-│   ├── model/              shared types: events, verdicts, trifecta state
 │   ├── failclosed/         breaker for when the sensor cannot be trusted
 │   ├── siem/               OCSF and CEF output
-│   ├── alerting/           webhooks and PagerDuty
+│   ├── alerting/           webhooks
 │   ├── observability/      Prometheus metrics and health
-│   ├── reload/             SIGHUP config reload coordinator
-│   └── mcpserver/          lightweight MCP server for demo servers
+│   └── reload/             SIGHUP config reload
 ├── servers/                tickets · messenger · exfil — the demo cast
-├── deploy/
-│   ├── k8s/                daemonsets, RBAC, capabilities, EKS/GKE setup
-│   ├── ec2/                dev VM bootstrap and teardown
-│   └── build/              Dockerfile.bpf for BPF code generation
-├── docs/                   INTERLOCK.md (definitive ref), architecture, threat
-│                           model, detection boundary, performance, corpora
+├── deploy/                 k8s (EKS/GKE), systemd, EC2, container builds
 ├── web/viewer.html         the receipt, read-only, offline
-├── Dockerfile              runtime container (proxy + sensor)
-└── Makefile                build, test, bench, corpus, demo, release
+└── docs/INTERLOCK.md       the definitive reference
 ```
 
 ---
@@ -634,22 +608,10 @@ Shipped: Streamable HTTP with multi-session concurrency and `(pid, start_time)` 
 
 Next, per [`docs/ROADMAP.md`](docs/ROADMAP.md): protocol-aware egress parsers remain demand-gated at §21.
 
-- [x] Three-pass proof of concept (STDIO proxy, eBPF sensor, demo)
-- [x] Encoding-aware overlap (13 forms, depth-5 decoder, fragment reassembly)
-- [x] Streamable HTTP transport with multi-session concurrency
-- [x] Evidence hash chain with tamper verification
-- [x] Opt-in vault, netns sandbox, spawn pinning
-- [x] Dual ring buffers, LSM quarantine, fail-closed breaker
-- [x] K8s DaemonSet with SO_PEERCRED taint bridge
-- [x] OCSF/CEF SIEM export, webhook alerting, Prometheus metrics
-- [x] FP corpus (75 scenarios) and CVE corpus (7 families, 15 reconstructions)
-- [x] Entropy-dark measurement layer (dark-launch, no enforcement)
-- [x] Capability-first container security context
-- [ ] Protocol-aware egress parsers (demand-gated)
-
 ---
 
 ## Further reading
+
 
 | Document | When to open it |
 | --- | --- |

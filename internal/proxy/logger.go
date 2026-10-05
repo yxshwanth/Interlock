@@ -38,7 +38,7 @@ func NewEventLogger(path string, logCfg config.LoggingConfig, stats *model.Runti
 		l.backpressure = "block"
 	}
 	if path != "" {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
 			return nil, fmt.Errorf("opening log file %s: %w", path, err)
 		}
