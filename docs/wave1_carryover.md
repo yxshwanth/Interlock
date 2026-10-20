@@ -5,8 +5,8 @@ Items Wave 0 could not finish on a dev laptop, plus follow-ups its checks surfac
 ## Needs infrastructure or history
 
 - [ ] **Kernel replay never run.** Run `REQUIRE_KERNEL=1 scripts/verify-all.sh` on the `deploy/ec2` VM (root + BTF) and record the result and skipped-test count in `docs/baseline_wave0.md`. Do this before touching §24. Also run on kernel 6.1 and the current Ubuntu LTS (verifier acceptance differs).
-- [ ] **Dashboard of the last 30 CI runs** (§29). Needs CI history; build once the gate has run on main for a while.
-- [ ] **PR-tier p90 under 15 minutes** (§80). Measure over real CI runs; only the laptop figure (about 86 s for `go test ./...`) exists.
+- [x] **Dashboard of the last 30 CI runs** (§29): `scripts/ci-dashboard.sh` writes `docs/ci_dashboard.md`.
+- [x] **PR-tier p90 under 15 minutes** (§80): p90 is 149 s over the last 30 runs (`docs/ci_dashboard.md`). It predates the coverage, govulncheck and gitleaks steps, so re-run the script after they have run a few times.
 - [ ] **Re-derive benchmark ceilings on the CI runner or the VM.** `docs/budgets.json` ceilings are 2x the worst of repeated laptop runs; they are not tight and are not comparable across machines.
 - [ ] **Rust workspace `license` field** (§30). Do when the workspace is created (Wave 3).
 
