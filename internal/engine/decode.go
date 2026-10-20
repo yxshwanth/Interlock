@@ -16,8 +16,14 @@ import (
 )
 
 const (
-	maxDecodeBytes     = 8 * 1024
-	minDecodeCandidate = 4
+	// maxDecodeBytes caps a decoded layer that may be unwrapped again.
+	maxDecodeBytes = 8 * 1024
+	// maxDecodeInputBytes caps a candidate and a decoded layer that is only
+	// matched. Larger than maxDecodeBytes so padding a secret past 8 KiB in
+	// one layer does not skip the match (review #18); work stays bounded
+	// because only layers <= maxDecodeBytes recurse.
+	maxDecodeInputBytes = 64 * 1024
+	minDecodeCandidate  = 4
 )
 
 // DefaultMaxDecodeDepth is the recursive decoder default budget (ROADMAP §15).
@@ -63,7 +69,7 @@ func checkOverlapDecoded(tainted []model.TaintedValue, candidates []string) *mod
 		return nil
 	}
 	for _, c := range candidates {
-		if len(c) < minDecodeCandidate || len(c) > maxDecodeBytes {
+		if len(c) < minDecodeCandidate || len(c) > maxDecodeInputBytes {
 			continue
 		}
 		if hit := decodeMatchCandidates(c, tainted, nil, 0); hit != nil {
@@ -74,7 +80,7 @@ func checkOverlapDecoded(tainted []model.TaintedValue, candidates []string) *mod
 }
 
 func decodeMatchCandidates(s string, tainted []model.TaintedValue, path []string, depth int) *model.OverlapHit {
-	if depth >= CurrentMaxDecodeDepth() || s == "" || len(s) > maxDecodeBytes {
+	if depth >= CurrentMaxDecodeDepth() || s == "" || len(s) > maxDecodeInputBytes {
 		return nil
 	}
 
@@ -92,7 +98,7 @@ func decodeMatchCandidates(s string, tainted []model.TaintedValue, path []string
 	}
 
 	for _, a := range attempts {
-		if a.decoded == "" || len(a.decoded) > maxDecodeBytes {
+		if a.decoded == "" || len(a.decoded) > maxDecodeInputBytes {
 			continue
 		}
 		newPath := append(append([]string(nil), path...), a.layer)

@@ -104,17 +104,26 @@ func looksLikePathValue(key, val string) bool {
 	return false
 }
 
+// maxPathTaintBytes caps a whole-file taint value (review #9). The head is
+// kept, so exfil of the whole file still matches the literal; a slice taken
+// only from past the cap does not.
+const maxPathTaintBytes = 64 * 1024
+
 // TaintPathDrivenContent registers the entire content blob as tainted when a
 // sensitive resource path was read. Used when secretPatterns find nothing.
+// Variants are left for Engine.addTainted, which computes them only for
+// values not already registered.
 func TaintPathDrivenContent(content, path, source string, seq uint64) []model.TaintedValue {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil
 	}
+	if len(content) > maxPathTaintBytes {
+		content = content[:maxPathTaintBytes]
+	}
 	now := time.Now().UnixNano()
 	return []model.TaintedValue{{
 		Value:        content,
-		Variants:     CanonicalEncodings(content),
 		Hash:         HashValue(content),
 		Preview:      MaskValue(content),
 		Source:       source + " (path:" + path + ")",

@@ -384,6 +384,34 @@ func TestCheckOverlap_Depth4_ConfigGated(t *testing.T) {
 	}
 }
 
+// Review #18: padding the secret with >8 KiB of filler inside one base64
+// layer must not skip the decoder.
+func TestCheckOverlapPayload_LargeFirstDecodeLayer(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	payload := base64.StdEncoding.EncodeToString([]byte(secret + strings.Repeat("filler ", 12*1024/7)))
+	if hit := CheckOverlapPayload(tainted, payload); hit == nil {
+		t.Fatal("secret inside a >8 KiB first decode layer must match")
+	}
+}
+
+// Only the first decode layer may be large: a decoded layer over 8 KiB is
+// matched but not unwrapped further, so a second encoding around the padded
+// secret still hides it.
+func TestCheckOverlapPayload_LargeNestedDecodeLayer_KnownGap(t *testing.T) {
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	tainted := []model.TaintedValue{
+		{Value: secret, Variants: CanonicalEncodings(secret), Hash: HashValue(secret), Preview: MaskValue(secret)},
+	}
+	inner := base64.StdEncoding.EncodeToString([]byte(secret + strings.Repeat("filler ", 12*1024/7)))
+	payload := base64.StdEncoding.EncodeToString([]byte(inner))
+	if hit := CheckOverlapPayload(tainted, payload); hit != nil {
+		t.Fatal("large nested layer now caught: gap closed, flip this pin")
+	}
+}
+
 func TestCheckOverlap_DecodeInvalidBase64_NoFalseHit(t *testing.T) {
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	tainted := []model.TaintedValue{
