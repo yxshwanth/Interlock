@@ -37,3 +37,16 @@ Checked each finding in [`security_review.md`](security_review.md) against the t
 - §26: only 20 is left, as a fail-closed change.
 - 16–18, 21, 22 need triage: pin as `KnownGap` or schedule.
 - Not yet checked: whether each "Fixed" item has a regression test that fails without the fix.
+
+## Tier 4 (README outruns the code) — docs audit, Wave 1 worker D
+
+Checked at `cbdf3b4`; full claim table in [`audit_wave1_readme.md`](audit_wave1_readme.md).
+
+| Tier 4 item | Status | Evidence |
+|---|---|---|
+| Overlap computed only for `external_sink`-tagged tools | **Docs fixed** (README "What counts as proof") | `engine.go:344-345` |
+| brotli/zstd/lz4 forms are byte-exact, demo-grade | **Docs fixed** (README, `detection_boundary.md`, `threat_model.md` T6); code unchanged | `encoding.go:66-72`, `decode.go:85-91` |
+| Hash chain unkeyed; head truncation verifies clean | **Docs fixed** (README, T5, `INTERLOCK.md` §11); code unchanged | `evidence_chain.go:50-79` |
+| HTTP transport is an unauthenticated tool-execution endpoint | **Docs fixed** (README gap 7); optional `transport.bearer_token` exists but is off by default | `transport.go:88`, `config.go:29` |
+
+Also corrected: `threat_model.md` T6 no longer lists `sendmsg`/`writev` as closed (#3) or `sandbox.netns` as closing egress against a privileged child (#7); T7 added for #7. README HTTP overhead and PEM ratio were stale (re-measured, see audit R38/R39); test count 345 → 352. Every doc statement about an open finding says so and links here. **These docs must be re-checked after the Wave 1 merge.**

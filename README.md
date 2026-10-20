@@ -44,9 +44,11 @@ What gets defended is the last step. A secret was read. Time passed. Now somethi
 | --- | --- | --- |
 | **What it means** | tainted bytes appear in the outgoing payload | the session looks wrong, nothing concrete left |
 | **Verdict** | `EXFIL`, 0.95 | `SUSPICIOUS`, 0.60 |
-| **What happens** | blocked, or the process is killed | evidence written, call allowed |
+| **What happens** | blocked (proxy, block mode), or the process is killed (kernel plane, any mode) | evidence written, call allowed |
 
-That split is the whole design. Soft signals never hard-block, so a nervous heuristic cannot take down your agent. Hard proof always does something.
+That split is the whole design. Soft signals never hard-block, so a nervous heuristic cannot take down your agent. Hard proof does something in block mode; in `enforcement: monitor` the proxy forwards it and only the kernel plane still kills.
+
+> **Audit status (Wave 1).** An external review ([`docs/security_review.md`](docs/security_review.md)) found evasions in the kernel plane and gaps in reassembly, decoding, privilege separation and the egress allowlist. Most are still open on this tree; [`docs/security_review_status.md`](docs/security_review_status.md) tracks each one, and this README names them where they apply. This page must be re-checked after the Wave 1 fixes merge.
 
 If you have two minutes, read [the attack](#the-attack-in-three-passes). If you have ten, read [what counts as proof](#what-counts-as-proof) and [where it fails](#where-it-fails). If you want the full mechanism, [`docs/INTERLOCK.md`](docs/INTERLOCK.md) is the definitive reference and this page is the landing strip.
 
@@ -57,7 +59,7 @@ If you have two minutes, read [the attack](#the-attack-in-three-passes). If you 
 | Self-authored, 75 scenarios | EXFIL-tier detection **100%** (31/31) · any-trip false positive **18.9%** (7/37, all soft) · EXFIL-tier false positive **0%** |
 | CVE reconstructions | **12/15** genuine reconstructions reach `EXFIL` · **7/7** families have an EXFIL-shaped catch |
 
-The second row is the one that means anything. A perfect score against scenarios written by the person who built the detector is close to uninformative — [`docs/cve_corpus.md`](docs/cve_corpus.md) says so in its own opening paragraph and then goes and reconstructs seven independently disclosed MCP CVEs instead.
+The second row is the one that means anything. A perfect score against scenarios written by the person who built the detector is close to uninformative — [`docs/cve_corpus.md`](docs/cve_corpus.md) says so in its own opening paragraph and then goes and reconstructs seven families of independently disclosed MCP CVEs (16 scenarios) instead.
 
 ---
 
@@ -162,6 +164,8 @@ exfil process KILLED. channel severed.
 
 This is real payload proof, not a tripwire, and the verdict is `EXFIL` at 0.95 — the same confidence the proxy gets. What differs is the **action**, and only because of physics: `connect()` carries no payload, so the first EXFIL-bearing packet is always contained after the fact rather than prevented before it. See [where it fails](#where-it-fails) for what that costs you and the two ways to close it.
 
+The demo's exfil server writes with Go's `conn.Write`, which is the probe path that works. An attacker who reads [`connect.c`](internal/ebpf/bpf/connect.c) has cheaper paths the demo does not exercise; see [where it fails](#where-it-fails), item 10.
+
 ---
 
 ## Two planes, asymmetric on purpose
@@ -196,7 +200,7 @@ Two planes watch the same session and are blind in opposite directions. Neither 
 
 | | Variant A — MCP proxy (`A_chained_tool`) | Variant B — eBPF sensor (`B_server_channel`) |
 | --- | --- | --- |
-| **Sees** | JSON-RPC tool arguments and results; can hold a call before forwarding | `connect` · `write` · `writev` · `sendto` · `sendmsg` · DNS on 53 · `openat`, for filtered PIDs and cgroups |
+| **Sees** | JSON-RPC tool arguments and results; can hold a call before forwarding | `connect` · `write` · `writev` · `sendto` · `sendmsg` · DNS on 53 · `openat`, for filtered PIDs and cgroups. Payload probes skip fds 0–2, capture only the first iovec of `writev`/`sendmsg`, and drop `sendto` with no address (`send()`); `sendmmsg`/`pwrite` are not probed (open review findings 1–3) |
 | **Blind to** | raw sockets opened by a server process | MCP tags and semantics; untrusted excerpts, unless the [taint bridge](deploy/k8s/PRIVILEGE.md) supplies them |
 | **On proof** | overlap in sink args → `prevented` | payload overlap → `contained_by_kill`; opt-in LSM then denies *repeat* `connect()` as `prevented` |
 | **On suspicion** | AllLit plus content-bind → `allowed_monitor` | same soft gates → `detected_only` |
@@ -207,7 +211,7 @@ Payload capture defaults to **1024 bytes**, the compiled `PAYLOAD_MAX`. Events a
 
 | Deployment | The side channel is |
 | --- | --- |
-| Proxy with opt-in `sandbox.netns` | **prevented** — children are spawned into `CLONE_NEWNET` and have no network to reach |
+| Proxy with opt-in `sandbox.netns` | **prevented against an unprivileged child** — children are spawned into `CLONE_NEWNET` and have no network to reach. Children inherit the proxy's uid and capabilities (no uid drop, no `NoNewPrivs`, no user namespace), so a child running as root can `setns` back to the host network. Known gap, see [`docs/security_review_status.md`](docs/security_review_status.md) #7 |
 | Sensor-only DaemonSet | **contained** — kill, plus optional LSM. Interlock did not spawn the pod, so netns does not apply |
 
 **How taint flows through the engine:**
@@ -243,7 +247,7 @@ flowchart LR
     Overlap --> Verdict
 ```
 
-**Trust boundaries.** The proxy, engine, sensor, and config are the TCB. Untrusted: the MCP servers, all tool results, fetched content, and the agent's own output, because the agent is the thing being hijacked. Interlock performs no network egress of its own beyond local evidence and configured alerting. Self-threat model T1–T6: [`docs/threat_model.md`](docs/threat_model.md).
+**Trust boundaries.** The proxy, engine, sensor, and config are the TCB. Untrusted: the MCP servers, all tool results, fetched content, and the agent's own output, because the agent is the thing being hijacked. The untrusted MCP servers currently run with the proxy's own uid and capabilities, which means root when the proxy runs as root, as the eBPF demos do (review #7, open). Interlock's own outbound connections are limited to configured webhook and SIEM endpoints and, in sensor mode, the Kubernetes API server. Self-threat model T1–T7: [`docs/threat_model.md`](docs/threat_model.md).
 
 ---
 
@@ -261,7 +265,7 @@ if !state.Legs.AllLit() {
 // ... soft gates below: bare connect, content-bind, container abort
 ```
 
-**Overlap alone is `EXFIL`.** Taint deliberately outlives leg decay, so a secret read an hour ago and shipped out now still trips at full confidence. The legs are the *soft* substrate — they gate the weaker verdict, the one that never blocks anything:
+**Overlap alone is `EXFIL`, once overlap is computed.** On the proxy plane it is computed only for tools tagged `external_sink`: `EvaluateRequest` returns `Allow` before any scan when the tool is not a sink ([`engine.go:344`](internal/engine/engine.go)). Tagging is the gate in front of proof, so a mis-tagged sink is a blind spot. The kernel plane checks every correlated egress payload regardless of tags. Taint deliberately outlives leg decay, so a secret read an hour ago and shipped out now still trips at full confidence. The legs are the *soft* substrate — they gate the weaker verdict, the one that never blocks anything:
 
 | Leg | Lights when |
 | --- | --- |
@@ -283,8 +287,8 @@ Verdict is what was concluded. **Action** is what was done, and keeping them apa
 | Action | When | Effect |
 | --- | --- | --- |
 | `prevented` | Variant A `EXFIL` in block mode; or LSM denying a repeat connect after `EXFIL` | never forwarded, or `-EPERM` |
-| `contained_by_kill` | Variant B `EXFIL` | immediate `SIGKILL`, no deferred window |
-| `allowed_monitor` | Variant A `SUSPICIOUS`, or monitor mode | forwarded; evidence written |
+| `contained_by_kill` | Variant B `EXFIL`, in block **and** monitor mode | immediate `SIGKILL` to the process group and the PID, no deferred window |
+| `allowed_monitor` | Variant A `SUSPICIOUS`, or Variant A `EXFIL` in monitor mode | forwarded; evidence written |
 | `detected_only` | Variant B `SUSPICIOUS` | evidence only; nothing killed |
 
 Read the middle two rows together. `SUSPICIOUS` is incapable of blocking or killing, by construction. If a soft heuristic misfires on your traffic you get a log line, not an outage.
@@ -302,12 +306,14 @@ An attacker reading this page will not paste the token in plaintext. So every ta
 | Depth-2 nests | `base64_hex` · `hex_base64` · `base64_url` · `base64_reversed` |
 | Compressed | `gzip_base64` · `brotli_base64` · `zstd_base64` · `lz4_base64` |
 
+The three non-gzip compressed forms are byte-exact strings from Go's encoders at default settings. Compression does not preserve substrings, so they match only when the attacker compresses the secret alone, with the same library at the same level; nothing decompresses brotli, zstd or lz4 at scan time. gzip and zlib are different: container descent decompresses them.
+
 Evidence records which form matched in `match_form`, and where in `match_where`. Layered on top of the fixed set:
 
-- **A recursive decoder** unwraps nested encodings at runtime, depth default **5**, clamped to `[3,5]`. The clamp is empirical — deeper decoding found more false positives than exfil.
+- **A recursive decoder** unwraps nested base64 and hex layers at runtime, depth default **5**, clamped to `[3,5]`. The clamp is empirical — deeper decoding found more false positives than exfil. A layer that decodes to more than 8 KiB is skipped, so padding the secret with filler inside one base64 layer evades it (review #18, open).
 - **Fragment reassembly** joins a secret split across chunks before matching, bounded by a rolling FIFO (16 chunks / 64 KB).
-- **Egress reassembly** does the same per `(pid, destination)` flow, bounded by chunk count, byte budget, and a 10s age window.
-- **Chunk matching** catches long secrets whose payload excerpt got truncated, by matching a contiguous 32-byte run rather than the whole value.
+- **Egress reassembly** does the same per `(pid, destination)` flow, bounded by chunk count, byte budget, a 10s age window, and 32 live flows (oldest evicted). Splitting across destinations or trickling slower than 10s is pinned as a gap; opening decoy flows to evict the real one is not yet pinned (review #17). DNS payloads are reduced to their first label before matching, so a secret in any later label is missed (review #16, open).
+- **Chunk matching** catches long secrets (64 bytes or more) whose payload excerpt got truncated, by matching a contiguous 32-byte run rather than the whole value. Chunks below 3.0 bits/byte of entropy are not minted, so comment dividers and padding cannot become proof.
 - **Path taint** registers secrets by the file they came from, so a keyfile read through the sensor is tainted without the proxy ever seeing it.
 - **Container descent** walks bounded ZIP/gzip/zlib/tar archives — 10 MiB cumulative, depth 2, 100 members, 50ms — and a hard-cap abort produces `SUSPICIOUS`, never `EXFIL`. An aborted walk proved nothing and does not get to claim it did.
 
@@ -319,7 +325,7 @@ Raw values never reach disk. `TaintedValue.Value` is tagged `json:"-"`, logs kee
 
 Every trip emits an `EvidenceRecord`: session, verdict, action, plane, the legs with what lit them, the sink (tool name or syscall), the overlap hit with `match_form` and `match_where`, and the ordered timeline.
 
-Records are **hash-chained**. `make verify-evidence` walks the chain and tells you whether anything was altered or removed after the fact — which matters, because the first thing worth tampering with after a breach is the log that describes it.
+Records are **hash-chained**. `make verify-evidence` walks the chain and detects a record edited or deleted in the middle of the chain. It does not detect everything: the chain is unkeyed SHA-256, so anyone with write access can edit a record and recompute every hash after it, and [`VerifyChain`](internal/engine/evidence_chain.go) accepts a first record with `chain_seq > 0`, so cutting records off the head (or the tail) verifies clean. Ship evidence off-node if you need it to survive a writer. [`docs/threat_model.md`](docs/threat_model.md) T5 has the limits.
 
 Ordering took some care. Proxy events carry `ts_mono_ns`, which is wall time from `time.Now().UnixNano()`; BPF events come from `bpf_ktime_get_ns()`, which is boot-relative. Those two do not compare, and sorting on raw nanoseconds yields a story that is subtly and confidently wrong. The record fuses on an engine-assigned `timeline_seq` instead.
 
@@ -339,15 +345,15 @@ These are the consequential choices baked into the codebase. Each traded somethi
 
 | Decision | What was chosen | What was not | Why |
 | --- | --- | --- | --- |
-| **Detection model** | Byte-overlap proof against precomputed encodings | LLM-judged semantic analysis on the hot path | Semantic detection trusts another model, explodes the FP surface, and still loses to clever rewrites. Byte overlap is deterministic, auditable, and 0% EXFIL-tier FP. The gap (paraphrased exfil) is named, not papered over. |
+| **Detection model** | Byte-overlap proof against precomputed encodings | LLM-judged semantic analysis on the hot path | Semantic detection trusts another model, explodes the FP surface, and still loses to clever rewrites. Byte overlap is deterministic, auditable, and 0% EXFIL-tier FP on the 75-scenario corpus. The gap (paraphrased exfil) is named, not papered over. |
 | **Enforcement split** | `EXFIL` hard-blocks; `SUSPICIOUS` never does | Single verdict with a tunable threshold | A nervous heuristic that can kill your agent is worse than the attack. Soft signals are for evidence; hard signals are for enforcement. Mixing them means every FP is an outage. |
 | **Two planes** | MCP proxy (Variant A) + eBPF sensor (Variant B) | Proxy-only or kernel-only | The proxy sees MCP semantics but is blind to side channels. The kernel sees all egress but has no MCP context. Neither is a fallback — they are blind in opposite directions. |
 | **Transport** | STDIO child-process spawning; Streamable HTTP for multi-session | Sidecar proxy with network intercept | STDIO gives Interlock the PID tree (spawn pinning, netns sandbox, eBPF PID filter). Network intercept would require parsing MCP from a tap, losing hold-before-forward and the TCB boundary. |
 | **Evidence format** | Append-only JSONL (default) or SQLite with hash chain | External log aggregator as primary store | Evidence must be tamper-evident locally. A remote SIEM is complementary (OCSF/CEF export exists), but the hash chain must live where the sensor runs. |
-| **Taint expansion** | 13 precomputed forms at registration, not at scan time | On-demand decoding only | Precomputation makes `CheckOverlap` a string scan (~70 ns), not a decompression pass. Memory cost is bounded: 13 variants per secret per session. |
+| **Taint expansion** | 13 precomputed forms at registration, not at scan time | On-demand decoding only | Precomputation makes `CheckOverlap` a string scan, not a decompression pass: ~70 ns on a hit, ~4 µs against one tainted value on a miss, growing linearly with the tainted set (~1.2 ms at 10,000). Memory is 13 variants per secret, but the number of secrets and sessions is not capped (review #9, open). |
 | **Leg decay** | TTL (30m) + call-count (32) dim trifecta legs | Sticky-forever legs | A long-lived agent session with sticky legs is a false-positive machine. Decay ensures soft verdicts reflect recent context, not ancient history. Taint (the hard signal) outlives decay intentionally. |
 | **Language** | Go, single static binary | Rust, Python, or polyglot | Go compiles to one binary with no runtime deps, has mature eBPF libraries (cilium/ebpf), and the stdlib covers HTTP, JSON-RPC, process management, and crypto without external deps. 11 direct dependencies total. |
-| **No external dependencies for core detection** | stdlib `compress/gzip`, `encoding/base64`, `crypto/sha256`, etc. | Third-party DLP libraries, ML classifiers | The detection engine's correctness is auditable in ~1400 lines of Go with zero non-stdlib imports. Adding a classifier would make it a black box. |
+| **Few dependencies in core detection** | stdlib `compress/gzip`, `encoding/base64`, `crypto/sha256`, plus three compressors (`andybalholm/brotli`, `klauspost/compress/zstd`, `pierrec/lz4`) used only to precompute the compressed forms | Third-party DLP libraries, ML classifiers | `internal/engine` is about 4,300 lines of non-test Go (`engine.go` alone is ~1,400) and imports nothing else outside the stdlib and this repo. Adding a classifier would make it a black box. |
 | **Container descent limits** | 10 MiB, depth 2, 100 members, 50ms — abort → `SUSPICIOUS` | Unbounded extraction or skip entirely | Unbounded extraction is a zip bomb. Skipping means an attacker wraps the secret in a tarball. The compromise: walk what is cheap, abort what is not, and never claim proof from an aborted walk. |
 
 ---
@@ -446,13 +452,15 @@ untrusted_origins:
   web_fetches:  true
 ```
 
+**`egress_allowlist` matches destination IP strings only.** The sensor never resolves hostnames, so `api.anthropic.com` above never matches, and every connect to it is treated as non-allowlisted. `127.0.0.1` does match, so loopback connects are ignored and writes after them are not correlated: a collector on loopback is an unmonitored kernel-plane channel with this sample config. Known gap, see [`docs/security_review_status.md`](docs/security_review_status.md) #22.
+
 A server carries default tags; `tool_tags` overrides per tool. An untagged tool is neither source nor sink and cannot light a leg on its own — so **a mis-tagged tool is a blind spot**, and reviewing tags is the first job when adopting this on a real fleet. Note that taint registration is independent of tagging: a secret matched by pattern or path is tracked wherever it came from.
 
 Everything else is commented out in [`interlock.yaml`](interlock.yaml) and off by default. The knobs worth knowing they exist:
 
 | Block | What it turns on |
 | --- | --- |
-| `sandbox.netns` | spawn children into `CLONE_NEWNET` — turns Variant B containment into prevention |
+| `sandbox.netns` | spawn children into `CLONE_NEWNET` — turns Variant B containment into prevention for children that cannot regain the host netns (not root children today, review #7) |
 | `vault` | replace extracted secrets with dummies in agent-visible results, detokenized only for authorized tools |
 | `trifecta` | leg TTL and decay, decode depth, chunk matching, egress reassembly, container descent budgets |
 | `ebpf.payload_capture_bytes` | the capture window; the knob only reduces it, raising past 1024 needs a BPF rebuild |
@@ -475,7 +483,7 @@ For Streamable HTTP, swap the transport block — set `transport.mode: http` and
 | False positives, EXFIL-tier, benign | **0%** (0/37) |
 | Known-gap misses, catalogued in advance | 7 |
 
-The 18.9% is the honest number to look at, and it is 18.9% of *evidence lines*, not of blocked calls. Soft verdicts cannot block. The number that would break a deployment is the EXFIL-tier false-positive rate, and that one is zero.
+The 18.9% is the honest number to look at, and it is 18.9% of *evidence lines*, not of blocked calls. Soft verdicts cannot block. The number that would break a deployment is the EXFIL-tier false-positive rate, and that one is zero on this corpus. The corpus is token-shaped; it says nothing about every file `sensitive_paths` might register, which is how review #19 found a false `EXFIL` (fixed since by the chunk entropy gate).
 
 **Against CVEs someone else disclosed** ([`docs/cve_corpus.md`](docs/cve_corpus.md)) — seven reconstructed families, cited to their real writeups:
 
@@ -486,16 +494,16 @@ The 18.9% is the honest number to look at, and it is 18.9% of *evidence lines*, 
 
 Building that corpus found two live bugs, both since fixed, and one of them changed a number the FP corpus had already published. That correction is disclosed in the document rather than quietly absorbed.
 
-**Overhead.** The quotable figure is the engine delta — Interlock on versus the identical HTTP stack with the engine nil. Absolute end-to-end latency is dominated by your backend and says nothing about this project:
+**Overhead.** The quotable figure is the engine delta — Interlock on versus the identical HTTP stack with the engine nil. Absolute end-to-end latency is dominated by your backend and says nothing about this project. Three runs of `BenchmarkHTTP_EngineDelta` (`-benchtime=500ms`) on the Wave 0 baseline laptop (i7-11800H), 2026-10-20:
 
 | Path | Engine on | Passthrough | Interlock's cost |
 | --- | ---: | ---: | ---: |
-| `read_ticket` (sensitive source, 2 secrets) | 936 µs | 400 µs | **~536 µs** |
-| `send_message` (sink check, benign) | 492 µs | 374 µs | **~118 µs** |
+| `read_ticket` (sensitive source, 2 secrets) | 3.9–4.1 ms | 0.34 ms | **~3.6–3.8 ms** |
+| `send_message` (sink check, benign) | 0.34–0.39 ms | 0.31–0.36 ms | **within run-to-run noise** |
 
-Sub-millisecond, and backwards from intuition: the **read** path costs more than the **sink** path even though the sink path runs the full trifecta plus overlap. Taint ingestion is the expensive step; checking overlap against an already-registered set is ~70 ns. Steady-state agent traffic is mostly reads, so the higher number is the one to plan with.
+The **read** path costs more than the **sink** path even though the sink path runs the full trifecta plus overlap. Taint ingestion is the expensive step; [`docs/performance.md`](docs/performance.md) attributes it to re-running the taint patterns over the whole reassembly FIFO on every sensitive read (not re-profiled for these figures). Checking overlap against an already-registered set is ~70 ns on a hit. Steady-state agent traffic is mostly reads, so the higher number is the one to plan with. These replace the older ~536 µs / ~118 µs figures in [`docs/performance.md`](docs/performance.md), which no longer reproduce. [`docs/budgets.json`](docs/budgets.json) holds ceilings for these benchmarks, but the CI gate skips `BenchmarkHTTP_*` today and gates only the engine benchmarks.
 
-**And it does not hold for keyfiles.** Those figures are measured on ~40-byte token-shaped secrets. A PEM-shaped private key registers as one ~1.7–3.2 KB tainted value, and the reassembly path re-scans the joined FIFO on every sensitive read — `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` lands at **~4.1–4.3 ms/op**, roughly **12×** the token baseline, reached within about 16 reads. If your agent reads private keys in a loop, budget for that, not for the headline. Full methodology and the numbers this section deliberately does not quote: [`docs/performance.md`](docs/performance.md).
+**Keyfiles cost more.** A PEM-shaped private key registers as one ~1.7–3.2 KB tainted value, and the reassembly path re-scans the joined FIFO on every sensitive read. In the [Wave 0 baseline](docs/baseline_wave0.md), `BenchmarkEngine_IngestResult_TaintExtract_PEMSized` is **~4.6 ms/op**, about 2× the token-fixture `BenchmarkEngine_IngestResult_TaintExtract` (~2.3 ms/op). If your agent reads private keys in a loop, budget for that. Methodology: [`docs/performance.md`](docs/performance.md).
 
 Live production numbers come from Prometheus rather than benchmarks — scrape `interlock_*` from `observability.listen`.
 
@@ -511,9 +519,9 @@ This section names what the project takes for granted, so you can decide whether
 
 **Platform.** Linux with BTF, x86_64. The eBPF plane does not compile on macOS, Windows, or ARM. The proxy plane works anywhere Go compiles, but without the kernel plane you are proxy-only and Variant B side channels are invisible.
 
-**Scale.** Designed for tens of concurrent sessions, not thousands. `sessions.max_concurrent` defaults to 32. The taint set, trifecta state, and fragment buffers are per-session and in-memory. A deployment handling hundreds of simultaneous agent sessions would need to profile memory, and the session manager's process table is the first bottleneck.
+**Scale.** Designed for tens of concurrent sessions, not thousands. `sessions.max_concurrent` defaults to 32. The taint set, trifecta state, and fragment buffers are per-session and in-memory. A deployment handling hundreds of simultaneous agent sessions would need to profile memory, and the session manager's process table is the first bottleneck. Nothing caps the number or size of tainted values per session, or the number of engine sessions (review #9, open).
 
-**Threat model.** The host kernel is trusted — no defense against a rootkit rewriting eBPF maps. The agent is untrusted (it is the thing being hijacked). MCP servers are untrusted. The network boundary is **not** trusted — Interlock does not assume network policy will stop exfil, which is the whole point. Interlock itself performs no outbound network calls except configured alerting endpoints.
+**Threat model.** The host kernel is trusted — no defense against a rootkit rewriting eBPF maps. The agent is untrusted (it is the thing being hijacked). MCP servers are untrusted, yet today they run with the proxy's privileges (review #7, open). The network boundary is **not** trusted — Interlock does not assume network policy will stop exfil, which is the whole point. Interlock's own outbound calls are configured webhook and SIEM endpoints and, in sensor mode, the Kubernetes API server.
 
 **Detection.** Optimizes for **zero EXFIL-tier false positives** at the cost of detection coverage. The 13-form transform set is closed and finite. Custom ciphers, nests deeper than depth 5, secrets entirely beyond the 1024-byte capture window, and paraphrased exfil are all outside the detection boundary. This is a deliberate trade: a missed exfil is bad, but a false block on a production agent is worse, because false blocks erode trust and get the tool turned off.
 
@@ -527,13 +535,13 @@ This section names what the project takes for granted, so you can decide whether
 
 ## Where it fails
 
-Design boundaries, not unfinished TODOs. Every one has a `KnownGap` test pinning it. Full ledger: [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §16, scope write-up: [`docs/detection_boundary.md`](docs/detection_boundary.md).
+Items 1–9 are design boundaries, not unfinished TODOs. Items 1–5 and 8 have a `KnownGap` test or corpus pin; 6, 7 and 9 are stated behavior with no pin. Item 10 is different: open findings from the external review, most not yet pinned. Full ledger: [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §16, scope write-up: [`docs/detection_boundary.md`](docs/detection_boundary.md).
 
 **1. A closed transform set is not universal DLP.** Thirteen precomputed forms, depth-5 decoding, fragment and egress reassembly, chunk matching, path taint, bounded container descent. Still missed: **custom ciphers**, nests past the `[3,5]` clamp, secrets lying **entirely** beyond the 1024-byte capture window, structured wire protocols such as git pack outside `ToolArgs`/`PayloadExcerpt`, and container walks that abort on a bomb, encryption, or depth > 2.
 
 **2. Paraphrased exfil is out of scope for `EXFIL`.** A model that reads the token and rewrites it in prose has produced no registered byte form, and Interlock will not claim proof it does not have. Soft `SUSPICIOUS` may still fire on a long shared literal substring — that is byte-bind, not comprehension.
 
-**3. The first EXFIL-bearing packet always escapes on Variant B.** `connect()` carries no payload, so proof only arrives with the `write()`, and the kill lands after it. LSM denies *repeat* connects, not the first one. The only way to actually prevent the side channel is `sandbox.netns` in proxy mode, where the child never has a network to reach.
+**3. The first EXFIL-bearing packet always escapes on Variant B.** `connect()` carries no payload, so proof only arrives with the `write()`, and the kill lands after it. LSM denies *repeat* connects, not the first one. The only way to actually prevent the side channel is `sandbox.netns` in proxy mode, where the child never has a network to reach, provided the child cannot regain the host netns (see item 10, #7).
 
 **4. Sensor-only deployments cannot light soft verdicts.** Without the taint bridge supplying untrusted excerpts, `IngestSyscallSensor` never reaches `SUSPICIOUS` — pinned by `TestEngine_IngestSyscallSensor_NeverReachesSuspicious_KnownGap`. Hard `EXFIL` still works if the bridge supplies taint.
 
@@ -541,11 +549,20 @@ Design boundaries, not unfinished TODOs. Every one has a `KnownGap` test pinning
 
 **6. Redaction is pattern-matched, not total.** Known patterns, bearer tokens, and every encoded taint variant are scrubbed; JWTs, URLs with embedded tokens, and PII sitting in a tool body are not. Treat `events.jsonl` and evidence files as sensitive artifacts.
 
-**7. HTTP multi-session spawns a backend pool per `initialize`.** Bounded by `sessions.max_concurrent` (32) and a 30m idle timeout, and still a process-table exhaustion surface for anyone who can open sessions. Put ACLs in front of it, and understand that none of that authenticates who may connect.
+**7. The HTTP transport is a tool-execution endpoint, unauthenticated unless you set `transport.bearer_token`.** Anyone who can reach `transport.listen` can call `read_ticket` and get the secret back in the HTTP response; no sink is invoked, so no check runs. It binds `127.0.0.1:8080` by default. It also spawns a backend pool per `initialize`, bounded by `sessions.max_concurrent` (32) and a 30m idle timeout, so it is a process-table exhaustion surface too. Set a bearer token and put ACLs in front of it.
 
 **8. Tool shadowing is checked at registration only.** A server that re-registers a shadowing tool mid-session gets through — `TestToolShadowing_RuntimeReregistration_KnownGap`.
 
-**9. Monitor mode allows proven `EXFIL` through.** By design, and worth saying out loud: `enforcement: monitor` is for tuning, not for production.
+**9. Monitor mode allows proven `EXFIL` through on the proxy plane.** By design, and worth saying out loud: `enforcement: monitor` is for tuning, not for production. It does not disarm the kernel plane: a Variant B `EXFIL` is still `contained_by_kill`.
+
+**10. Open review findings.** Known gaps in the code on this tree, tracked in [`docs/security_review_status.md`](docs/security_review_status.md); this list must be re-checked after the Wave 1 merge:
+
+- Kernel plane: `send()` (a `sendto` with no address) produces no event (#1); writes on fds 0–2 are skipped, so `dup2(sock, 1)` evades (#2); only the first iovec of `writev`/`sendmsg` is captured (#3); a write more than 5 s after its `connect` is dropped (#4); probes read user memory before the kernel copies it, so a second thread can swap the bytes or the destination (#5); a failed payload read is unchecked and can leave stale bytes from an earlier event (#6).
+- Privilege: spawned servers inherit the proxy's uid and capabilities, which also defeats `sandbox.netns` for a root child (#7).
+- Engine: no cap on taint or sessions (#9); DNS matching sees only the first label (#16); decoy flows can evict an accumulating egress flow (#17); a decoded layer over 8 KiB is skipped (#18); a panic in result ingestion fails open for that result (#20, partial).
+- Bridge: no minimum taint length and no hash check (#14).
+- Containment: the kill goes to the whole process group, not just the attributed PID (#21).
+- Config: `egress_allowlist` hostnames never match, and `127.0.0.1` exempts loopback (#22).
 
 ---
 
@@ -587,7 +604,7 @@ Interlock/
 
 ## Tests
 
-**345 test functions**, 11 of them `KnownGap` pins that assert what Interlock does **not** catch. CI runs `test` and `race` on `main`. Live eBPF saturation and LSM tests are gated on root and BPF-LSM.
+**352 test functions** (Wave 0 count), 11 of them `KnownGap` pins that assert what Interlock does **not** catch. On pushes and pull requests to `main`, CI runs build, `gofmt`, `go vet`, `go test ./...`, the corpus and engine-benchmark gate against [`docs/budgets.json`](docs/budgets.json), and `-race -short` on the proxy and engine packages. Live eBPF saturation and LSM tests are gated on root and BPF-LSM and do not run in CI.
 
 ```bash
 make test
@@ -620,7 +637,7 @@ Next, per [`docs/ROADMAP.md`](docs/ROADMAP.md): protocol-aware egress parsers re
 | [docs/detection_boundary.md](docs/detection_boundary.md) | what is caught and what is not, argued rather than asserted |
 | [docs/fp_corpus.md](docs/fp_corpus.md) · [docs/cve_corpus.md](docs/cve_corpus.md) | the numbers, and what they are worth |
 | [docs/performance.md](docs/performance.md) | what the benchmarks measure and which figures not to quote |
-| [docs/threat_model.md](docs/threat_model.md) | T1–T6 against Interlock itself |
+| [docs/threat_model.md](docs/threat_model.md) | T1–T7 against Interlock itself |
 | [deploy/k8s/PRIVILEGE.md](deploy/k8s/PRIVILEGE.md) | what each cluster posture actually buys you |
 | [docs/ROADMAP.md](docs/ROADMAP.md) · [CHANGELOG.md](CHANGELOG.md) | what is deferred, and what changed |
 | [Simon Willison on the lethal trifecta](https://simonwillison.net/) | the framing this is built around |

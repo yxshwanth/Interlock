@@ -36,7 +36,7 @@ regardless of leg state) — now fixed.
 Pinned by non-gap malicious corpus scenarios (must stay at 100% EXFIL-tier):
 
 - **Literal secret** in `external_sink` tool args (Variant A)
-- **Canonical encodings** — base64, hex, URL, reversal, closed depth-2 nests, `gzip_base64` / `brotli_base64` / `zstd_base64` / `lz4_base64`
+- **Canonical encodings** — base64, hex, URL, reversal, closed depth-2 nests, `gzip_base64` / `brotli_base64` / `zstd_base64` / `lz4_base64` (brotli/zstd/lz4 match only byte-exact output of Go's encoders at default settings on the secret alone; nothing decompresses them at scan time)
 - **Long-secret chunk overlap** — when a tainted value is ≥64 bytes, contiguous 32-byte body chunks (PEM/PuTTY armor stripped) are searched in sink args and egress payloads (`match_form=chunk_32`); closes truncated-capture cases that still contain a body chunk
 - **Token vaulting (opt-in `vault.enabled`)** — agent-visible sensitive results rewrite to `ilk.vault.*` dummies; authorized sinks detokenize then overlap-scan (`malicious_proxy_a_vault_authorized_wrong_dest`)
 - **Same-call JSON string reassembly** (secret split across fields in one tools/call)
@@ -97,6 +97,26 @@ Soft SUSPICIOUS may still fire if untrusted content and the sink share a long
 
 Closing a gap means flipping the scenario out of KnownGap and keeping EXFIL-tier
 FP at 0% on the benign corpus.
+
+### Open security-review findings (not yet pinned)
+
+Found by [`security_review.md`](security_review.md) and still open in the code
+on this tree ([`security_review_status.md`](security_review_status.md)). None
+has a `KnownGap` pin yet; Wave 1 either fixes or pins each. Re-check this list
+after the Wave 1 merge.
+
+| Gap | Review # |
+|---|---|
+| `send()` (`sendto` with NULL address) produces no event | 1 |
+| Payload probes skip `fd < 3`; `dup2(sock, 1)` evades | 2 |
+| `writev` / `sendmsg` capture only `iov[0]` | 3 |
+| Write more than 5 s after its `connect` is dropped (`SuspiciousConnectTTL`) | 4 |
+| `sys_enter` user-memory reads are TOCTOU-racy (payload and destination) | 5 |
+| Faulted payload read unchecked; stale ring-buffer bytes can surface | 6 |
+| DNS matching sees only the first label | 16 |
+| Decoy flows evict an accumulating egress flow (32-flow cap) | 17 (cross-destination and trickle parts are pinned above) |
+| A decoded layer larger than 8 KiB is skipped | 18 |
+| Hostname entries in `egress_allowlist` never match; `127.0.0.1` exempts loopback | 22 |
 
 ---
 
