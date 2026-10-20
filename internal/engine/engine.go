@@ -1164,10 +1164,16 @@ func (e *Engine) egressCandidatePayload(state *model.SessionState, ev model.Sysc
 	if fragment == "" {
 		return ev.PayloadExcerpt
 	}
-	if !e.egressReassemblyEnabled {
-		return fragment
+	window := fragment
+	if e.egressReassemblyEnabled {
+		window = e.appendEgressFlowFragment(state, ev, fragment)
 	}
-	return e.appendEgressFlowFragment(state, ev, fragment)
+	if fragment != ev.PayloadExcerpt {
+		// DNS: the window holds first labels only; scan the raw query too or a
+		// leading junk label hides the secret (review #16).
+		window += "\n" + ev.PayloadExcerpt
+	}
+	return window
 }
 
 func normalizedEgressFragment(ev model.SyscallEvent) string {

