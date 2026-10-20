@@ -222,6 +222,53 @@ static __always_inline __u32 clamp_cap(__u64 count) {
 	return cap;
 }
 
+/* Per-CPU gather buffer for multi-iovec captures. 2x PAYLOAD_MAX so the
+ * verifier accepts out+total (<=PAYLOAD_MAX) with a copy of <=PAYLOAD_MAX. */
+struct iov_scratch {
+	char buf[2 * PAYLOAD_MAX];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct iov_scratch);
+} iov_scratch_map SEC(".maps");
+
+static __always_inline char *iov_scratch_buf(void) {
+	__u32 key = 0;
+	struct iov_scratch *s = bpf_map_lookup_elem(&iov_scratch_map, &key);
+	return s ? s->buf : 0;
+}
+
+#define IOV_MAX 4
+
+/* Copy the first IOV_MAX iovecs back to back into out, up to the payload
+ * limit. Returns bytes gathered (0 if nothing readable). */
+static __always_inline __u32 gather_iov(char *out, const struct iovec *iovp, __u64 iovcnt) {
+	__u32 limit = clamp_cap(PAYLOAD_MAX);
+	__u32 total = 0;
+#pragma unroll
+	for (int i = 0; i < IOV_MAX; i++) {
+		struct iovec iov;
+		if (i >= iovcnt || total >= limit)
+			break;
+		if (bpf_probe_read_user(&iov, sizeof(iov), &iovp[i]) < 0)
+			break;
+		if (!iov.iov_base || iov.iov_len == 0)
+			continue;
+		__u32 n = limit - total;
+		if (iov.iov_len < n)
+			n = iov.iov_len;
+		if (n > PAYLOAD_MAX || total > PAYLOAD_MAX)
+			break;
+		if (bpf_probe_read_user(out + total, n, iov.iov_base) < 0)
+			break;
+		total += n;
+	}
+	return total > PAYLOAD_MAX ? PAYLOAD_MAX : total;
+}
+
 SEC("tracepoint/syscalls/sys_enter_connect")
 int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
 	if (!monitored_task())
@@ -309,7 +356,7 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
-/* writev(fd, iov, iovcnt) — capture first iovec only (verifier-safe). */
+/* writev(fd, iov, iovcnt) — first IOV_MAX iovecs gathered contiguously. */
 SEC("tracepoint/syscalls/sys_enter_writev")
 int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx) {
 	if (!monitored_task())
@@ -328,13 +375,12 @@ int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx
 	if (!iovp || iovcnt == 0)
 		return 0;
 
-	struct iovec iov0;
-	if (bpf_probe_read_user(&iov0, sizeof(iov0), iovp) < 0)
+	char *scratch = iov_scratch_buf();
+	if (!scratch)
 		return 0;
-	if (!iov0.iov_base || iov0.iov_len == 0)
+	__u32 total = gather_iov(scratch, iovp, iovcnt);
+	if (total == 0 || total > PAYLOAD_MAX)
 		return 0;
-
-	__u32 cap = clamp_cap(iov0.iov_len);
 
 	struct write_event *ev;
 	ev = bpf_ringbuf_reserve(&critical_events, sizeof(*ev), 0);
@@ -345,14 +391,14 @@ int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx
 
 	__builtin_memset(ev, 0, offsetof(struct write_event, payload));
 	ev->type = EVENT_WRITEV;
-	ev->len = cap;
+	ev->len = total;
 	ev->ts_ns = bpf_ktime_get_ns();
 	ev->pid = pid;
 	ev->tid = tid;
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	if (bpf_probe_read_user(ev->payload, cap, iov0.iov_base) < 0) {
+	if (bpf_probe_read_kernel(ev->payload, total, scratch) < 0) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
 	}
@@ -416,7 +462,7 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	return 0;
 }
 
-/* sendmsg(fd, msg, flags) — first iov; named dest → sendto layout, else write layout. */
+/* sendmsg(fd, msg, flags) — first IOV_MAX iovecs; named dest → sendto layout, else write layout. */
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
 int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ctx) {
 	if (!monitored_task())
@@ -440,13 +486,12 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 	if (!hdr.msg_iov || hdr.msg_iovlen == 0)
 		return 0;
 
-	struct iovec iov0;
-	if (bpf_probe_read_user(&iov0, sizeof(iov0), hdr.msg_iov) < 0)
+	char *scratch = iov_scratch_buf();
+	if (!scratch)
 		return 0;
-	if (!iov0.iov_base || iov0.iov_len == 0)
+	__u32 total = gather_iov(scratch, hdr.msg_iov, hdr.msg_iovlen);
+	if (total == 0 || total > PAYLOAD_MAX)
 		return 0;
-
-	__u32 cap = clamp_cap(iov0.iov_len);
 
 	__u8 family = 0;
 	__u8 dest_addr[16];
@@ -467,7 +512,7 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 		}
 		__builtin_memset(ev, 0, offsetof(struct sendto_event, payload));
 		ev->type = EVENT_SENDMSG;
-		ev->len = cap;
+		ev->len = total;
 		ev->ts_ns = bpf_ktime_get_ns();
 		ev->pid = pid;
 		ev->tid = tid;
@@ -476,7 +521,7 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 		ev->dest_port = dest_port;
 		ev->cgroup_id = bpf_get_current_cgroup_id();
 		bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-		if (bpf_probe_read_user(ev->payload, cap, iov0.iov_base) < 0) {
+		if (bpf_probe_read_kernel(ev->payload, total, scratch) < 0) {
 			bpf_ringbuf_discard(ev, 0);
 			return 0;
 		}
@@ -492,14 +537,14 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 	}
 	__builtin_memset(ev, 0, offsetof(struct write_event, payload));
 	ev->type = EVENT_SENDMSG;
-	ev->len = cap;
+	ev->len = total;
 	ev->ts_ns = bpf_ktime_get_ns();
 	ev->pid = pid;
 	ev->tid = tid;
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	if (bpf_probe_read_user(ev->payload, cap, iov0.iov_base) < 0) {
+	if (bpf_probe_read_kernel(ev->payload, total, scratch) < 0) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
 	}

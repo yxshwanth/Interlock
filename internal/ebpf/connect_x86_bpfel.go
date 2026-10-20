@@ -8,9 +8,15 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type connectIovScratch struct {
+	_   structs.HostLayout
+	Buf [2048]int8
+}
 
 // Names of all BPF objects in the ELF.
 //
@@ -21,6 +27,7 @@ const (
 	connectMapCriticalEvents                     = "critical_events"
 	connectMapDropCount                          = "drop_count"
 	connectMapEvents                             = "events"
+	connectMapIovScratchMap                      = "iov_scratch_map"
 	connectMapLsmBlocklistCgroup                 = "lsm_blocklist_cgroup"
 	connectMapLsmBlocklistPid                    = "lsm_blocklist_pid"
 	connectMapPayloadCap                         = "payload_cap"
@@ -94,6 +101,7 @@ type connectMapSpecs struct {
 	CriticalEvents     *ebpf.MapSpec `ebpf:"critical_events"`
 	DropCount          *ebpf.MapSpec `ebpf:"drop_count"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
+	IovScratchMap      *ebpf.MapSpec `ebpf:"iov_scratch_map"`
 	LsmBlocklistCgroup *ebpf.MapSpec `ebpf:"lsm_blocklist_cgroup"`
 	LsmBlocklistPid    *ebpf.MapSpec `ebpf:"lsm_blocklist_pid"`
 	PayloadCap         *ebpf.MapSpec `ebpf:"payload_cap"`
@@ -131,6 +139,7 @@ type connectMaps struct {
 	CriticalEvents     *ebpf.Map `ebpf:"critical_events"`
 	DropCount          *ebpf.Map `ebpf:"drop_count"`
 	Events             *ebpf.Map `ebpf:"events"`
+	IovScratchMap      *ebpf.Map `ebpf:"iov_scratch_map"`
 	LsmBlocklistCgroup *ebpf.Map `ebpf:"lsm_blocklist_cgroup"`
 	LsmBlocklistPid    *ebpf.Map `ebpf:"lsm_blocklist_pid"`
 	PayloadCap         *ebpf.Map `ebpf:"payload_cap"`
@@ -144,6 +153,7 @@ func (m *connectMaps) Close() error {
 		m.CriticalEvents,
 		m.DropCount,
 		m.Events,
+		m.IovScratchMap,
 		m.LsmBlocklistCgroup,
 		m.LsmBlocklistPid,
 		m.PayloadCap,
