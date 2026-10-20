@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml"><img src="https://github.com/yxshwanth/Interlock/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/yxshwanth/Interlock/releases"><img src="https://img.shields.io/github/v/release/yxshwanth/Interlock" alt="Release"/></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/yxshwanth/Interlock" alt="MIT"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/yxshwanth/Interlock" alt="Apache-2.0"/></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go 1.26+"/></a>
   <a href="internal/ebpf/bpf/connect.c"><img src="https://img.shields.io/badge/eBPF-cilium--ebpf-111111?logo=linux&logoColor=white" alt="eBPF"/></a>
   <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/transports/streamable-http"><img src="https://img.shields.io/badge/MCP-Streamable%20HTTP-5A67D8" alt="MCP"/></a>
@@ -630,7 +630,7 @@ Next, per [`docs/ROADMAP.md`](docs/ROADMAP.md): protocol-aware egress parsers re
 
 ## License, contributing, security
 
-MIT — see [LICENSE](LICENSE).
+Apache-2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). Releases before the relicense were published under MIT.
 
 Pick up work from [`docs/ROADMAP.md`](docs/ROADMAP.md) or open an issue first: [CONTRIBUTING.md](CONTRIBUTING.md). New detection features ship with `KnownGap` pins naming what they do not catch.
 
