@@ -642,7 +642,11 @@ func decodeWritePayload(raw []byte) (*WriteEvent, error) {
 		CgroupID: binary.LittleEndian.Uint64(raw[32:40]),
 	}
 	copy(ev.Comm[:], raw[40:56])
-	if int(n) > 0 && len(raw) >= writeHeaderLen+int(n) {
+	if avail := len(raw) - writeHeaderLen; int(n) > avail {
+		n = uint32(avail)
+		ev.Len = n
+	}
+	if n > 0 {
 		ev.Payload = append([]byte(nil), raw[writeHeaderLen:writeHeaderLen+int(n)]...)
 	}
 	return ev, nil
@@ -667,7 +671,11 @@ func decodeSendtoPayload(raw []byte) (*SendtoEvent, error) {
 	}
 	copy(ev.DestAddr[:], raw[25:41])
 	copy(ev.Comm[:], raw[56:72])
-	if int(n) > 0 && len(raw) >= sendtoHeaderLen+int(n) {
+	if avail := len(raw) - sendtoHeaderLen; int(n) > avail {
+		n = uint32(avail)
+		ev.Len = n
+	}
+	if n > 0 {
 		ev.Payload = append([]byte(nil), raw[sendtoHeaderLen:sendtoHeaderLen+int(n)]...)
 	}
 	return ev, nil

@@ -300,7 +300,10 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, buf);
+	if (bpf_probe_read_user(ev->payload, cap, buf) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
@@ -326,7 +329,8 @@ int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx
 		return 0;
 
 	struct iovec iov0;
-	bpf_probe_read_user(&iov0, sizeof(iov0), iovp);
+	if (bpf_probe_read_user(&iov0, sizeof(iov0), iovp) < 0)
+		return 0;
 	if (!iov0.iov_base || iov0.iov_len == 0)
 		return 0;
 
@@ -348,7 +352,10 @@ int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, iov0.iov_base);
+	if (bpf_probe_read_user(ev->payload, cap, iov0.iov_base) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
@@ -400,7 +407,10 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	ev->dest_port = dest_port;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, buf);
+	if (bpf_probe_read_user(ev->payload, cap, buf) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
@@ -425,12 +435,14 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 		return 0;
 
 	struct user_msghdr hdr;
-	bpf_probe_read_user(&hdr, sizeof(hdr), umsg);
+	if (bpf_probe_read_user(&hdr, sizeof(hdr), umsg) < 0)
+		return 0;
 	if (!hdr.msg_iov || hdr.msg_iovlen == 0)
 		return 0;
 
 	struct iovec iov0;
-	bpf_probe_read_user(&iov0, sizeof(iov0), hdr.msg_iov);
+	if (bpf_probe_read_user(&iov0, sizeof(iov0), hdr.msg_iov) < 0)
+		return 0;
 	if (!iov0.iov_base || iov0.iov_len == 0)
 		return 0;
 
@@ -464,7 +476,10 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 		ev->dest_port = dest_port;
 		ev->cgroup_id = bpf_get_current_cgroup_id();
 		bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-		bpf_probe_read_user(ev->payload, PAYLOAD_MAX, iov0.iov_base);
+		if (bpf_probe_read_user(ev->payload, cap, iov0.iov_base) < 0) {
+			bpf_ringbuf_discard(ev, 0);
+			return 0;
+		}
 		bpf_ringbuf_submit(ev, 0);
 		return 0;
 	}
@@ -484,7 +499,10 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, iov0.iov_base);
+	if (bpf_probe_read_user(ev->payload, cap, iov0.iov_base) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
 }
