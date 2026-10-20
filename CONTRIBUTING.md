@@ -55,7 +55,7 @@ make test              # go test ./... && go vet ./...
 go test -race ./...    # concurrency-sensitive paths should pass clean
 ```
 
-**178 tests** is the current baseline (`go test ./... -list '.*' | grep -c '^Test'`) — new features should include tests, and this number will drift; don't hardcode it in new docs without re-checking.
+**352 tests** was the baseline at Wave 0 (`go test ./... -list '.*' | grep -c '^Test'`) — new features should include tests, and this number will drift; don't hardcode it in new docs without re-checking.
 
 CI runs `go build`, `go vet`, and `go test` on every push to `main`. eBPF probe loading requires root and a BTF-enabled kernel; it is tested locally, not in CI.
 
@@ -126,11 +126,13 @@ test(overlap): add known-gap test for encoded exfil
 docs(readme): document sudo requirement and probe transparency
 ```
 
-One logical change per PR. Update [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]` for user-visible changes.
+Sign off every commit (`git commit -s`): contributions are accepted under the DCO, see [GOVERNANCE.md](GOVERNANCE.md#developer-certificate-of-origin). One logical change per PR. Update [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]` for user-visible changes.
 
 PR checklist:
 
+- [ ] Commits signed off (`git commit -s`)
 - [ ] Tests added or updated
+- [ ] New `_test.go` files added to `scripts/test_layers.tsv`
 - [ ] `go vet` clean
 - [ ] `go test -race ./...` clean (for concurrency-touching changes)
 - [ ] CHANGELOG updated (if user-visible)

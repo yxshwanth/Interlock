@@ -23,11 +23,22 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Format
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+
       - name: Vet
         run: go vet ./...
 
       - name: Test
         run: go test -v ./...
+
+      - name: Test layer labels and SPDX headers
+        run: scripts/check-test-layers.sh && scripts/check-spdx.sh
+
+      - name: Corpus and benchmark gate (docs/budgets.json)
+        run: |
+          go test -run='^$' -bench=. -benchmem -benchtime=50ms ./internal/engine/... | grep '^Benchmark' > bench.txt
+          go run ./cmd/gate -bench bench.txt -skip '^BenchmarkHTTP_'
 
       - name: Benchmark smoke
         run: go test -run=^$ -bench=BenchmarkCheckOverlap_1Tainted -benchtime=10ms ./internal/engine/...
