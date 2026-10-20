@@ -84,20 +84,31 @@ func NewSensor(allowedIPs []string, sensitivePaths []string, lsmEnforce bool, ha
 		return nil, fmt.Errorf("sensor: drop caps post-attach: %w", err)
 	}
 
-	allow := make(map[string]bool, len(allowedIPs))
-	for _, ip := range allowedIPs {
-		allow[ip] = true
-	}
-
+	logger := log.New(os.Stderr, "[sensor] ", log.LstdFlags)
 	return &Sensor{
 		loader:          loader,
-		allowlist:       allow,
+		allowlist:       buildAllowlist(allowedIPs, logger),
 		sensitivePaths:  append([]string(nil), sensitivePaths...),
 		handler:         handler,
-		log:             log.New(os.Stderr, "[sensor] ", log.LstdFlags),
+		log:             logger,
 		stopCh:          make(chan struct{}),
 		suspiciousByPID: make(map[int]pendingConnect),
 	}, nil
+}
+
+// buildAllowlist keeps IP literals only. The sensor matches destination IPs,
+// so a hostname entry would never match; it is dropped with a warning rather
+// than left in place looking effective.
+func buildAllowlist(entries []string, logger *log.Logger) map[string]bool {
+	allow := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if net.ParseIP(e) == nil {
+			logger.Printf("[WARN] egress_allowlist entry %q is not an IP address and is ignored: the sensor matches destination IPs, never hostnames", e)
+			continue
+		}
+		allow[e] = true
+	}
+	return allow
 }
 
 type sensorOpts struct {
@@ -128,10 +139,7 @@ func (s *Sensor) SetPayloadCaptureBytes(n int) error {
 
 // UpdateAllowlist replaces the egress allowlist (SIGHUP hot-reload).
 func (s *Sensor) UpdateAllowlist(allowedIPs []string) {
-	allow := make(map[string]bool, len(allowedIPs))
-	for _, ip := range allowedIPs {
-		allow[ip] = true
-	}
+	allow := buildAllowlist(allowedIPs, s.log)
 	s.cfgMu.Lock()
 	s.allowlist = allow
 	s.cfgMu.Unlock()

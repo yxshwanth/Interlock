@@ -16,6 +16,7 @@ internal/ebpf/lsm_failclosed_test.go	L8
 internal/ebpf/lsm_integration_test.go	L8
 internal/ebpf/lsm_test.go	L8
 internal/ebpf/sensor_reload_test.go	L8
+internal/ebpf/sensor_test.go	L1
 internal/engine/bench_test.go	L11
 internal/engine/bind_test.go	L1
 internal/engine/chunk_test.go	L1
