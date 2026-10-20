@@ -279,47 +279,49 @@ func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 	var newlyUntrusted bool
 	var untrustedForwarder UntrustedForwarder
 
-	e.mu.Lock()
-	state := e.store.GetOrCreate(ev.SessionID)
-	e.touchSession(state, ev.Seq, fmt.Sprintf("%s result returned", ev.ToolName))
+	func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		state := e.store.GetOrCreate(ev.SessionID)
+		e.touchSession(state, ev.Seq, fmt.Sprintf("%s result returned", ev.ToolName))
 
-	sensitive := e.tagger != nil && e.tagger.IsSensitiveSource(ev.ToolName, ev.ServerID)
-	if sensitive {
-		e.setSensitiveSourceTouched(state, ev)
+		sensitive := e.tagger != nil && e.tagger.IsSensitiveSource(ev.ToolName, ev.ServerID)
+		if sensitive {
+			e.setSensitiveSourceTouched(state, ev)
 
-		resultText := extractResultText(ev.Result)
-		if resultText != "" {
-			source := fmt.Sprintf("%s/%s", ev.ServerID, ev.ToolName)
-			e.appendFragment(state, resultText)
-			tainted := ExtractTaintedValues(resultText, source, ev.Seq)
-			// Reassembly-first: secrets split across calls may only match
-			// secretPatterns on the concatenated fragment buffer.
-			reassembled := ExtractTaintedValues(strings.Join(state.FragmentChunks, ""), source, ev.Seq)
-			combined := append(tainted, reassembled...)
-			if readPath := consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName); readPath != "" &&
-				IsSensitiveResourcePath(readPath, e.sensitivePaths) {
-				combined = append(combined, TaintPathDrivenContent(resultText, readPath, source, ev.Seq)...)
+			resultText := extractResultText(ev.Result)
+			if resultText != "" {
+				source := fmt.Sprintf("%s/%s", ev.ServerID, ev.ToolName)
+				e.appendFragment(state, resultText)
+				tainted := ExtractTaintedValues(resultText, source, ev.Seq)
+				// Reassembly-first: secrets split across calls may only match
+				// secretPatterns on the concatenated fragment buffer.
+				reassembled := ExtractTaintedValues(strings.Join(state.FragmentChunks, ""), source, ev.Seq)
+				combined := append(tainted, reassembled...)
+				if readPath := consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName); readPath != "" &&
+					IsSensitiveResourcePath(readPath, e.sensitivePaths) {
+					combined = append(combined, TaintPathDrivenContent(resultText, readPath, source, ev.Seq)...)
+				}
+				combined = append(combined, e.taintFromContainer(resultText, source, ev.Seq)...)
+				added := e.addTainted(state, combined)
+				e.vaultMint(state, added)
+				if len(added) > 0 {
+					e.log.Printf("extracted %d tainted value(s) from %s (session=%s)",
+						len(added), source, ev.SessionID)
+					toForward = added
+					forwarder = e.taintForwarder
+				}
+			} else {
+				consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName)
 			}
-			combined = append(combined, e.taintFromContainer(resultText, source, ev.Seq)...)
-			added := e.addTainted(state, combined)
-			e.vaultMint(state, added)
-			if len(added) > 0 {
-				e.log.Printf("extracted %d tainted value(s) from %s (session=%s)",
-					len(added), source, ev.SessionID)
-				toForward = added
-				forwarder = e.taintForwarder
+		} else if e.untrustedToolResults {
+			if !state.Legs.UntrustedContentPresent.Lit {
+				newlyUntrusted = true
+				untrustedForwarder = e.untrustedForwarder
 			}
-		} else {
-			consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName)
+			e.setUntrustedContentPresent(state, ev, extractResultText(ev.Result))
 		}
-	} else if e.untrustedToolResults {
-		if !state.Legs.UntrustedContentPresent.Lit {
-			newlyUntrusted = true
-			untrustedForwarder = e.untrustedForwarder
-		}
-		e.setUntrustedContentPresent(state, ev, extractResultText(ev.Result))
-	}
-	e.mu.Unlock()
+	}()
 
 	if len(toForward) > 0 && forwarder != nil {
 		forwarder(toForward)
