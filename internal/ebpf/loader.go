@@ -41,6 +41,7 @@ type ConnectEvent struct {
 	Family   uint8
 	DestAddr [16]byte
 	DestPort uint16
+	FD       uint32
 	CgroupID uint64
 	Comm     [16]byte
 }
@@ -625,7 +626,8 @@ func decodeConnect(raw []byte) (*RingEvent, error) {
 		PID:      binary.LittleEndian.Uint32(raw[16:20]),
 		TID:      binary.LittleEndian.Uint32(raw[20:24]),
 		Family:   raw[24],
-		DestPort: binary.LittleEndian.Uint16(raw[41:43]),
+		DestPort: binary.LittleEndian.Uint16(raw[42:44]),
+		FD:       binary.LittleEndian.Uint32(raw[44:48]),
 		CgroupID: binary.LittleEndian.Uint64(raw[48:56]),
 	}
 	copy(ev.DestAddr[:], raw[25:41])
@@ -674,7 +676,7 @@ func decodeSendtoPayload(raw []byte) (*SendtoEvent, error) {
 		PID:      binary.LittleEndian.Uint32(raw[16:20]),
 		TID:      binary.LittleEndian.Uint32(raw[20:24]),
 		Family:   raw[24],
-		DestPort: binary.LittleEndian.Uint16(raw[41:43]),
+		DestPort: binary.LittleEndian.Uint16(raw[42:44]),
 		CgroupID: binary.LittleEndian.Uint64(raw[48:56]),
 	}
 	copy(ev.DestAddr[:], raw[25:41])

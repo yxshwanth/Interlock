@@ -34,8 +34,9 @@ struct connect_event {
 	__u32 tid;
 	__u8  family; /* AF_INET / AF_INET6 */
 	__u8  dest_addr[16];
+	__u8  _pad2;
 	__u16 dest_port;
-	__u8  _pad2[5];
+	__u32 fd;
 	__u64 cgroup_id;
 	char  comm[16];
 };
@@ -61,12 +62,22 @@ struct sendto_event {
 	__u32 tid;
 	__u8  family;
 	__u8  dest_addr[16];
+	__u8  _pad1;
 	__u16 dest_port;
-	__u8  _pad[5];
+	__u32 _pad2;
 	__u64 cgroup_id;
 	char  comm[16];
 	char  payload[PAYLOAD_MAX];
 };
+
+/* Wire offsets the Go decoder (loader.go) hard-codes. */
+_Static_assert(offsetof(struct connect_event, dest_port) == 42, "connect port");
+_Static_assert(offsetof(struct connect_event, fd) == 44, "connect fd");
+_Static_assert(offsetof(struct connect_event, cgroup_id) == 48, "connect cgroup");
+_Static_assert(offsetof(struct connect_event, comm) == 56, "connect comm");
+_Static_assert(offsetof(struct sendto_event, dest_port) == 42, "sendto port");
+_Static_assert(offsetof(struct sendto_event, cgroup_id) == 48, "sendto cgroup");
+_Static_assert(offsetof(struct sendto_event, payload) == 72, "sendto payload");
 
 struct openat_event {
 	__u32 type; /* EVENT_OPENAT */
@@ -304,6 +315,7 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	ev->family = family;
 	__builtin_memcpy(ev->dest_addr, dest_addr, 16);
 	ev->dest_port = dest_port;
+	ev->fd = (__u32)ctx->args[0];
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
 

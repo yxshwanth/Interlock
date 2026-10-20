@@ -4,12 +4,15 @@ package ebpf
 
 import (
 	"bytes"
+	"io"
 	"log"
 	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/yxshwanth/Interlock/internal/model"
 )
 
 func startSleeper(t *testing.T, attr *syscall.SysProcAttr) *exec.Cmd {
@@ -77,5 +80,52 @@ func TestUpdateAllowlist_DropsHostnamesWithWarning(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), `"api.anthropic.com" is not an IP address`) {
 		t.Fatalf("no warning for hostname entry; logs:\n%s", logs.String())
+	}
+}
+
+func newCorrelationSensor(got *[]model.SyscallEvent) *Sensor {
+	return &Sensor{
+		log:             log.New(io.Discard, "", 0),
+		allowlist:       map[string]bool{},
+		suspiciousByPID: make(map[int]map[int]pendingConnect),
+		handler: func(ev model.SyscallEvent) model.Decision {
+			*got = append(*got, ev)
+			return model.Decision{}
+		},
+	}
+}
+
+func connectOn(pid, fd uint32, ip byte) *ConnectEvent {
+	return &ConnectEvent{PID: pid, FD: fd, Family: afInet, DestAddr: [16]byte{203, 0, 113, ip}, DestPort: 443}
+}
+
+// Review #4: correlation is keyed by (pid, fd), so a write after the old 5 s
+// window still attributes to the connect, and a write on a different fd does not.
+func TestWriteCorrelation_IsFDKeyed(t *testing.T) {
+	var got []model.SyscallEvent
+	s := newCorrelationSensor(&got)
+	s.handleConnect(connectOn(10, 5, 1))
+	s.handleConnect(connectOn(10, 6, 2))
+	got = nil
+
+	s.suspiciousByPID[10][5] = pendingConnect{destIP: "203.0.113.1", destPort: 443, at: time.Now().Add(-time.Hour / 4)}
+	s.handleWrite(&WriteEvent{PID: 10, FD: 5, Len: 1, Payload: []byte("x")})
+	s.handleWrite(&WriteEvent{PID: 10, FD: 6, Len: 1, Payload: []byte("x")})
+	s.handleWrite(&WriteEvent{PID: 10, FD: 7, Len: 1, Payload: []byte("x")})
+
+	if len(got) != 1 || got[0].DestIP != "203.0.113.2" {
+		t.Fatalf("want one event for fd 6 -> 203.0.113.2 (fd 5 aged out, fd 7 never connected), got %+v", got)
+	}
+}
+
+func TestWriteCorrelation_LateWriteStillCorrelates(t *testing.T) {
+	var got []model.SyscallEvent
+	s := newCorrelationSensor(&got)
+	s.handleConnect(connectOn(10, 5, 1))
+	got = nil
+	s.suspiciousByPID[10][5] = pendingConnect{destIP: "203.0.113.1", destPort: 443, at: time.Now().Add(-time.Minute)}
+	s.handleWrite(&WriteEvent{PID: 10, FD: 5, Len: 1, Payload: []byte("x")})
+	if len(got) != 1 || got[0].DestIP != "203.0.113.1" {
+		t.Fatalf("write 1 min after connect must still correlate, got %+v", got)
 	}
 }
