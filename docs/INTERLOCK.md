@@ -175,7 +175,7 @@ flowchart LR
 
 | Mode | Who spawns the workload | Variant B story |
 |---|---|---|
-| **Proxy mode** with `sandbox.netns: true` | Interlock (`StartServer` → `applySandboxNetNS` in `internal/proxy/sandbox_linux.go`) | Children get `CLONE_NEWNET` with an empty netns (loopback not brought up). Non-loopback connect fails with `ENETUNREACH` / `EHOSTUNREACH`. Side channel is **prevented** at spawn, not detected after the fact. Default `sandbox.netns` is **false** (opt-in; needs `CAP_SYS_ADMIN`). |
+| **Proxy mode** with `sandbox.netns: true` | Interlock (`StartServer` → `applySandboxNetNS` in `internal/proxy/sandbox_linux.go`) | Children get `CLONE_NEWNET` with an empty netns (loopback not brought up). Non-loopback connect fails with `ENETUNREACH` / `EHOSTUNREACH`. Side channel is **prevented** at spawn for an unprivileged child, not detected after the fact. Children inherit the proxy's uid and capabilities (only `Setpgid` + `CLONE_NEWNET` are set), so a root child can `setns` back to the host netns — known gap, review #7, see [`security_review_status.md`](security_review_status.md). Default `sandbox.netns` is **false** (opt-in; needs `CAP_SYS_ADMIN`). |
 | **Sensor-only DaemonSet** | Not Interlock (kubelet / workload controller) | Interlock cannot wrap the pod in netns. Side channel is **contained**: payload overlap → SIGKILL (`contained_by_kill`); optional LSM stops *repeat* connects. See `deploy/k8s/PRIVILEGE.md`. |
 
 Chose netns prevention in proxy mode over pretending the DaemonSet can do the same thing, because only the spawning parent can set `CLONE_NEWNET` before exec. That costs privilege (`CAP_SYS_ADMIN`) and breaks any legitimate outbound networking from sandboxed children (by design). Default payload capture is **1024** bytes (`PAYLOAD_MAX`).
@@ -420,7 +420,7 @@ Current path: on `decision.Action == model.ActionContained` (EXFIL only via `var
 
 ### Allowlist and write↔connect correlation
 
-Config `egress_allowlist` feeds `Sensor.allowlist`. `isAllowlisted` matches exact and normalized IPs. Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the PID has a pending non-allowlisted connect within `SuspiciousConnectTTL` (**5 seconds**, `internal/ebpf/sensor.go`), or via self-contained sendto/sendmsg with destination.
+Config `egress_allowlist` feeds `Sensor.allowlist`. `isAllowlisted` matches exact and normalized IPs. Hostnames are never resolved, so a hostname entry (the sample config's `api.anthropic.com`) never matches; the sample's `127.0.0.1` entry means loopback connects arm no write correlation (review #22, open). Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the PID has a pending non-allowlisted connect within `SuspiciousConnectTTL` (**5 seconds**, `internal/ebpf/sensor.go`), or via self-contained sendto/sendmsg with destination.
 
 This TTL is **not** a proxy↔syscall “recency window” (see [§9](#9-the-correlation-engine)).
 
@@ -690,7 +690,10 @@ Sinks seal on write (`evidence_sink.go`, `evidence_sqlite.go`). CLI: `cmd/verify
 | Mid-chain edit of a field | Yes (hash mismatch) |
 | Mid-chain delete | Yes (seq / link break) |
 | Truncate from tip inconsistently | Yes if remaining chain breaks |
-| Full-file replace with a freshly forged genesis chain by node root | **No** (local FS integrity equals host integrity) |
+| Truncate whole records from the tail | **No** (remaining chain is still contiguous) |
+| Truncate whole records from the head | **No** (`VerifyChain` accepts a first record with `chain_seq > 0`, by design for SQLite pruning) |
+| Edit a record and recompute every later hash | **No** (unkeyed SHA-256; any writer can recompute) |
+| Full-file replace with a freshly forged genesis chain | **No** (any writer, not only node root; local FS integrity equals host integrity) |
 | Disable SIEM/webhook off-node | Not a chain problem; durability requires external sink |
 
 No WORM volume and no external signing/timestamping ship today. On-node chain is convenient self-check; off-node SIEM/webhook is durability.
@@ -985,7 +988,8 @@ From `CVEOutOfScope()` / `docs/cve_corpus.md`:
 | Long-secret truncated capture (partial) | Chunk matching §8 |
 | ZIP/xlsx whole-file + extracted interiors on inspected bytes | Path taint §18 + container descent §20 |
 | DNS / write fragmentation (normal) | Egress reassembly §19 |
-| writev/sendmsg/IPv6 | BPF probes on critical ring |
+| IPv6 destinations | family + 16B addr on connect/sendto/named-sendmsg |
+| writev/sendmsg (**partial**) | Probed on the critical ring, but only `iov[0]` is captured — open, review #3 |
 | Dual-ring flood of connect | Routine vs critical rings |
 | Taint to sensor DaemonSet | Bridge `register_taint` |
 | Soft SUSPICIOUS in sensor (opt-in) | Bridge `register_untrusted` |
@@ -993,7 +997,22 @@ From `CVEOutOfScope()` / `docs/cve_corpus.md`:
 | Spawn binary swap (Interlock-exec) | Resolved spawn pinning §17 |
 | Untagged sink on sensitive server | Opt-in `inherit_sink_suspicion` §14 |
 | Repeat connect after EXFIL | Opt-in LSM Slice 1 |
-| Proxy uncontrolled TCP | Opt-in `sandbox.netns` §7 |
+| Proxy uncontrolled TCP (**partial**) | Opt-in `sandbox.netns` §7, for unprivileged children; a root child can `setns` out (review #7, open) |
+
+### Open security-review findings
+
+Known gaps in the code on this tree, from [`security_review.md`](security_review.md); status per finding in [`security_review_status.md`](security_review_status.md). Most have no `KnownGap` pin yet. Re-check this ledger after the Wave 1 merge.
+
+| Gap | Review # |
+|---|---|
+| `send()` / NULL-address `sendto` produces no event; `fd < 3` skipped; `iov[0]` only; 5 s connect→write window; `sys_enter` TOCTOU; unchecked payload read | 1–6 |
+| Spawned servers inherit proxy uid/caps | 7 |
+| No cap on taint count/size or sessions | 9 |
+| Bridge: no minimum value length, hash unchecked | 14 |
+| DNS first label only; decoy-flow eviction; decoded layer > 8 KiB skipped | 16–18 |
+| `IngestResult` panic fails open for that result | 20 (partial) |
+| Containment kills the whole process group | 21 |
+| `egress_allowlist` hostnames never match; `127.0.0.1` exempts loopback | 22 |
 
 ### Demand-gated (named, not built)
 
@@ -1001,7 +1020,7 @@ From `CVEOutOfScope()` / `docs/cve_corpus.md`:
 |---|---|
 | **Protocol-aware egress parsers** (git pkt-line/pack, HTTP `Content-Encoding` body, SMTP DATA) - ROADMAP §21 | Would close family-at-a-time structured-protocol exfil (`cve_2025_68143_mcp_git_push_wire_protocol_gap`), but each dissector grows untrusted-input TCB (Wireshark-class risk) for poor effort/gap ratio. Build only if a deployment shows that MCP family. Flat zlib/ZIP on ToolArgs/PayloadExcerpt is already closed (§20); framing *outside* those surfaces is not. |
 | Per-pod ringbuf drop maps | Dual severity-class globals only today |
-| Shannon entropy as product signal | Monitor-dark measurement published in [`fp_corpus.md`](fp_corpus.md) (ROADMAP §12); benign would-fire **0%** under research thresholds — still **not wired** to SUSPICIOUS/EXFIL |
+| Shannon entropy as product signal | Monitor-dark measurement published in [`fp_corpus.md`](fp_corpus.md) (ROADMAP §12); benign would-fire **0%** under research thresholds — still **not wired** to SUSPICIOUS/EXFIL as a verdict signal. Separately, chunk minting now skips chunks below 3.0 bits/byte (`minChunkEntropyBitsPerByte`, `internal/engine/chunk.go`; review #10/#19) |
 | Capability drop post-attach | **Shipped (ROADMAP §13):** `SYS_ADMIN` dropped after attach; `BPF`/`PERFMON`/`KILL` retained — see PRIVILEGE.md |
 | Non-token taint shapes still open (e.g. X.509, DB URLs) without path heuristics | Expand patterns only with FP measurement |
 
