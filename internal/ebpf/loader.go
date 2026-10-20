@@ -152,6 +152,7 @@ type Loader struct {
 	writevLink     link.Link
 	sendtoLink     link.Link
 	sendmsgLink    link.Link
+	sendmmsgLink   link.Link
 	openatLink     link.Link
 	lsmLink        link.Link       // nil unless lsmEnforce requested it and attach succeeded
 	reader         *ringbuf.Reader // routine: connect/openat
@@ -210,22 +211,28 @@ func NewLoader(lsmEnforce bool) (*Loader, error) {
 		return nil, fmt.Errorf("attaching sendmsg tracepoint: %w", err)
 	}
 
-	tpOpenat, err := link.Tracepoint("syscalls", "sys_enter_openat", objs.TracepointSyscallsSysEnterOpenat, nil)
+	tpSendmmsg, err := link.Tracepoint("syscalls", "sys_enter_sendmmsg", objs.TracepointSyscallsSysEnterSendmmsg, nil)
 	if err != nil {
 		cleanup(tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
+		return nil, fmt.Errorf("attaching sendmmsg tracepoint: %w", err)
+	}
+
+	tpOpenat, err := link.Tracepoint("syscalls", "sys_enter_openat", objs.TracepointSyscallsSysEnterOpenat, nil)
+	if err != nil {
+		cleanup(tpSendmmsg, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
 		return nil, fmt.Errorf("attaching openat tracepoint: %w", err)
 	}
 
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
-		cleanup(tpOpenat, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
+		cleanup(tpOpenat, tpSendmmsg, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
 		return nil, fmt.Errorf("creating ring buffer reader: %w", err)
 	}
 
 	critRD, err := ringbuf.NewReader(objs.CriticalEvents)
 	if err != nil {
 		rd.Close()
-		cleanup(tpOpenat, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
+		cleanup(tpOpenat, tpSendmmsg, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
 		return nil, fmt.Errorf("creating critical ring buffer reader: %w", err)
 	}
 
@@ -236,6 +243,7 @@ func NewLoader(lsmEnforce bool) (*Loader, error) {
 		writevLink:     tpWritev,
 		sendtoLink:     tpSendto,
 		sendmsgLink:    tpSendmsg,
+		sendmmsgLink:   tpSendmmsg,
 		openatLink:     tpOpenat,
 		reader:         rd,
 		criticalReader: critRD,
@@ -734,6 +742,9 @@ func (l *Loader) Close() error {
 	}
 	if l.openatLink != nil {
 		l.openatLink.Close()
+	}
+	if l.sendmmsgLink != nil {
+		l.sendmmsgLink.Close()
 	}
 	if l.sendmsgLink != nil {
 		l.sendmsgLink.Close()

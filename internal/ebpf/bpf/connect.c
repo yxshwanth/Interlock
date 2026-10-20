@@ -464,19 +464,13 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	return 0;
 }
 
-/* sendmsg(fd, msg, flags) — first IOV_MAX iovecs; named dest → sendto layout, else write layout. */
-SEC("tracepoint/syscalls/sys_enter_sendmsg")
-int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ctx) {
-	if (!monitored_task())
-		return 0;
-
+/* Shared by sendmsg and sendmmsg: first IOV_MAX iovecs; named dest → sendto
+ * layout, else write layout. Caller has already checked monitored_task(). */
+static __always_inline int emit_sendmsg(__u32 fd, const struct user_msghdr *umsg) {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
 
-	__u32 fd = (__u32)ctx->args[0];
-
-	const struct user_msghdr *umsg = (const struct user_msghdr *)(unsigned long)ctx->args[1];
 	if (!umsg)
 		return 0;
 
@@ -550,6 +544,26 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 	}
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendmsg")
+int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ctx) {
+	if (!monitored_task())
+		return 0;
+	return emit_sendmsg((__u32)ctx->args[0],
+			    (const struct user_msghdr *)(unsigned long)ctx->args[1]);
+}
+
+/* sendmmsg(fd, msgvec, vlen, flags) — only msgvec[0] is captured (an
+ * mmsghdr starts with its msghdr). Later messages are a documented gap. */
+SEC("tracepoint/syscalls/sys_enter_sendmmsg")
+int tracepoint__syscalls__sys_enter_sendmmsg(struct trace_event_raw_sys_enter *ctx) {
+	if (!monitored_task())
+		return 0;
+	if ((__u32)ctx->args[2] == 0)
+		return 0;
+	return emit_sendmsg((__u32)ctx->args[0],
+			    (const struct user_msghdr *)(unsigned long)ctx->args[1]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat")

@@ -22,23 +22,24 @@ type connectIovScratch struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	connectMapCgroupFilter                       = "cgroup_filter"
-	connectMapCriticalDropCount                  = "critical_drop_count"
-	connectMapCriticalEvents                     = "critical_events"
-	connectMapDropCount                          = "drop_count"
-	connectMapEvents                             = "events"
-	connectMapIovScratchMap                      = "iov_scratch_map"
-	connectMapLsmBlocklistCgroup                 = "lsm_blocklist_cgroup"
-	connectMapLsmBlocklistPid                    = "lsm_blocklist_pid"
-	connectMapPayloadCap                         = "payload_cap"
-	connectMapPidFilter                          = "pid_filter"
-	connectProgLsmSocketConnect                  = "lsm_socket_connect"
-	connectProgTracepointSyscallsSysEnterConnect = "tracepoint__syscalls__sys_enter_connect"
-	connectProgTracepointSyscallsSysEnterOpenat  = "tracepoint__syscalls__sys_enter_openat"
-	connectProgTracepointSyscallsSysEnterSendmsg = "tracepoint__syscalls__sys_enter_sendmsg"
-	connectProgTracepointSyscallsSysEnterSendto  = "tracepoint__syscalls__sys_enter_sendto"
-	connectProgTracepointSyscallsSysEnterWrite   = "tracepoint__syscalls__sys_enter_write"
-	connectProgTracepointSyscallsSysEnterWritev  = "tracepoint__syscalls__sys_enter_writev"
+	connectMapCgroupFilter                        = "cgroup_filter"
+	connectMapCriticalDropCount                   = "critical_drop_count"
+	connectMapCriticalEvents                      = "critical_events"
+	connectMapDropCount                           = "drop_count"
+	connectMapEvents                              = "events"
+	connectMapIovScratchMap                       = "iov_scratch_map"
+	connectMapLsmBlocklistCgroup                  = "lsm_blocklist_cgroup"
+	connectMapLsmBlocklistPid                     = "lsm_blocklist_pid"
+	connectMapPayloadCap                          = "payload_cap"
+	connectMapPidFilter                           = "pid_filter"
+	connectProgLsmSocketConnect                   = "lsm_socket_connect"
+	connectProgTracepointSyscallsSysEnterConnect  = "tracepoint__syscalls__sys_enter_connect"
+	connectProgTracepointSyscallsSysEnterOpenat   = "tracepoint__syscalls__sys_enter_openat"
+	connectProgTracepointSyscallsSysEnterSendmmsg = "tracepoint__syscalls__sys_enter_sendmmsg"
+	connectProgTracepointSyscallsSysEnterSendmsg  = "tracepoint__syscalls__sys_enter_sendmsg"
+	connectProgTracepointSyscallsSysEnterSendto   = "tracepoint__syscalls__sys_enter_sendto"
+	connectProgTracepointSyscallsSysEnterWrite    = "tracepoint__syscalls__sys_enter_write"
+	connectProgTracepointSyscallsSysEnterWritev   = "tracepoint__syscalls__sys_enter_writev"
 )
 
 // loadConnect returns the embedded CollectionSpec for connect.
@@ -83,13 +84,14 @@ type connectSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type connectProgramSpecs struct {
-	LsmSocketConnect                  *ebpf.ProgramSpec `ebpf:"lsm_socket_connect"`
-	TracepointSyscallsSysEnterConnect *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_connect"`
-	TracepointSyscallsSysEnterOpenat  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_openat"`
-	TracepointSyscallsSysEnterSendmsg *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
-	TracepointSyscallsSysEnterSendto  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
-	TracepointSyscallsSysEnterWrite   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_write"`
-	TracepointSyscallsSysEnterWritev  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_writev"`
+	LsmSocketConnect                   *ebpf.ProgramSpec `ebpf:"lsm_socket_connect"`
+	TracepointSyscallsSysEnterConnect  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterOpenat   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_openat"`
+	TracepointSyscallsSysEnterSendmmsg *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendmmsg"`
+	TracepointSyscallsSysEnterSendmsg  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
+	TracepointSyscallsSysEnterSendto   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
+	TracepointSyscallsSysEnterWrite    *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_write"`
+	TracepointSyscallsSysEnterWritev   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_writev"`
 }
 
 // connectMapSpecs contains maps before they are loaded into the kernel.
@@ -171,13 +173,14 @@ type connectVariables struct {
 //
 // It can be passed to loadConnectObjects or ebpf.CollectionSpec.LoadAndAssign.
 type connectPrograms struct {
-	LsmSocketConnect                  *ebpf.Program `ebpf:"lsm_socket_connect"`
-	TracepointSyscallsSysEnterConnect *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_connect"`
-	TracepointSyscallsSysEnterOpenat  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_openat"`
-	TracepointSyscallsSysEnterSendmsg *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
-	TracepointSyscallsSysEnterSendto  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
-	TracepointSyscallsSysEnterWrite   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_write"`
-	TracepointSyscallsSysEnterWritev  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_writev"`
+	LsmSocketConnect                   *ebpf.Program `ebpf:"lsm_socket_connect"`
+	TracepointSyscallsSysEnterConnect  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterOpenat   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_openat"`
+	TracepointSyscallsSysEnterSendmmsg *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendmmsg"`
+	TracepointSyscallsSysEnterSendmsg  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
+	TracepointSyscallsSysEnterSendto   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
+	TracepointSyscallsSysEnterWrite    *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_write"`
+	TracepointSyscallsSysEnterWritev   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_writev"`
 }
 
 func (p *connectPrograms) Close() error {
@@ -185,6 +188,7 @@ func (p *connectPrograms) Close() error {
 		p.LsmSocketConnect,
 		p.TracepointSyscallsSysEnterConnect,
 		p.TracepointSyscallsSysEnterOpenat,
+		p.TracepointSyscallsSysEnterSendmmsg,
 		p.TracepointSyscallsSysEnterSendmsg,
 		p.TracepointSyscallsSysEnterSendto,
 		p.TracepointSyscallsSysEnterWrite,

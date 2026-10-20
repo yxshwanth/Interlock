@@ -22,7 +22,11 @@ func probeBody(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	src := string(raw)
-	start := strings.Index(src, `SEC("tracepoint/syscalls/sys_enter_`+name+`")`)
+	marker := `SEC("tracepoint/syscalls/sys_enter_` + name + `")`
+	if name == "sendmsg" { // body is shared with sendmmsg
+		marker = "static __always_inline int emit_sendmsg("
+	}
+	start := strings.Index(src, marker)
 	if start < 0 {
 		t.Fatalf("no probe for %s", name)
 	}
@@ -64,6 +68,20 @@ func TestBPFSource_MultiIovecGather(t *testing.T) {
 		if strings.Contains(body, "iov0") {
 			t.Errorf("%s: still special-cases iov0", name)
 		}
+	}
+}
+
+// sendmmsg must be probed and share the sendmsg capture path (review #1).
+func TestBPFSource_SendmmsgProbed(t *testing.T) {
+	if !strings.Contains(probeBody(t, "sendmmsg"), "emit_sendmsg(") {
+		t.Error("sendmmsg probe must reuse emit_sendmsg")
+	}
+	raw, err := os.ReadFile("loader.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"sys_enter_sendmmsg"`) {
+		t.Error("loader.go does not attach sys_enter_sendmmsg")
 	}
 }
 
