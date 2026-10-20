@@ -11,7 +11,7 @@ The governing idea: a well-groomed repo is a credibility signal to exactly the s
 A repo that has these reads as maintained; one that's missing them reads as a weekend dump. In rough priority order:
 
 - `README.md` — the front door. GIF first, quickstart high, honest limitations visible. (See the README plan; not repeated here.)
-- `LICENSE` — MIT, as planned. Without it, the code is legally "all rights reserved" and nobody can use it.
+- `LICENSE` — Apache-2.0 (relicensed from MIT; see ROADMAP §30). Without it, the code is legally "all rights reserved" and nobody can use it.
 - `.gitignore` — critical for this project specifically (see §7).
 - `CONTRIBUTING.md` — how to build, test, and submit changes (§4).
 - `SECURITY.md` — vulnerability disclosure policy. **Non-optional for a security tool** (§6).
