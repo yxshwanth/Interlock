@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1197,18 +1198,31 @@ func (e *Engine) appendEgressFlowFragment(state *model.SessionState, ev model.Sy
 	if state.EgressFlows == nil {
 		state.EgressFlows = make(map[string]*model.EgressFlowBuffer)
 	}
+	if state.EgressPIDFlows == nil {
+		state.EgressPIDFlows = make(map[string]*model.EgressFlowBuffer)
+	}
 	now := e.egressEventTime(ev)
-	e.pruneEgressFlows(state, now)
-
 	key, dest := e.egressFlowKey(ev)
-	flow, ok := state.EgressFlows[key]
+	window := e.appendFlow(state.EgressFlows, key, ev.PID, dest, fragment, now)
+	// One more buffer per pid across all destinations, so round-robining
+	// fragments over destinations still joins (review #17).
+	pidWindow := e.appendFlow(state.EgressPIDFlows, strconv.Itoa(ev.PID), ev.PID, "*", fragment, now)
+	if pidWindow == window {
+		return window
+	}
+	return window + "\n" + pidWindow
+}
+
+func (e *Engine) appendFlow(flows map[string]*model.EgressFlowBuffer, key string, pid int, dest, fragment string, now int64) string {
+	e.pruneEgressFlows(flows, now)
+	flow, ok := flows[key]
 	if !ok {
-		e.enforceEgressFlowCap(state)
+		e.enforceEgressFlowCap(flows)
 		flow = &model.EgressFlowBuffer{
-			PID:         ev.PID,
+			PID:         pid,
 			Destination: dest,
 		}
-		state.EgressFlows[key] = flow
+		flows[key] = flow
 	}
 
 	// Slow-trickle boundary: if the flow sat idle longer than the window,
@@ -1245,8 +1259,8 @@ func (e *Engine) appendEgressFlowFragment(state *model.SessionState, ev model.Sy
 	return strings.Join(flow.Chunks, "")
 }
 
-func (e *Engine) pruneEgressFlows(state *model.SessionState, now int64) {
-	if len(state.EgressFlows) == 0 {
+func (e *Engine) pruneEgressFlows(flows map[string]*model.EgressFlowBuffer, now int64) {
+	if len(flows) == 0 {
 		return
 	}
 	maxAge := e.egressFragmentMaxAge
@@ -1254,24 +1268,24 @@ func (e *Engine) pruneEgressFlows(state *model.SessionState, now int64) {
 		maxAge = defaultEgressFragmentAge
 	}
 	cutoff := now - maxAge.Nanoseconds()
-	for k, flow := range state.EgressFlows {
+	for k, flow := range flows {
 		if flow == nil || flow.LastAppendNS < cutoff {
-			delete(state.EgressFlows, k)
+			delete(flows, k)
 		}
 	}
 }
 
-func (e *Engine) enforceEgressFlowCap(state *model.SessionState) {
+func (e *Engine) enforceEgressFlowCap(flows map[string]*model.EgressFlowBuffer) {
 	maxFlows := e.egressMaxFlows
 	if maxFlows <= 0 {
 		maxFlows = defaultEgressMaxFlows
 	}
-	if len(state.EgressFlows) < maxFlows {
+	if len(flows) < maxFlows {
 		return
 	}
 	var oldestKey string
 	oldest := int64(1<<63 - 1)
-	for k, flow := range state.EgressFlows {
+	for k, flow := range flows {
 		ts := int64(0)
 		if flow != nil {
 			ts = flow.LastAppendNS
@@ -1282,7 +1296,7 @@ func (e *Engine) enforceEgressFlowCap(state *model.SessionState) {
 		}
 	}
 	if oldestKey != "" {
-		delete(state.EgressFlows, oldestKey)
+		delete(flows, oldestKey)
 	}
 }
 

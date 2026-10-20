@@ -1,9 +1,9 @@
 {
   "_note": "Wave 0 baseline (docs/baseline_wave0.md). Corpus numbers are exact pins: a change in either direction fails the gate and must be an explicit edit of this file. Bench ceilings are max ns/op, set at 2x the worst of 5 engine runs (2 for HTTP) on the dev laptop; re-derive on the CI runner or deploy/ec2 VM before treating as tight.",
   "fp_corpus": {
-    "scenarios": 77,
+    "scenarios": 78,
     "exfil_false_positives": 0,
-    "detection_true_positives": 32,
+    "detection_true_positives": 33,
     "detection_false_negatives": 0,
     "known_gap_misses": 8,
     "bonus_catches": 0
