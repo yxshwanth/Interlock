@@ -61,9 +61,27 @@ This does not reproduce the ~536 µs read delta in `docs/performance.md`; the re
 
 `make fp-corpus cve-corpus` on the Wave 1 tree produced no diff in `docs/fp_corpus.md` or `docs/cve_corpus.md`. fp-corpus detection stays 100.0% (31/31), EXFIL-tier false positives stay 0/37, any-trip false positives stay 7/37; cve-corpus stays 12/15 with 0 regressions. The entropy gate (`minChunkEntropyBitsPerByte = 3.0`) therefore costs no detection on this corpus. Corpus scenarios feed synthetic events, so this says nothing about the kernel decode path.
 
+## Kernel run on the deploy/ec2 VM
+
+Ubuntu 24.04 AWS image, Linux 7.0.0-1014-aws, `m7i-flex.large`, BPF LSM active (booted once with `bpf` added), Go 1.26.4, run as root with `CGO_ENABLED=0`. `REQUIRE_KERNEL=1 scripts/verify-all.sh`: gofmt, build, vet, servers, test, test-layers, spdx, gate and kernel PASS; kernel suite 40 tests, 0 skipped.
+
+The first run on this kernel failed and found real defects, all fixed in `7def404`:
+
+- The verifier rejected the `sendmmsg`/iovec program (`R2 min value is negative`), so no BPF program loaded at all.
+- `sendto` with a NULL address was still dropped, so review #1 was not actually fixed.
+- `DropPostAttach` cleared `CAP_SYS_ADMIN` on one thread only.
+- Two tests were wrong as written: the connect-flood test counted the Go runtime's eventfd writes as critical drops, and the `ReadContainerFile` oracle test assumed pid 1 has a different root than the test.
+
+Not run: kernel 6.1 (the plan asks for it; only the current-LTS image was run), and the container-built `.o` (`make bpf-generate` needs Docker; the committed object was built with the VM's clang).
+
+## Benchmarks on the VM
+
+Five engine runs and three HTTP runs on the same VM. Worst runs were below the laptop-derived ceilings except the HTTP read path (9.32 ms against a 9.30 ms ceiling), so `docs/budgets.json` ceilings are now the larger of 2x the worst laptop run and 2x the worst VM run. CI-runner numbers are still not measured.
+
 ## Not yet recorded
 
-- Kernel replay (needs root, BTF and a 6.1 / current-LTS kernel; see `make lsm-vm-up`)
+- Kernel 6.1 run
+- Benchmarks on a GitHub-hosted runner
 
 ## Flakes seen while recording
 

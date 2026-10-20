@@ -554,10 +554,10 @@ Items 1–9 are design boundaries, not unfinished TODOs. Items 1–5 and 8 have 
 
 **9. Monitor mode allows proven `EXFIL` through on the proxy plane.** By design, and worth saying out loud: `enforcement: monitor` is for tuning, not for production. It does not disarm the kernel plane: a Variant B `EXFIL` is still `contained_by_kill`.
 
-**10. Open and unverified review findings.** Tracked in [`docs/security_review_status.md`](docs/security_review_status.md):
+**10. Open review findings and residuals.** Tracked in [`docs/security_review_status.md`](docs/security_review_status.md):
 
-- Unverified until the kernel suite runs on the VM: the kernel-plane changes for #1, #2, #3 and #6 compile but have not been loaded, and the root-only privilege-drop test for #7 has not run.
-- Still open: `close(2)` is not probed, so a reused fd number can inherit a stale destination for up to 10 minutes (#4, fd-keyed correlation landed, kernel-unverified); probes read user memory at `sys_enter`, so a second thread can swap bytes or the destination (#5, pinned); `write`/`writev` on fds 0–2 are skipped (#2, pinned); `pwrite64`, `pwritev`, `sendfile` and `io_uring` are not probed (#1).
+- Kernel-plane fixes for #1, #2, #3, #4 and #6 and the privilege drop for #7 were loaded and exercised as root on one kernel (Ubuntu 24.04 AWS, Linux 7.0, BPF LSM on). The 6.1 kernel and the pinned-container `.o` build have not been run.
+- Still open: `close(2)` is not probed, so a reused fd number can inherit a stale destination for up to 10 minutes (#4, fd-keyed correlation landed and kernel-tested); probes read user memory at `sys_enter`, so a second thread can swap bytes or the destination (#5, pinned); `write`/`writev` on fds 0–2 are skipped (#2, pinned); `pwrite64`, `pwritev`, `sendfile` and `io_uring` are not probed (#1).
 - Pinned residuals of fixed findings: a secret split across two DNS labels (#16), slow trickle and 32-decoy-flow eviction (#17), a padded layer nested in another encoding (#18), values shed past the per-session taint cap (#9).
 
 ---

@@ -4,14 +4,14 @@ Checked each finding in [`security_review.md`](security_review.md) against the t
 
 | # | Finding | Status | Evidence |
 |---|---|---|---|
-| 1 | `send(2)` blind spot | Partly fixed, unverified | `sendmmsg` probed (msgvec[0] only); `sendto`/`sendmsg` captured on any fd. `pwrite64`, `pwritev`, `sendfile`, `io_uring` remain unprobed and documented. Compiles; not loaded in a kernel |
-| 2 | `fd < 3` skip | Partly fixed, unverified | `fd < 3` skip removed from `sendto`/`sendmsg`; `write`/`writev` keep it (pinned `TestBPFSource_WriteStdioSkip_KnownGap`) |
-| 3 |Only `iov[0]` captured | Fixed, unverified | `gather_iov` copies up to 4 iovecs via a per-CPU scratch map; verifier acceptance not tested |
-| 4 |5s connect→write window | Fixed, unverified | Connect events now carry the fd; the sensor keys correlation by `(pid, fd)` and a connect-armed fd lives 10 min (`staleFDTTL`), not 5 s. `SuspiciousConnectTTL` only bounds the fd-less `sendto` arming. `close(2)` is not probed, so a reused fd can keep a stale dest until the TTL. Tests `TestWriteCorrelation_*`. Not loaded in a kernel |
-| — |`connect_event`/`sendto_event` layout vs Go decoder | Fixed, unverified | Found while doing #4: natural C alignment put `dest_port` at 42 and `cgroup_id` at 56, but the decoder read 41 and 48. Layout is now explicit with `_Static_assert`s on every offset the decoder hard-codes. The committed `.o` was regenerated with host clang, not the pinned container |
+| 1 | `send(2)` blind spot | Fixed for `sendto`/`send`/`sendmsg`/`sendmmsg[0]`, kernel-verified | The kernel run showed NULL-address `sendto` still returned early; it is now emitted as a write on the fd (`emit_write`) and correlates via `(pid, fd)`. `TestKernel_SendWithNullAddressCaptured`, `_SendmmsgFirstMessageCaptured`, `_SendtoCapturedOnLowFD`. `pwrite64`, `pwritev`, `sendfile`, `io_uring` and `sendmmsg` beyond msgvec[0] remain unprobed and documented |
+| 2 | `fd < 3` skip | Fixed for send paths, kernel-verified | Skip removed from `sendto`/`sendmsg` (`TestKernel_SendtoCapturedOnLowFD` dups a UDP socket onto fd 0); `write`/`writev` keep it (pinned `TestBPFSource_WriteStdioSkip_KnownGap`) |
+| 3 |Only `iov[0]` captured | Fixed, kernel-verified | `gather_iov` copies up to 4 iovecs via a per-CPU scratch map. The kernel run found the verifier rejected it (a re-read of `iov_len` lost its bounds, which blocked every program from loading); fixed with masks and `barrier_var`. `TestKernel_WritevGathersAllIovecs`, `_SendmsgGathersAllIovecs` |
+| 4 |5s connect→write window | Fixed, kernel-verified | Connect events now carry the fd; the sensor keys correlation by `(pid, fd)` and a connect-armed fd lives 10 min (`staleFDTTL`), not 5 s. `SuspiciousConnectTTL` only bounds the fd-less `sendto` arming. `close(2)` is not probed, so a reused fd can keep a stale dest until the TTL. Tests `TestWriteCorrelation_*`, `TestKernel_ConnectEventCarriesFD` |
+| — |`connect_event`/`sendto_event` layout vs Go decoder | Fixed, kernel-verified | Found while doing #4: natural C alignment put `dest_port` at 42 and `cgroup_id` at 56, but the decoder read 41 and 48. Layout is now explicit with `_Static_assert`s on every offset the decoder hard-codes. `TestKernel_ConnectEventCarriesFD` checks port, fd, comm and cgroup decode against a real event. The committed `.o` was built with the VM's clang, not the pinned container |
 | 5 |TOCTOU on `bpf_probe_read_user` | Pinned as gap | Inherent to `sys_enter` tracepoints; `TestBPFSource_PayloadProbesAreSysEnter_TOCTOUKnownGap`, `threat_model.md` T6 |
-| 6 |Payload not zeroed, read unchecked | Fixed, unverified | Reads sized to the captured length and checked; ringbuf record discarded on failure; loader clamps `Len` to the sample |
-| 7 |Children inherit privileges | Fixed, setns unverified | Root proxy drops children to SUDO_UID/nobody with `no_new_privs`; the root-only `setns` escape test skips without root |
+| 6 |Payload not zeroed, read unchecked | Fixed, kernel-verified | Reads sized to the captured length and checked; ringbuf record discarded on failure; loader clamps `Len` to the sample. All programs load and run under the real verifier |
+| 7 |Children inherit privileges | Fixed, verified as root | Root proxy drops children to SUDO_UID/nobody with `no_new_privs`; `TestStartServer_NetNS_ChildCannotSetnsOut` ran and passed as root on the VM. Also found: `DropPostAttach` cleared `CAP_SYS_ADMIN` on one thread only; it now uses `AllThreadsSyscall` (pure-Go builds, as the release build is) |
 | 8 | `ReadContainerFile` traversal | **Fixed** | `proc_root.go` cleans path, rejects `..`, no host fallback |
 | 9 |Unbounded taint/sessions | Fixed | Per-session taint caps (1,024 values / 1 MiB, drop oldest), hash dedupe, 10,000-session LRU cap. Dropped values pinned as gaps |
 | 10 | Low-entropy chunks → false EXFIL | **Fixed** | `minChunkEntropyBitsPerByte = 3.0` in `chunk.go`; confirm against corpus |
@@ -29,7 +29,7 @@ Checked each finding in [`security_review.md`](security_review.md) against the t
 | 22 |Allowlist semantics | Fixed | Hostname entries are dropped with a warning; `interlock.yaml` and examples list IPs only |
 | 23 | Viewer unescaped `item.ref` | **Fixed** | `esc(String(item.ref))`, `viewer.html:464` |
 
-**Wave 1 (this branch):** 1, 2, 3, 4, 6 and 7 changed but unverified on a kernel or as root; 5 pinned as a gap; 9, 14, 16, 17, 18, 20, 22 fixed (16, 17, 18 with pinned residuals); 21 needed no code change. Fixed before Wave 1: 8, 10, 11, 12, 13, 15, 19, 23.
+**Wave 1 (this branch):** 1, 2, 3, 4, 6 and 7 verified on a Linux 7.0 kernel as root (see `baseline_wave0.md`); 5 pinned as a gap; 9, 14, 16, 17, 18, 20, 22 fixed (16, 17, 18 with pinned residuals); 21 needed no code change. Fixed before Wave 1: 8, 10, 11, 12, 13, 15, 19, 23.
 
 ## Implications for Wave 1
 
@@ -37,7 +37,7 @@ Checked each finding in [`security_review.md`](security_review.md) against the t
 - §25: entropy gate already landed; the remaining work is measuring it against the Wave 0 baseline, plus privilege drop (7) and bounds (9).
 - §26: only 20 is left, as a fail-closed change.
 - 16–18, 21, 22 need triage: pin as `KnownGap` or schedule.
-- Regression coverage: every "Fixed" item now has a named test (#23 gained `web/viewer_test.go`, mutation-checked against the unescaped form). The tests for #7 (setns) and the kernel items still need a root or kernel run.
+- Regression coverage: every "Fixed" item now has a named test (#23 gained `web/viewer_test.go`, mutation-checked against the unescaped form). Kernel items have root-gated tests that ran on the VM (`kernel_probes_test.go`).
 
 ## Tier 4 (README outruns the code) — docs audit, Wave 1 worker D
 

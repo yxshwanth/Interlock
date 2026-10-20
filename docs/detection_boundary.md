@@ -110,12 +110,11 @@ after the Wave 1 merge.
 
 | Gap | Review # |
 |---|---|
-| `send()` (`sendto` with NULL address) produces no event | 1 |
-| Payload probes skip `fd < 3`; `dup2(sock, 1)` evades | 2 |
-| `writev` / `sendmsg` capture only `iov[0]` | 3 |
+| `pwrite64`, `pwritev`, `sendfile`, `io_uring` and `sendmmsg` beyond msgvec[0] are not probed (`send()`, `sendto`, `sendmsg`, `sendmmsg[0]` are captured, kernel-tested) | 1 |
+| `write`/`writev` skip `fd < 3`; `dup2(sock, 1)` then `write` evades (`sendto`/`sendmsg` have no skip) | 2 |
+| `writev` / `sendmsg` capture only the first 4 iovecs | 3 |
 | A reused fd number can inherit a closed connection's destination for up to 10 min (`close(2)` not probed; #4 replaced the 5 s window with fd-keyed state) | 4 |
 | `sys_enter` user-memory reads are TOCTOU-racy (payload and destination) | 5 |
-| Faulted payload read unchecked; stale ring-buffer bytes can surface | 6 |
 | DNS matching sees only the first label | 16 |
 | Decoy flows evict an accumulating egress flow (32-flow cap) | 17 (cross-destination and trickle parts are pinned above) |
 | A decoded layer larger than 8 KiB is skipped | 18 |

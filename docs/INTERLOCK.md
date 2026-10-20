@@ -1006,8 +1006,8 @@ Known gaps in the code on this tree, from [`security_review.md`](security_review
 
 | Gap | Review # |
 |---|---|
-| `send()` / NULL-address `sendto` produces no event; `fd < 3` skipped; `iov[0]` only; 5 s connect→write window (now fd-keyed, #4); `sys_enter` TOCTOU; unchecked payload read | 1–6 |
-| Spawned servers inherit proxy uid/caps | 7 |
+| Fixed and kernel-tested on one kernel: NULL-address `send`, `fd < 3` on send paths, 4-iovec gather, fd-keyed connect→write (#1–#4, #6). Still open: `write`/`writev` skip `fd < 3`; `pwrite64`/`pwritev`/`sendfile`/`io_uring` unprobed; `sys_enter` TOCTOU (#5) | 1–6 |
+| Spawned servers inherit proxy uid/caps (fixed; escape test passed as root) | 7 |
 | No cap on taint count/size or sessions | 9 |
 | Bridge: no minimum value length, hash unchecked | 14 |
 | DNS first label only; decoy-flow eviction; decoded layer > 8 KiB skipped | 16–18 |

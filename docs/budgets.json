@@ -1,5 +1,5 @@
 {
-  "_note": "Wave 0 baseline (docs/baseline_wave0.md). Corpus numbers are exact pins: a change in either direction fails the gate and must be an explicit edit of this file. Bench ceilings are max ns/op, set at 2x the worst of 5 engine runs (2 for HTTP) on the dev laptop; re-derive on the CI runner or deploy/ec2 VM before treating as tight.",
+  "_note": "Wave 0 baseline (docs/baseline_wave0.md). Corpus numbers are exact pins: a change in either direction fails the gate and must be an explicit edit of this file. Bench ceilings are max ns/op, each the larger of 2x the worst laptop run (5 engine, 2 HTTP) and 2x the worst run on the deploy/ec2 VM (m7i-flex.large, 5 engine, 3 HTTP); loose by design, they catch order-of-magnitude regressions only.",
   "fp_corpus": {
     "scenarios": 80,
     "exfil_false_positives": 0,
@@ -17,13 +17,13 @@
     "bonus_catches": 0
   },
   "bench_max_ns_op": {
-    "BenchmarkCheckOverlap_1Tainted": 8154,
-    "BenchmarkCheckOverlap_Scale/10000": 2514866,
-    "BenchmarkCheckOverlap_HitPath/10000": 140,
+    "BenchmarkCheckOverlap_1Tainted": 9958,
+    "BenchmarkCheckOverlap_Scale/10000": 3608098,
+    "BenchmarkCheckOverlap_HitPath/10000": 213,
     "BenchmarkEngine_EvaluateRequest_Exfil": 902580,
-    "BenchmarkEngine_IngestResult_TaintExtract": 4288068,
-    "BenchmarkCanonicalEncodings": 1366550,
-    "BenchmarkHTTP_EngineDelta_ReadTicket/EngineOn": 9297340,
-    "BenchmarkHTTP_EngineDelta_MonitorSinkBenign/EngineOn": 682780
+    "BenchmarkEngine_IngestResult_TaintExtract": 5959968,
+    "BenchmarkCanonicalEncodings": 2045412,
+    "BenchmarkHTTP_EngineDelta_ReadTicket/EngineOn": 13162694,
+    "BenchmarkHTTP_EngineDelta_MonitorSinkBenign/EngineOn": 1321206
   }
 }

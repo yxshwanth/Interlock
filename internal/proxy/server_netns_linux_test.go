@@ -57,14 +57,17 @@ func TestStartServer_NetNS_ConnectENETUNREACH(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
+	copied := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		_, _ = io.Copy(&stderr, proc.Stderr)
+		close(copied)
 	}()
 	go func() { done <- proc.Wait() }()
 
 	select {
 	case err := <-done:
+		<-copied // io.Copy owns stderr until the pipe closes
 		out := stderr.String()
 		if err == nil {
 			t.Fatalf("netns child dial unexpectedly succeeded; stderr=%q", out)
