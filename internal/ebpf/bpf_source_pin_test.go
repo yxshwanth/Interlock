@@ -71,6 +71,18 @@ func TestBPFSource_MultiIovecGather(t *testing.T) {
 	}
 }
 
+// Review #5: payload is captured at syscall entry from user memory, so a racing
+// thread can rewrite the buffer afterwards. Tracepoints cannot fix this; this
+// pin fails if the capture point changes so the docs get revisited.
+func TestBPFSource_PayloadProbesAreSysEnter_TOCTOUKnownGap(t *testing.T) {
+	for _, name := range []string{"write", "writev", "sendto", "sendmsg", "sendmmsg"} {
+		body := probeBody(t, name)
+		if !strings.Contains(body, "bpf_probe_read_user(") && !strings.Contains(body, "gather_iov(") && !strings.Contains(body, "emit_sendmsg(") {
+			t.Errorf("%s: no longer reads user memory at sys_enter; revisit the TOCTOU gap in docs/threat_model.md", name)
+		}
+	}
+}
+
 // sendmmsg must be probed and share the sendmsg capture path (review #1).
 func TestBPFSource_SendmmsgProbed(t *testing.T) {
 	if !strings.Contains(probeBody(t, "sendmmsg"), "emit_sendmsg(") {

@@ -94,6 +94,9 @@ Soft SUSPICIOUS may still fire if untrusted content and the sink share a long
 | Untagged write tool on a sensitive server (default Option C) | `malicious_gap_untagged_tool_on_sensitive_server`; closed under opt-in inherit — exemption is **only** `sink_suspicion_allowlist` (`internal_note: []` still inherits): `malicious_proxy_a_untagged_inherit_sink` |
 | Semantic / paraphrased exfil | `malicious_gap_semantic_paraphrase_exfil` |
 | First EXFIL-carrying packet is never kernel-prevented — `connect()` has no payload, so even with `ebpf.lsm_enforce` on, detection lands after `connect()` succeeds; only *repeat* attempts get `prevented` | `TestIngestSyscall_FirstPacketStillContained_KnownGap` |
+| Syscall-argument TOCTOU — payload bytes are read from user memory at `sys_enter_*`, so a second thread can rewrite the buffer after the probe reads it and before the kernel copies it | `TestBPFSource_PayloadProbesAreSysEnter_TOCTOUKnownGap` (review #5). Not fixable from tracepoints; an LSM/fentry hook on the post-copy path is the only closure, not built |
+| `write`/`writev` to a socket `dup2`'d onto fd 0-2 | `TestBPFSource_WriteStdioSkip_KnownGap` (review #2). `sendto`/`sendmsg` no longer skip stdio fds; `write`/`writev` still do because stdout/stderr logging would flood the critical ring |
+| Messages 1..n of `sendmmsg`, iovecs past the fourth in `writev`/`sendmsg`, and `pwrite64` / `pwritev` / `sendfile` / `io_uring` sends | Not probed or only partially captured (review #1, #3); `sendmmsg` msgvec[0] and the first 4 iovecs are captured |
 
 Closing a gap means flipping the scenario out of KnownGap and keeping EXFIL-tier
 FP at 0% on the benign corpus.
