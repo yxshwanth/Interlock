@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yxshwanth/Interlock/internal/engine"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
@@ -23,7 +24,10 @@ const (
 	OpRegisterUntrusted = "register_untrusted"
 	maxLineBytes        = 256 * 1024
 	maxValueBytes       = 64 * 1024
-	maxSourceBytes      = 4 * 1024
+	// minValueBytes stops a peer from tainting "e" and turning every payload
+	// into EXFIL. The shortest secretPatterns match is acct_ plus 8 (13 bytes).
+	minValueBytes  = 8
+	maxSourceBytes = 4 * 1024
 )
 
 // VariantWire is a serializable encoding form for the bridge protocol.
@@ -246,8 +250,14 @@ func parseRegisterLine(line []byte) (RegisterTaintMsg, error) {
 	if msg.Value == "" || msg.Hash == "" {
 		return msg, fmt.Errorf("missing value or hash")
 	}
+	if len(msg.Value) < minValueBytes {
+		return msg, fmt.Errorf("value too short (%d bytes, min %d)", len(msg.Value), minValueBytes)
+	}
 	if len(msg.Value) > maxValueBytes {
 		return msg, fmt.Errorf("value too large (%d bytes)", len(msg.Value))
+	}
+	if msg.Hash != engine.HashValue(msg.Value) {
+		return msg, fmt.Errorf("hash does not match value")
 	}
 	return msg, nil
 }
