@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command gate checks the corpus results and benchmark output against the
 // budgets in docs/budgets.json and exits non-zero on any violation.
 //
