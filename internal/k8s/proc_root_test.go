@@ -46,6 +46,9 @@ func TestReadContainerFile_NoHostFallbackOracle(t *testing.T) {
 	// pid 1 exists but its /proc/1/root won't contain this host tempdir path
 	// (this test process isn't PID 1 and doesn't share its rootfs), so this
 	// exercises the "every per-PID attempt failed" path.
+	if _, err := os.Stat("/proc/1/root" + hostOnlyFile); err == nil {
+		t.Skip("pid 1 shares this filesystem (root on a non-container host); the oracle cannot be distinguished")
+	}
 	got, err := ReadContainerFile([]int{1}, hostOnlyFile)
 	if err == nil {
 		t.Fatalf("expected failure (no host fallback), but got content: %q", got)

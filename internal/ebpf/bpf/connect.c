@@ -233,10 +233,12 @@ static __always_inline __u32 clamp_cap(__u64 count) {
 	return cap;
 }
 
-/* Per-CPU gather buffer for multi-iovec captures. 2x PAYLOAD_MAX so the
- * verifier accepts out+total (<=PAYLOAD_MAX) with a copy of <=PAYLOAD_MAX. */
+/* Per-CPU gather buffer for multi-iovec captures. Offset and length are both
+ * masked to IOV_MASK (2*PAYLOAD_MAX-1) so the verifier sees a non-negative,
+ * bounded range; 4x PAYLOAD_MAX keeps offset+length inside the buffer. */
+#define IOV_MASK (2 * PAYLOAD_MAX - 1)
 struct iov_scratch {
-	char buf[2 * PAYLOAD_MAX];
+	char buf[4 * PAYLOAD_MAX];
 };
 
 struct {
@@ -273,7 +275,11 @@ static __always_inline __u32 gather_iov(char *out, const struct iovec *iovp, __u
 			n = iov.iov_len;
 		if (n > PAYLOAD_MAX || total > PAYLOAD_MAX)
 			break;
-		if (bpf_probe_read_user(out + total, n, iov.iov_base) < 0)
+		/* Without the barrier clang re-reads iov.iov_len from the stack for
+		 * the helper call and the verifier loses the bounds proved above. */
+		barrier_var(n);
+		n &= IOV_MASK;
+		if (bpf_probe_read_user(out + (total & IOV_MASK), n, iov.iov_base) < 0)
 			break;
 		total += n;
 	}
@@ -323,25 +329,13 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_enter_write")
-int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx) {
-	if (!monitored_task())
-		return 0;
-
+/* Capture buf as a plain write-layout event (write, and sendto without an
+ * address, which correlates to its connect by fd). */
+static __always_inline int emit_write(__u32 fd, const char *buf, __u64 count) {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
 
-	__u32 fd = (__u32)ctx->args[0];
-	/* Known gap: write(2) to a socket dup2'd onto fd 0-2 is skipped. The
-	 * tracepoint cannot tell a socket from a tty/pipe without walking
-	 * task->files, and logging to stdout/stderr would flood the critical
-	 * ring. sendto/sendmsg have no such skip. */
-	if (fd < 3)
-		return 0;
-
-	const char *buf = (const char *)(unsigned long)ctx->args[1];
-	__u64 count = (__u64)ctx->args[2];
 	if (!buf || count == 0)
 		return 0;
 
@@ -370,6 +364,22 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_write")
+int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx) {
+	if (!monitored_task())
+		return 0;
+
+	__u32 fd = (__u32)ctx->args[0];
+	/* Known gap: write(2) to a socket dup2'd onto fd 0-2 is skipped. The
+	 * tracepoint cannot tell a socket from a tty/pipe without walking
+	 * task->files, and logging to stdout/stderr would flood the critical
+	 * ring. sendto/sendmsg have no such skip. */
+	if (fd < 3)
+		return 0;
+
+	return emit_write(fd, (const char *)(unsigned long)ctx->args[1], (__u64)ctx->args[2]);
 }
 
 /* writev(fd, iov, iovcnt) — first IOV_MAX iovecs gathered contiguously. */
@@ -437,8 +447,12 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	const char *buf = (const char *)(unsigned long)ctx->args[1];
 	__u64 count = (__u64)ctx->args[2];
 	struct sockaddr *sa = (struct sockaddr *)(unsigned long)ctx->args[4];
-	if (!buf || count == 0 || !sa)
+	if (!buf || count == 0)
 		return 0;
+	/* send(2) is sendto with a NULL address: capture it as a write on the fd
+	 * so it correlates to its connect (review #1). */
+	if (!sa)
+		return emit_write((__u32)ctx->args[0], buf, count);
 
 	__u8 family = 0;
 	__u8 dest_addr[16];

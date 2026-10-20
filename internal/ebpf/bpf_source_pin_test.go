@@ -34,6 +34,11 @@ func probeBody(t *testing.T, name string) string {
 	if end := strings.Index(rest, "\nSEC("); end >= 0 {
 		rest = rest[:end]
 	}
+	if strings.Contains(rest, "emit_write(") { // write and send(2) share a helper
+		h := strings.Index(src, "static __always_inline int emit_write(")
+		hend := strings.Index(src[h:], "\nSEC(")
+		rest += src[h : h+hend]
+	}
 	return rest
 }
 
