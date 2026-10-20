@@ -27,6 +27,12 @@ const (
 	defaultEgressFragmentBytes  = 4 * 1024
 	defaultEgressFragmentAge    = 10 * time.Second
 	defaultEgressMaxFlows       = 32
+
+	// Per-session taint bounds (review #9). Past either cap the oldest values
+	// are shed. 1 MiB is 16 whole 64 KiB files, about 32k chunks to scan per
+	// egress event under Engine.mu.
+	maxTaintedPerSession      = 1024
+	maxTaintedBytesPerSession = 1 << 20
 )
 
 // EvidenceSink receives evidence records when a trifecta trips.
@@ -208,12 +214,6 @@ func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
 		}
 	}
 
-	if len(tv.Variants) == 0 {
-		tv.Variants = CanonicalEncodings(tv.Value)
-	}
-	if len(tv.Chunks) == 0 {
-		AttachChunks(&tv, e.chunkMatchBytes, e.chunkMatchMinLen)
-	}
 	if tv.Hash == "" {
 		tv.Hash = HashValue(tv.Value)
 	}
@@ -224,11 +224,10 @@ func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
 		tv.RegisteredAt = time.Now().UnixNano()
 	}
 
-	added := appendUniqueTainted(state.Tainted, tv)
+	added := e.addTainted(state, []model.TaintedValue{tv})
 	if len(added) == 0 {
 		return
 	}
-	state.Tainted = append(state.Tainted, added...)
 	e.log.Printf("remote taint: session=%s source=%s registered %d value(s)",
 		sessionID, tv.Source, len(added))
 }
@@ -302,9 +301,7 @@ func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 				combined = append(combined, TaintPathDrivenContent(resultText, readPath, source, ev.Seq)...)
 			}
 			combined = append(combined, e.taintFromContainer(resultText, source, ev.Seq)...)
-			e.attachChunksAll(combined)
-			added := appendUniqueTainted(state.Tainted, combined...)
-			state.Tainted = append(state.Tainted, added...)
+			added := e.addTainted(state, combined)
 			e.vaultMint(state, added)
 			if len(added) > 0 {
 				e.log.Printf("extracted %d tainted value(s) from %s (session=%s)",
@@ -877,10 +874,9 @@ func (e *Engine) seedSensorSensitiveOpen(state *model.SessionState, ev model.Sys
 			path, state.SessionID, len(ev.FileContents))
 		return
 	}
-	e.attachChunksAll(tainted)
-	state.Tainted = append(state.Tainted, tainted...)
-	e.log.Printf("sensor seed: openat %s session=%s — registered %d tainted value(s)",
-		path, state.SessionID, len(tainted))
+	added := e.addTainted(state, tainted)
+	e.log.Printf("sensor seed: openat %s session=%s — registered %d new tainted value(s)",
+		path, state.SessionID, len(added))
 }
 
 func (e *Engine) recordUnattributedSyscall(ev model.SyscallEvent, reason string) {
@@ -1332,6 +1328,41 @@ func (e *Engine) attachChunksAll(values []model.TaintedValue) {
 			AttachChunks(&values[i], n, minLen)
 		}
 	}
+}
+
+// addTainted registers candidates not already present by Hash, computing
+// variants and chunks for new values only, then sheds the oldest values past
+// the per-session caps (review #9). Returns the newly added values.
+func (e *Engine) addTainted(state *model.SessionState, candidates []model.TaintedValue) []model.TaintedValue {
+	added := appendUniqueTainted(state.Tainted, candidates...)
+	if len(added) == 0 {
+		return nil
+	}
+	for i := range added {
+		if len(added[i].Variants) == 0 {
+			added[i].Variants = CanonicalEncodings(added[i].Value)
+		}
+	}
+	e.attachChunksAll(added)
+	state.Tainted = append(state.Tainted, added...)
+
+	total := 0
+	for _, tv := range state.Tainted {
+		total += len(tv.Value)
+	}
+	shed := 0
+	for shed < len(state.Tainted)-1 &&
+		(len(state.Tainted)-shed > maxTaintedPerSession || total > maxTaintedBytesPerSession) {
+		total -= len(state.Tainted[shed].Value)
+		shed++
+	}
+	if shed > 0 {
+		// Copy so the shed values' backing memory is released.
+		state.Tainted = append([]model.TaintedValue(nil), state.Tainted[shed:]...)
+		e.log.Printf("[SECURITY] taint cap reached (session=%s): shed %d oldest value(s), %d remain",
+			state.SessionID, shed, len(state.Tainted))
+	}
+	return added
 }
 
 // appendUniqueTainted returns values in candidates whose Hash is not already

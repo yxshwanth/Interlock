@@ -3,11 +3,33 @@
 package engine
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/yxshwanth/Interlock/internal/model"
 )
+
+// Review #9: the store is bounded; at the cap it evicts the least recently
+// active session that holds no taint before touching one that does.
+func TestSessionStore_CapEvictsIdleUntaintedFirst(t *testing.T) {
+	s := NewSessionStore()
+	tainted := s.GetOrCreate("tainted")
+	tainted.Tainted = []model.TaintedValue{{Value: "x", Hash: "h"}}
+	tainted.LastActivity = 1
+	for i := 1; i <= maxSessions; i++ {
+		s.GetOrCreate(fmt.Sprintf("s%d", i)).LastActivity = int64(i + 1)
+	}
+	if n := len(s.All()); n != maxSessions {
+		t.Fatalf("sessions = %d, want cap %d", n, maxSessions)
+	}
+	if s.Get("tainted") == nil {
+		t.Fatal("tainted session evicted while untainted ones remained")
+	}
+	if s.Get("s1") != nil {
+		t.Fatal("least recently active untainted session should be evicted")
+	}
+}
 
 func TestSessionStore_GetEmpty(t *testing.T) {
 	s := NewSessionStore()
