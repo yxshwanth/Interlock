@@ -420,7 +420,7 @@ Current path: on `decision.Action == model.ActionContained` (EXFIL only via `var
 
 ### Allowlist and write↔connect correlation
 
-Config `egress_allowlist` feeds `Sensor.allowlist`. `isAllowlisted` matches exact and normalized IPs. Hostnames are never resolved, so a hostname entry (the sample config's `api.anthropic.com`) never matches; the sample's `127.0.0.1` entry means loopback connects arm no write correlation (review #22, open). Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the PID has a pending non-allowlisted connect within `SuspiciousConnectTTL` (**5 seconds**, `internal/ebpf/sensor.go`), or via self-contained sendto/sendmsg with destination.
+Config `egress_allowlist` feeds `Sensor.allowlist`. `isAllowlisted` matches exact and normalized IPs. Hostnames are never resolved, so a hostname entry (the sample config's `api.anthropic.com`) never matches; the sample's `127.0.0.1` entry means loopback connects arm no write correlation (review #22, open). Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the `(pid, fd)` has a pending non-allowlisted connect (reaped after `staleFDTTL`, **10 minutes**), a pid-wide `sendto` arming within `SuspiciousConnectTTL` (**5 seconds**), or via self-contained sendto/sendmsg with destination (`internal/ebpf/sensor.go`).
 
 This TTL is **not** a proxy↔syscall “recency window” (see [§9](#9-the-correlation-engine)).
 
@@ -494,7 +494,7 @@ On overlap miss, `decodeMatchCandidates` (`internal/engine/decode.go`) unwraps b
 
 Overlap uses the reassembled string. **Content-bind still uses the single-event `PayloadExcerpt`**, not the join. Fragmented DNS can EXFIL while soft bind still sees one fragment.
 
-**Closes:** normal DNS/write splitting (`cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). **Misses:** slow trickle past `egress_fragment_max_age` (`malicious_gap_egress_slow_trickle`); cross-destination split (`malicious_gap_egress_cross_destination_split`). Unbounded reassembly was rejected ([§17](#17-considered-and-rejected)).
+**Closes:** normal DNS/write splitting (`cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). **Misses:** slow trickle past `egress_fragment_max_age` (`malicious_gap_egress_slow_trickle`); decoy-flow eviction (`malicious_gap_egress_decoy_flow_eviction`); a split across destinations is caught by the per-pid buffer (`malicious_ebpf_b_egress_cross_destination_split`). Unbounded reassembly was rejected ([§17](#17-considered-and-rejected)).
 
 ### Container descent and bomb defense
 
@@ -623,7 +623,8 @@ There is **no** sliding “recency window” that joins a syscall to a recent pr
 
 | Window | Default | Purpose |
 |---|---|---|
-| `SuspiciousConnectTTL` | 5s | Sensor write↔prior connect correlation |
+| `SuspiciousConnectTTL` | 5s | Sensor pid-wide arming from `sendto` |
+| `staleFDTTL` | 10m | Sensor `(pid, fd)` connect↔write correlation reap |
 | `leg_ttl` | 30m | Soft-leg expiry |
 | `decay_after_calls` | 32 | Soft-leg expiry |
 | `egress_fragment_max_age` | 10s | Egress reassembly idle reset |
@@ -1005,7 +1006,7 @@ Known gaps in the code on this tree, from [`security_review.md`](security_review
 
 | Gap | Review # |
 |---|---|
-| `send()` / NULL-address `sendto` produces no event; `fd < 3` skipped; `iov[0]` only; 5 s connect→write window; `sys_enter` TOCTOU; unchecked payload read | 1–6 |
+| `send()` / NULL-address `sendto` produces no event; `fd < 3` skipped; `iov[0]` only; 5 s connect→write window (now fd-keyed, #4); `sys_enter` TOCTOU; unchecked payload read | 1–6 |
 | Spawned servers inherit proxy uid/caps | 7 |
 | No cap on taint count/size or sessions | 9 |
 | Bridge: no minimum value length, hash unchecked | 14 |
@@ -1033,7 +1034,7 @@ For each: this is a boundary of the observation model, not unfinished backlog.
 | **Semantic / paraphrased exfil** | Proof is registered byte forms. Meaning-level DLP requires another model (or human) on the path and a different FP regime. Pin: `malicious_gap_semantic_paraphrase_exfil`. |
 | **Blind SQLi / boolean inference** | Secret bytes never appear on any inspected surface; overlap has nothing to match. Pin: `cve_2025_66335_doris_blind_sql_injection_exfil_gap`. Rejected as EXFIL (§22). |
 | **Custom cipher EXFIL** | Infinite transform space; closed set of encodings is the product choice that keeps EXFIL-tier FP at 0%. Pin: `malicious_gap_custom_cipher`. |
-| **DNS trickle / cross-dest residuals** | Any finite reassembly window is defeated by going slower or splitting destinations. Unbounded reassembly rejected. Pins: `malicious_gap_egress_slow_trickle`, `malicious_gap_egress_cross_destination_split`. |
+| **DNS trickle / cross-dest residuals** | Any finite reassembly window is defeated by going slower or by evicting the flow with decoys. Unbounded reassembly rejected. Pins: `malicious_gap_egress_slow_trickle`, `malicious_gap_egress_decoy_flow_eviction`. |
 | **Container bomb-interior / encrypted / depth>2** | Hard caps abort; aborted walks must not invent EXFIL. Pin: `malicious_gap_container_inspect_bomb`. ZIP CD parse cost residual remains inside the inspector. |
 | **Secrets entirely past PAYLOAD_MAX** | Kernel capture ceiling; cannot overlap bytes never copied. Pin: `malicious_gap_payload_truncated`. |
 | **First EXFIL packet kernel-prevented** | `connect()` has no payload; detection is after handshake. Always first-packet `contained_by_kill` (or netns prevention in proxy mode). Pin: `TestIngestSyscall_FirstPacketStillContained_KnownGap`. |

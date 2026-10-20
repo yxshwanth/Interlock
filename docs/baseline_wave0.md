@@ -46,11 +46,24 @@ BenchmarkEngine_IngestResult_TaintExtract_PEMSized-16    	      26	   4600067 ns
 BenchmarkEngine_EvaluateRequest_Exfil-16                 	    5642	    434798 ns/op	  390853 B/op	    5684 allocs/op
 ```
 
+## HTTP engine delta (`make bench-http`, `-benchtime=500ms`, two runs)
+
+```
+BenchmarkHTTP_EngineDelta_ReadTicket/EngineOn              4.08 to 4.65 ms/op   (first run 4.51 ms)
+BenchmarkHTTP_EngineDelta_ReadTicket/Passthrough           0.35 ms/op
+BenchmarkHTTP_EngineDelta_MonitorSinkBenign/EngineOn       0.33 to 0.36 ms/op
+BenchmarkHTTP_EngineDelta_MonitorSinkBenign/Passthrough    0.35 ms/op
+```
+
+This does not reproduce the ~536 µs read delta in `docs/performance.md`; the read path costs about 3.7 to 4.3 ms more with the engine on. The cause is not established here.
+
+## Re-run after Wave 1 (entropy gate, privilege drop, taint caps, fd-keyed correlation)
+
+`make fp-corpus cve-corpus` on the Wave 1 tree produced no diff in `docs/fp_corpus.md` or `docs/cve_corpus.md`. fp-corpus detection stays 100.0% (31/31), EXFIL-tier false positives stay 0/37, any-trip false positives stay 7/37; cve-corpus stays 12/15 with 0 regressions. The entropy gate (`minChunkEntropyBitsPerByte = 3.0`) therefore costs no detection on this corpus. Corpus scenarios feed synthetic events, so this says nothing about the kernel decode path.
+
 ## Not yet recorded
 
-- `make bench-http` overhead report
 - Kernel replay (needs root, BTF and a 6.1 / current-LTS kernel; see `make lsm-vm-up`)
-- `go test ./...` full result
 
 ## Flakes seen while recording
 

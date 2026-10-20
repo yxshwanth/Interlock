@@ -147,7 +147,7 @@ HTTP mode supports **many concurrent MCP sessions**. Each `initialize` spawns an
 
 Consumes `InterceptedEvent` (Plane 1) and `SyscallEvent` (Plane 2); **owns `SessionState`**; emits `Decision`s (→ proxy) and `EvidenceRecord`s (→ sink).
 
-**Correlation (syscall → session).** eBPF events carry a PID (and optionally a cgroup). The proxy maintains a `PIDRegistry` mapping `(pid, start_time)` → `{session_id, server_id}` for each per-session backend child; `Lookup` is by PID. The sensor resolves `SessionID` before calling `IngestSyscall` (K8s: cgroup → pod). There is **no** timestamp “recency window” joining syscall events to recent proxy frames — attribution is identity lookup, then evaluation against that session’s legs and taints. Closest real windows: sensor `SuspiciousConnectTTL` (5s, write↔prior connect), leg TTL / call decay, egress fragment max age.
+**Correlation (syscall → session).** eBPF events carry a PID (and optionally a cgroup). The proxy maintains a `PIDRegistry` mapping `(pid, start_time)` → `{session_id, server_id}` for each per-session backend child; `Lookup` is by PID. The sensor resolves `SessionID` before calling `IngestSyscall` (K8s: cgroup → pod). There is **no** timestamp “recency window” joining syscall events to recent proxy frames — attribution is identity lookup, then evaluation against that session’s legs and taints. Closest real windows: sensor `SuspiciousConnectTTL` (5s, fd-less `sendto` arming only; connect↔write is keyed by `(pid, fd)` with a 10 min stale-fd reap), leg TTL / call decay, egress fragment max age.
 
 **Evidence clocks.** Proxy `InterceptedEvent.TSMono` (`ts_mono_ns`) is set from `time.Now().UnixNano()` (wall clock), despite the field name. BPF event times come from `bpf_ktime_get_ns()` (boot-relative). Those domains are not comparable; evidence timelines use engine-assigned `timeline_seq`, not raw nanoseconds. See [`INTERLOCK.md`](INTERLOCK.md) §9.
 
@@ -364,7 +364,6 @@ sandbox:
   netns: false              # opt-in CLONE_NEWNET for spawned children (proxy mode); needs CAP_SYS_ADMIN
 egress_allowlist:           # anything NOT here is treated as an external sink at the kernel
   - 127.0.0.1
-  - api.anthropic.com
 servers:
   - id: tickets
     command: ./servers/tickets/tickets
@@ -462,7 +461,7 @@ Priority tiers below are the design SoT for what Interlock does *not* catch yet 
 | Secrets past capture window | **Improved (ROADMAP §8 + §16):** chunk overlap when excerpt holds ≥N body bytes; default `payload_capture_bytes` = **1024** (`PAYLOAD_MAX`) — the knob only reduces from that ceiling. Still open when the secret lies entirely past even 1024 (`malicious_gap_payload_truncated` — permanent KnownGap) |
 | Tamper-evident evidence (WORM / external signing) | Hash chain shipped; WORM volume and external signing still deferred |
 | **Content-bound `SUSPICIOUS` on payload-bearing sensor egress** | The connect-only tripwire is fixed (below), but a sensor-observed `write`/`sendto` whose payload is merely unrelated (not overlapping taint) still can't reach `SUSPICIOUS` on the sensor plane, because `register_untrusted` (below) deliberately forwards no excerpt text — `CheckContentBind` has nothing to compare against. Would need the bridge to also carry a bounded excerpt, raising its own size/sensitivity questions; not attempted. |
-| **Finite egress reassembly window** | ROADMAP §19 appends payload-bearing `write`/`writev`/`sendto`/`sendmsg`/`dns` excerpts into bounded per-(pid,destination) buffers before `CheckOverlapPayload`, closing normal DNS and chunked-write splitting (including `cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). Remaining honest boundary: fragments slower than `trifecta.egress_fragment_max_age` or split across different destinations are not joined (`malicious_gap_egress_slow_trickle`, `malicious_gap_egress_cross_destination_split`). Unbounded trickle / sockmap stream scan remain rejected (§11). |
+| **Finite egress reassembly window** | ROADMAP §19 appends payload-bearing `write`/`writev`/`sendto`/`sendmsg`/`dns` excerpts into bounded per-(pid,destination) buffers before `CheckOverlapPayload`, closing normal DNS and chunked-write splitting (including `cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). Remaining honest boundary: fragments slower than `trifecta.egress_fragment_max_age` are not joined (`malicious_gap_egress_slow_trickle`), and 32 decoy flows evict the accumulating flow (`malicious_gap_egress_decoy_flow_eviction`). A per-pid buffer now joins a split across destinations (`malicious_ebpf_b_egress_cross_destination_split`). Unbounded trickle / sockmap stream scan remain rejected (§11). |
 
 ### Will cover eventually — diminishing returns, real gaps
 

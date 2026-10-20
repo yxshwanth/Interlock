@@ -2,6 +2,8 @@
 
 Interlock publishes **engine-component microbenchmarks** and **end-to-end HTTP proxy overhead** (v0.2.1+). For live production numbers (not benchmark snapshots), scrape `interlock_*` Prometheus metrics from `observability.listen` — including `interlock_ebpf_ringbuf_drops_total` (routine) and `interlock_ebpf_critical_ringbuf_drops_total` (critical) — see [`architecture.md` §14.1](architecture.md#141-metrics-and-health-internalobservability) and [`deploy/k8s/README.md`](../deploy/k8s/README.md#metrics-and-health-phase-3-slice-1).
 
+> **Superseded numbers (Wave 0, 2026-10-20).** The `~536 µs` read-path and `~118 µs` sink-path deltas, and the "sub-millisecond" headline below, did not reproduce on the Wave 0 baseline machine. Re-run three times: `BenchmarkHTTP_EngineDelta_ReadTicket` engine on is about 4.1 to 4.6 ms against 0.35 ms off; the sink path is within run-to-run noise. See [`baseline_wave0.md`](baseline_wave0.md) and the ceilings in [`budgets.json`](budgets.json). The older figures below are kept for history until the HTTP benchmark is re-baselined on the CI runner.
+
 ## What these numbers are and are not
 
 **Engine benchmarks** measure isolated work inside `internal/engine`: overlap scanning, taint registration, and the worst-case `EvaluateRequest` block path (including evidence emit).

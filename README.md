@@ -48,7 +48,7 @@ What gets defended is the last step. A secret was read. Time passed. Now somethi
 
 That split is the whole design. Soft signals never hard-block, so a nervous heuristic cannot take down your agent. Hard proof does something in block mode; in `enforcement: monitor` the proxy forwards it and only the kernel plane still kills.
 
-> **Audit status (Wave 1).** An external review ([`docs/security_review.md`](docs/security_review.md)) found evasions in the kernel plane and gaps in reassembly, decoding, privilege separation and the egress allowlist. Most are still open on this tree; [`docs/security_review_status.md`](docs/security_review_status.md) tracks each one, and this README names them where they apply. This page must be re-checked after the Wave 1 fixes merge.
+> **Audit status (Wave 1).** An external review ([`docs/security_review.md`](docs/security_review.md)) found evasions in the kernel plane and gaps in reassembly, decoding, privilege separation and the egress allowlist. Wave 1 fixed most of them; the kernel-plane and privilege fixes have not been run on a kernel or as root, and a few residuals are pinned as gaps. [`docs/security_review_status.md`](docs/security_review_status.md) tracks each one, and this README names them where they apply.
 
 If you have two minutes, read [the attack](#the-attack-in-three-passes). If you have ten, read [what counts as proof](#what-counts-as-proof) and [where it fails](#where-it-fails). If you want the full mechanism, [`docs/INTERLOCK.md`](docs/INTERLOCK.md) is the definitive reference and this page is the landing strip.
 
@@ -200,7 +200,7 @@ Two planes watch the same session and are blind in opposite directions. Neither 
 
 | | Variant A — MCP proxy (`A_chained_tool`) | Variant B — eBPF sensor (`B_server_channel`) |
 | --- | --- | --- |
-| **Sees** | JSON-RPC tool arguments and results; can hold a call before forwarding | `connect` · `write` · `writev` · `sendto` · `sendmsg` · DNS on 53 · `openat`, for filtered PIDs and cgroups. Payload probes skip fds 0–2, capture only the first iovec of `writev`/`sendmsg`, and drop `sendto` with no address (`send()`); `sendmmsg`/`pwrite` are not probed (open review findings 1–3) |
+| **Sees** | JSON-RPC tool arguments and results; can hold a call before forwarding | `connect` · `write` · `writev` · `sendto` · `sendmsg` · DNS on 53 · `openat`, for filtered PIDs and cgroups. `write`/`writev` skip fds 0–2 (pinned gap); `writev`/`sendmsg` gather the first 4 iovecs and `sendmmsg` captures `msgvec[0]` (changed in Wave 1, not yet loaded on a kernel); `pwrite64`, `pwritev`, `sendfile` and `io_uring` are not probed |
 | **Blind to** | raw sockets opened by a server process | MCP tags and semantics; untrusted excerpts, unless the [taint bridge](deploy/k8s/PRIVILEGE.md) supplies them |
 | **On proof** | overlap in sink args → `prevented` | payload overlap → `contained_by_kill`; opt-in LSM then denies *repeat* `connect()` as `prevented` |
 | **On suspicion** | AllLit plus content-bind → `allowed_monitor` | same soft gates → `detected_only` |
@@ -247,7 +247,7 @@ flowchart LR
     Overlap --> Verdict
 ```
 
-**Trust boundaries.** The proxy, engine, sensor, and config are the TCB. Untrusted: the MCP servers, all tool results, fetched content, and the agent's own output, because the agent is the thing being hijacked. The untrusted MCP servers currently run with the proxy's own uid and capabilities, which means root when the proxy runs as root, as the eBPF demos do (review #7, open). Interlock's own outbound connections are limited to configured webhook and SIEM endpoints and, in sensor mode, the Kubernetes API server. Self-threat model T1–T7: [`docs/threat_model.md`](docs/threat_model.md).
+**Trust boundaries.** The proxy, engine, sensor, and config are the TCB. Untrusted: the MCP servers, all tool results, fetched content, and the agent's own output, because the agent is the thing being hijacked. When the proxy runs as root, spawned MCP servers are dropped to `SUDO_UID` or `nobody` with `no_new_privs`; the root-only test that such a child cannot `setns` back out has not been run (review #7). Interlock's own outbound connections are limited to configured webhook and SIEM endpoints and, in sensor mode, the Kubernetes API server. Self-threat model T1–T7: [`docs/threat_model.md`](docs/threat_model.md).
 
 ---
 
@@ -310,9 +310,9 @@ The three non-gzip compressed forms are byte-exact strings from Go's encoders at
 
 Evidence records which form matched in `match_form`, and where in `match_where`. Layered on top of the fixed set:
 
-- **A recursive decoder** unwraps nested base64 and hex layers at runtime, depth default **5**, clamped to `[3,5]`. The clamp is empirical — deeper decoding found more false positives than exfil. A layer that decodes to more than 8 KiB is skipped, so padding the secret with filler inside one base64 layer evades it (review #18, open).
+- **A recursive decoder** unwraps nested base64 and hex layers at runtime, depth default **5**, clamped to `[3,5]`. The clamp is empirical — deeper decoding found more false positives than exfil. Layers up to 64 KiB are matched; a padded layer nested inside another encoding is still skipped and pinned as a gap (review #18).
 - **Fragment reassembly** joins a secret split across chunks before matching, bounded by a rolling FIFO (16 chunks / 64 KB).
-- **Egress reassembly** does the same per `(pid, destination)` flow, bounded by chunk count, byte budget, a 10s age window, and 32 live flows (oldest evicted). Splitting across destinations or trickling slower than 10s is pinned as a gap; opening decoy flows to evict the real one is not yet pinned (review #17). DNS payloads are reduced to their first label before matching, so a secret in any later label is missed (review #16, open).
+- **Egress reassembly** does the same per `(pid, destination)` flow, bounded by chunk count, byte budget, a 10s age window, and 32 live flows (oldest evicted). A per-pid buffer also joins a secret split across destinations. Trickling slower than 10s and opening 32 decoy flows to evict the real one are pinned gaps (review #17). DNS queries are matched whole; a secret split across two labels is a pinned gap (review #16).
 - **Chunk matching** catches long secrets (64 bytes or more) whose payload excerpt got truncated, by matching a contiguous 32-byte run rather than the whole value. Chunks below 3.0 bits/byte of entropy are not minted, so comment dividers and padding cannot become proof.
 - **Path taint** registers secrets by the file they came from, so a keyfile read through the sensor is tainted without the proxy ever seeing it.
 - **Container descent** walks bounded ZIP/gzip/zlib/tar archives — 10 MiB cumulative, depth 2, 100 members, 50ms — and a hard-cap abort produces `SUSPICIOUS`, never `EXFIL`. An aborted walk proved nothing and does not get to claim it did.
@@ -432,7 +432,6 @@ enforcement: block          # block | monitor
 
 egress_allowlist:
   - 127.0.0.1
-  - api.anthropic.com
 
 servers:
   - id: tickets
@@ -452,7 +451,7 @@ untrusted_origins:
   web_fetches:  true
 ```
 
-**`egress_allowlist` matches destination IP strings only.** The sensor never resolves hostnames, so `api.anthropic.com` above never matches, and every connect to it is treated as non-allowlisted. `127.0.0.1` does match, so loopback connects are ignored and writes after them are not correlated: a collector on loopback is an unmonitored kernel-plane channel with this sample config. Known gap, see [`docs/security_review_status.md`](docs/security_review_status.md) #22.
+**`egress_allowlist` takes IP addresses only.** The sensor never resolves hostnames, so hostname entries are dropped with a warning. Loopback entries such as `127.0.0.1` are ignored by the kernel plane, so a collector on loopback is an unmonitored channel: leave them out unless you mean it (review #22).
 
 A server carries default tags; `tool_tags` overrides per tool. An untagged tool is neither source nor sink and cannot light a leg on its own — so **a mis-tagged tool is a blind spot**, and reviewing tags is the first job when adopting this on a real fleet. Note that taint registration is independent of tagging: a secret matched by pattern or path is tracked wherever it came from.
 
@@ -460,7 +459,7 @@ Everything else is commented out in [`interlock.yaml`](interlock.yaml) and off b
 
 | Block | What it turns on |
 | --- | --- |
-| `sandbox.netns` | spawn children into `CLONE_NEWNET` — turns Variant B containment into prevention for children that cannot regain the host netns (not root children today, review #7) |
+| `sandbox.netns` | spawn children into `CLONE_NEWNET` — turns Variant B containment into prevention for children that cannot regain the host netns (root children are dropped to an unprivileged uid; the `setns` escape test needs root and has not been run, review #7) |
 | `vault` | replace extracted secrets with dummies in agent-visible results, detokenized only for authorized tools |
 | `trifecta` | leg TTL and decay, decode depth, chunk matching, egress reassembly, container descent budgets |
 | `ebpf.payload_capture_bytes` | the capture window; the knob only reduces it, raising past 1024 needs a BPF rebuild |
@@ -521,7 +520,7 @@ This section names what the project takes for granted, so you can decide whether
 
 **Scale.** Designed for tens of concurrent sessions, not thousands. `sessions.max_concurrent` defaults to 32. The taint set, trifecta state, and fragment buffers are per-session and in-memory. A deployment handling hundreds of simultaneous agent sessions would need to profile memory, and the session manager's process table is the first bottleneck. Nothing caps the number or size of tainted values per session, or the number of engine sessions (review #9, open).
 
-**Threat model.** The host kernel is trusted — no defense against a rootkit rewriting eBPF maps. The agent is untrusted (it is the thing being hijacked). MCP servers are untrusted, yet today they run with the proxy's privileges (review #7, open). The network boundary is **not** trusted — Interlock does not assume network policy will stop exfil, which is the whole point. Interlock's own outbound calls are configured webhook and SIEM endpoints and, in sensor mode, the Kubernetes API server.
+**Threat model.** The host kernel is trusted — no defense against a rootkit rewriting eBPF maps. The agent is untrusted (it is the thing being hijacked). MCP servers are untrusted, and a root proxy drops them to an unprivileged uid with `no_new_privs` (review #7; the escape test is root-only and unrun). The network boundary is **not** trusted — Interlock does not assume network policy will stop exfil, which is the whole point. Interlock's own outbound calls are configured webhook and SIEM endpoints and, in sensor mode, the Kubernetes API server.
 
 **Detection.** Optimizes for **zero EXFIL-tier false positives** at the cost of detection coverage. The 13-form transform set is closed and finite. Custom ciphers, nests deeper than depth 5, secrets entirely beyond the 1024-byte capture window, and paraphrased exfil are all outside the detection boundary. This is a deliberate trade: a missed exfil is bad, but a false block on a production agent is worse, because false blocks erode trust and get the tool turned off.
 
@@ -535,7 +534,7 @@ This section names what the project takes for granted, so you can decide whether
 
 ## Where it fails
 
-Items 1–9 are design boundaries, not unfinished TODOs. Items 1–5 and 8 have a `KnownGap` test or corpus pin; 6, 7 and 9 are stated behavior with no pin. Item 10 is different: open findings from the external review, most not yet pinned. Full ledger: [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §16, scope write-up: [`docs/detection_boundary.md`](docs/detection_boundary.md).
+Items 1–9 are design boundaries, not unfinished TODOs. Items 1–5 and 8 have a `KnownGap` test or corpus pin; 6, 7 and 9 are stated behavior with no pin. Item 10 is different: review findings that are still open or unverified. Full ledger: [`docs/INTERLOCK.md`](docs/INTERLOCK.md) §16, scope write-up: [`docs/detection_boundary.md`](docs/detection_boundary.md).
 
 **1. A closed transform set is not universal DLP.** Thirteen precomputed forms, depth-5 decoding, fragment and egress reassembly, chunk matching, path taint, bounded container descent. Still missed: **custom ciphers**, nests past the `[3,5]` clamp, secrets lying **entirely** beyond the 1024-byte capture window, structured wire protocols such as git pack outside `ToolArgs`/`PayloadExcerpt`, and container walks that abort on a bomb, encryption, or depth > 2.
 
@@ -555,14 +554,11 @@ Items 1–9 are design boundaries, not unfinished TODOs. Items 1–5 and 8 have 
 
 **9. Monitor mode allows proven `EXFIL` through on the proxy plane.** By design, and worth saying out loud: `enforcement: monitor` is for tuning, not for production. It does not disarm the kernel plane: a Variant B `EXFIL` is still `contained_by_kill`.
 
-**10. Open review findings.** Known gaps in the code on this tree, tracked in [`docs/security_review_status.md`](docs/security_review_status.md); this list must be re-checked after the Wave 1 merge:
+**10. Open and unverified review findings.** Tracked in [`docs/security_review_status.md`](docs/security_review_status.md):
 
-- Kernel plane: `send()` (a `sendto` with no address) produces no event (#1); writes on fds 0–2 are skipped, so `dup2(sock, 1)` evades (#2); only the first iovec of `writev`/`sendmsg` is captured (#3); a write more than 5 s after its `connect` is dropped (#4); probes read user memory before the kernel copies it, so a second thread can swap the bytes or the destination (#5); a failed payload read is unchecked and can leave stale bytes from an earlier event (#6).
-- Privilege: spawned servers inherit the proxy's uid and capabilities, which also defeats `sandbox.netns` for a root child (#7).
-- Engine: no cap on taint or sessions (#9); DNS matching sees only the first label (#16); decoy flows can evict an accumulating egress flow (#17); a decoded layer over 8 KiB is skipped (#18); a panic in result ingestion fails open for that result (#20, partial).
-- Bridge: no minimum taint length and no hash check (#14).
-- Containment: the kill goes to the whole process group, not just the attributed PID (#21).
-- Config: `egress_allowlist` hostnames never match, and `127.0.0.1` exempts loopback (#22).
+- Unverified until the kernel suite runs on the VM: the kernel-plane changes for #1, #2, #3 and #6 compile but have not been loaded, and the root-only privilege-drop test for #7 has not run.
+- Still open: `close(2)` is not probed, so a reused fd number can inherit a stale destination for up to 10 minutes (#4, fd-keyed correlation landed, kernel-unverified); probes read user memory at `sys_enter`, so a second thread can swap bytes or the destination (#5, pinned); `write`/`writev` on fds 0–2 are skipped (#2, pinned); `pwrite64`, `pwritev`, `sendfile` and `io_uring` are not probed (#1).
+- Pinned residuals of fixed findings: a secret split across two DNS labels (#16), slow trickle and 32-decoy-flow eviction (#17), a padded layer nested in another encoding (#18), values shed past the per-session taint cap (#9).
 
 ---
 
@@ -604,7 +600,7 @@ Interlock/
 
 ## Tests
 
-**352 test functions** (Wave 0 count), 11 of them `KnownGap` pins that assert what Interlock does **not** catch. On pushes and pull requests to `main`, CI runs build, `gofmt`, `go vet`, `go test ./...`, the corpus and engine-benchmark gate against [`docs/budgets.json`](docs/budgets.json), and `-race -short` on the proxy and engine packages. Live eBPF saturation and LSM tests are gated on root and BPF-LSM and do not run in CI.
+**385 test functions**, 17 of them `KnownGap` pins that assert what Interlock does **not** catch. On pushes and pull requests to `main`, CI runs build, `gofmt`, `go vet`, `go test ./...`, the corpus and engine-benchmark gate against [`docs/budgets.json`](docs/budgets.json), and `-race -short` on the proxy and engine packages. Live eBPF saturation and LSM tests are gated on root and BPF-LSM and do not run in CI.
 
 ```bash
 make test
