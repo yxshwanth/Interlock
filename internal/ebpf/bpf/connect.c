@@ -321,6 +321,10 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	__u32 tid = (__u32)pid_tgid;
 
 	__u32 fd = (__u32)ctx->args[0];
+	/* Known gap: write(2) to a socket dup2'd onto fd 0-2 is skipped. The
+	 * tracepoint cannot tell a socket from a tty/pipe without walking
+	 * task->files, and logging to stdout/stderr would flood the critical
+	 * ring. sendto/sendmsg have no such skip. */
 	if (fd < 3)
 		return 0;
 
@@ -416,10 +420,8 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
 
-	__u32 fd = (__u32)ctx->args[0];
-	if (fd < 3)
-		return 0;
-
+	/* No fd<3 skip: sendto/sendmsg only work on sockets, so a socket dup2'd
+	 * onto fd 0-2 must still be seen (review #2). */
 	const char *buf = (const char *)(unsigned long)ctx->args[1];
 	__u64 count = (__u64)ctx->args[2];
 	struct sockaddr *sa = (struct sockaddr *)(unsigned long)ctx->args[4];
@@ -473,8 +475,6 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 	__u32 tid = (__u32)pid_tgid;
 
 	__u32 fd = (__u32)ctx->args[0];
-	if (fd < 3)
-		return 0;
 
 	const struct user_msghdr *umsg = (const struct user_msghdr *)(unsigned long)ctx->args[1];
 	if (!umsg)

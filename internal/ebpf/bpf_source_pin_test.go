@@ -66,3 +66,24 @@ func TestBPFSource_MultiIovecGather(t *testing.T) {
 		}
 	}
 }
+
+// sendto/sendmsg only operate on sockets, so they must not skip fd 0-2
+// (dup2 evasion, review #2).
+func TestBPFSource_SendNoStdioSkip(t *testing.T) {
+	for _, name := range []string{"sendto", "sendmsg"} {
+		if strings.Contains(probeBody(t, name), "fd < 3") {
+			t.Errorf("%s: skips fd<3; a dup2'd socket on stdio would be invisible", name)
+		}
+	}
+}
+
+// write/writev keep the fd<3 skip: they cannot distinguish a socket from a
+// tty/pipe, and stdout/stderr traffic would flood the critical ring. The
+// dup2'd-socket write is a documented gap (threat_model.md, detection_boundary.md).
+func TestBPFSource_WriteStdioSkip_KnownGap(t *testing.T) {
+	for _, name := range []string{"write", "writev"} {
+		if !strings.Contains(probeBody(t, name), "fd < 3") {
+			t.Errorf("%s: fd<3 skip removed; re-evaluate flooding before changing this pin", name)
+		}
+	}
+}
