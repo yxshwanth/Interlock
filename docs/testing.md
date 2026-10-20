@@ -93,4 +93,4 @@ Targets in ROADMAP §0.8 are not gates until calibrated. Line coverage per packa
 | internal/ebpf | 13.1% (kernel tests skip without root) |
 | cmd/demo | 0.0% |
 
-The engine (77.2%) is under the 90% core-crate target; the ratchet rule is: coverage of a package may not drop. Enforcing it needs a per-package floor file, which is not built yet. Test count: 385 top-level `Test*` functions (`go test ./... -list '.*' | grep -c '^Test'`).
+The engine (77.2%) is under the 90% core-crate target; the ratchet rule is: coverage of a package may not drop. `scripts/coverage_floor.tsv` holds the per-package floors and `scripts/check-coverage.sh` enforces them in CI; raise a floor when coverage rises. Test count: 385 top-level `Test*` functions (`go test ./... -list '.*' | grep -c '^Test'`).

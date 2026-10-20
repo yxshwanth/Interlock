@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 # Least privilege: CI only needs to read the repo.
 permissions:
@@ -15,10 +16,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
+
+      - name: Secret scan
+        run: go run github.com/zricethezav/gitleaks/v8@v8.18.4 detect --no-banner --redact
 
       - name: Build
         run: go build ./...
@@ -34,6 +40,12 @@ jobs:
 
       - name: Test layer labels and SPDX headers
         run: scripts/check-test-layers.sh && scripts/check-spdx.sh
+
+      - name: Coverage floor (scripts/coverage_floor.tsv)
+        run: scripts/check-coverage.sh
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
       - name: Corpus and benchmark gate (docs/budgets.json)
         run: |

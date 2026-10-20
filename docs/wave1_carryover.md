@@ -20,7 +20,7 @@ Items Wave 0 could not finish on a dev laptop, plus follow-ups its checks surfac
 
 ## Gate and test hygiene
 
-- [ ] A per-package coverage floor file so the "coverage may not drop" ratchet (`docs/testing.md`) is enforced, not just stated.
-- [ ] Merge-queue and nightly CI tiers (only the PR tier exists).
-- [ ] Add a secret scanner and `govulncheck` to the PR tier (L0).
+- [x] A per-package coverage floor file (`scripts/coverage_floor.tsv`, CI step) so the "coverage may not drop" ratchet (`docs/testing.md`) is enforced, not just stated.
+- [x] Merge-queue (`merge_group` trigger) and nightly (`nightly.yml`) CI tiers. Both are unexercised until they run on GitHub.
+- [x] Secret scanner (gitleaks) and `govulncheck` in the PR tier. Pinned versions are unverified until CI runs.
 - [ ] Confirm the two git author identities ("Yashwanth Reddy Mali", "Yash") are the same copyright holder, as `GOVERNANCE.md` asserts.

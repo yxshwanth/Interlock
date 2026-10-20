@@ -1,0 +1,16 @@
+# package	min statement coverage % (docs/testing.md ratchet: raise, never lower)
+internal/alerting	93
+internal/bridge	71
+internal/config	73
+internal/corpus	78
+internal/ebpf	24
+internal/engine	78
+internal/failclosed	81
+internal/k8s	37
+internal/mcpserver	40
+internal/model	94
+internal/observability	39
+internal/proxy	60
+internal/proxy/http	60
+internal/reload	60
+internal/siem	79
