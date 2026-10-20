@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -42,7 +43,7 @@ func StartServer(ctx context.Context, cfg config.ServerConfig, opts StartServerO
 
 	cmd := exec.CommandContext(ctx, resolved, cfg.Args...)
 	// Isolate the child in its own process group so we can kill it cleanly.
-	attr := &syscall.SysProcAttr{Setpgid: true}
+	attr := &syscall.SysProcAttr{Setpgid: true, Credential: childCredential(os.Geteuid(), os.Getenv)}
 	if err := applySandboxNetNS(attr, opts.NetNS); err != nil {
 		return nil, fmt.Errorf("server %s: %w", cfg.ID, err)
 	}
@@ -61,7 +62,7 @@ func StartServer(ctx context.Context, cfg config.ServerConfig, opts StartServerO
 		return nil, fmt.Errorf("server %s: stderr pipe: %w", cfg.ID, err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := startNoNewPrivs(cmd); err != nil {
 		if opts.NetNS {
 			return nil, fmt.Errorf("server %s: start (sandbox.netns — needs CAP_SYS_ADMIN): %w", cfg.ID, err)
 		}
