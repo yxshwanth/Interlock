@@ -65,3 +65,5 @@ internal/proxy/spawn_test.go	L5
 internal/reload/reload_test.go	L1
 internal/siem/cef_test.go	L1
 internal/siem/ocsf_test.go	L1
+internal/ebpf/payload_bounds_test.go	L1
+internal/ebpf/bpf_source_pin_test.go	L1
