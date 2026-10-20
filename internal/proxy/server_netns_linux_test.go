@@ -144,6 +144,40 @@ func TestStartServer_WithoutNetNS_LoopbackOK(t *testing.T) {
 	}
 }
 
+// TestStartServer_NetNS_ChildCannotSetnsOut pins review #7: a root proxy's
+// netns child is dropped to an unprivileged uid with no_new_privs, so
+// setns(/proc/1/ns/net) fails. Root-only; unverified in unprivileged CI.
+//
+//	sudo go test ./internal/proxy/ -run SetnsOut -v
+func TestStartServer_NetNS_ChildCannotSetnsOut(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: the escape only exists when the proxy is privileged")
+	}
+	nsenter, err := exec.LookPath("nsenter")
+	if err != nil {
+		t.Skipf("nsenter not found: %v", err)
+	}
+	resolved, err := config.ResolveSpawnExecutable(nsenter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	proc, err := StartServer(ctx, config.ServerConfig{
+		ID: "setns-probe", Command: nsenter, Args: []string{"--net=/proc/1/ns/net", "true"},
+	}, StartServerOpts{
+		NetNS:       true,
+		SpawnPolicy: SpawnPolicy{Allowed: map[string]string{"setns-probe": resolved}},
+	})
+	if err != nil {
+		t.Fatalf("StartServer(netns) as root: %v", err)
+	}
+	stderr, _ := io.ReadAll(proc.Stderr)
+	if err := proc.Wait(); err == nil {
+		t.Fatalf("netns child setns'd back into the host network namespace; stderr=%q", stderr)
+	}
+}
+
 func isNetNSPermissionError(err error) bool {
 	if err == nil {
 		return false
@@ -159,6 +193,13 @@ func isNetNSPermissionError(err error) bool {
 func buildNetNSDialHelper(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	// A root proxy runs children as an unprivileged uid, which cannot
+	// traverse the 0700 directories t.TempDir creates.
+	for _, d := range []string{filepath.Dir(dir), dir} {
+		if err := os.Chmod(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	src := filepath.Join(dir, "dial.go")
 	bin := filepath.Join(dir, "dial")
 	code := `package main

@@ -16,6 +16,7 @@ internal/ebpf/lsm_failclosed_test.go	L8
 internal/ebpf/lsm_integration_test.go	L8
 internal/ebpf/lsm_test.go	L8
 internal/ebpf/sensor_reload_test.go	L8
+internal/ebpf/sensor_test.go	L1
 internal/engine/bench_test.go	L11
 internal/engine/bind_test.go	L1
 internal/engine/chunk_test.go	L1
@@ -59,6 +60,7 @@ internal/proxy/http/response_test.go	L1
 internal/proxy/http/transport_integration_test.go	L5
 internal/proxy/logger_test.go	L1
 internal/proxy/pid_registry_test.go	L1
+internal/proxy/sandbox_linux_test.go	L5
 internal/proxy/server_netns_linux_test.go	L9
 internal/proxy/session_manager_test.go	L1
 internal/proxy/spawn_test.go	L5
