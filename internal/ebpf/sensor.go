@@ -675,7 +675,12 @@ func (s *Sensor) stopping() bool {
 	}
 }
 
-// KillProcess sends SIGKILL to the process group of the given PID.
+// KillProcess sends SIGKILL to pid and to the process group that pid leads.
+// kill(-pid) only reaches a group whose ID is pid, so when pid merely belongs
+// to someone else's group, that leader and its other members are untouched
+// (TestKillProcess_SparesLeaderOfJoinedGroup). Residual: if pid exited and
+// its number was reused by an unrelated group leader, that whole group dies;
+// a single-PID kill has the same race with a smaller blast radius.
 func KillProcess(pid int) {
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 	_ = syscall.Kill(pid, syscall.SIGKILL)
