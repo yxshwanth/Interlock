@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command ebpf-test is a throwaway CLI for verifying the compiled eBPF
 // connect() probe in isolation (Rung 1). Run with sudo:
 //

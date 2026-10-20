@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package model
 
 // ReverseString returns s with byte order reversed (used by encoding canonical forms).

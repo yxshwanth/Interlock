@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package corpus
 
 import (
@@ -197,4 +199,3 @@ func EntropyDarkMarkdown(benignHits, gapHits []EntropyDarkHit, benignTotal, gapT
 	}
 	return b.String()
 }
-

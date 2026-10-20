@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package engine
 
 import (
@@ -8,7 +10,7 @@ import (
 )
 
 const (
-	defaultChunkMatchBytes = 32
+	defaultChunkMatchBytes  = 32
 	defaultChunkMatchMinLen = 64
 
 	// minChunkEntropyBitsPerByte gates chunk minting against low-entropy runs

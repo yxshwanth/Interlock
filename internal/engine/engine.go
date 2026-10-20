@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package engine implements the correlation and policy engine: the trifecta
 // state machine, value-overlap taint checking, and verdict/evidence emission.
 package engine
@@ -16,10 +18,10 @@ import (
 )
 
 const (
-	maxUntrustedExcerpts  = 8
-	maxUntrustedExcerpt   = 4096
-	defaultFragmentChunks = 16
-	defaultFragmentBytes  = 64 * 1024
+	maxUntrustedExcerpts        = 8
+	maxUntrustedExcerpt         = 4096
+	defaultFragmentChunks       = 16
+	defaultFragmentBytes        = 64 * 1024
 	defaultEgressFragmentChunks = 16
 	defaultEgressFragmentBytes  = 4 * 1024
 	defaultEgressFragmentAge    = 10 * time.Second
@@ -60,23 +62,23 @@ type Engine struct {
 	log    *log.Logger
 	mu     sync.Mutex
 
-	untrustedToolResults bool
-	legTTL               time.Duration
-	decayAfterCalls      int
-	contentBindMinLen    int
-	fragmentMaxChunks    int
-	fragmentMaxBytes     int
-	chunkMatchBytes      int
-	chunkMatchMinLen     int
+	untrustedToolResults    bool
+	legTTL                  time.Duration
+	decayAfterCalls         int
+	contentBindMinLen       int
+	fragmentMaxChunks       int
+	fragmentMaxBytes        int
+	chunkMatchBytes         int
+	chunkMatchMinLen        int
 	egressReassemblyEnabled bool
 	egressFragmentMaxChunks int
 	egressFragmentMaxBytes  int
 	egressFragmentMaxAge    time.Duration
 	egressMaxFlows          int
-	vaultEnabled         bool
-	vaultAuthorize       []config.VaultAuthorizeEntry
-	sensitivePaths       []string
-	containerLimits      ContainerLimits
+	vaultEnabled            bool
+	vaultAuthorize          []config.VaultAuthorizeEntry
+	sensitivePaths          []string
+	containerLimits         ContainerLimits
 
 	taintForwarder     TaintForwarder
 	untrustedForwarder UntrustedForwarder
@@ -101,19 +103,19 @@ func NewEngine(store *SessionStore, tagger *Tagger, mode string, sink EvidenceSi
 	}
 
 	return &Engine{
-		store:                store,
-		tagger:               tagger,
-		sink:                 sink,
-		mode:                 mode,
-		log:                  l,
-		untrustedToolResults: true,
-		legTTL:               30 * time.Minute,
-		decayAfterCalls:      32,
-		contentBindMinLen:    defaultContentBindMinLen,
-		fragmentMaxChunks:    defaultFragmentChunks,
-		fragmentMaxBytes:     defaultFragmentBytes,
-		chunkMatchBytes:      defaultChunkMatchBytes,
-		chunkMatchMinLen:     defaultChunkMatchMinLen,
+		store:                   store,
+		tagger:                  tagger,
+		sink:                    sink,
+		mode:                    mode,
+		log:                     l,
+		untrustedToolResults:    true,
+		legTTL:                  30 * time.Minute,
+		decayAfterCalls:         32,
+		contentBindMinLen:       defaultContentBindMinLen,
+		fragmentMaxChunks:       defaultFragmentChunks,
+		fragmentMaxBytes:        defaultFragmentBytes,
+		chunkMatchBytes:         defaultChunkMatchBytes,
+		chunkMatchMinLen:        defaultChunkMatchMinLen,
 		egressReassemblyEnabled: true,
 		egressFragmentMaxChunks: defaultEgressFragmentChunks,
 		egressFragmentMaxBytes:  defaultEgressFragmentBytes,

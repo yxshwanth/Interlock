@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package model defines the shared data types used across Interlock.
 // See docs/architecture.md §8 for the full specification.
 package model

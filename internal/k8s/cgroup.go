@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package k8s implements node-local pod attribution for the sensor-only DaemonSet.
 package k8s
 

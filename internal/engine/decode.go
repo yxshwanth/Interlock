@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package engine
 
 import (
@@ -77,7 +79,7 @@ func decodeMatchCandidates(s string, tainted []model.TaintedValue, path []string
 	}
 
 	type attempt struct {
-		layer string
+		layer   string
 		decoded string
 	}
 	var attempts []attempt
