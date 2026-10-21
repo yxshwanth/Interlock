@@ -54,7 +54,7 @@ Results are `PASS`, `FAIL` or `SKIPPED`; a skipped kernel suite is never reporte
 3. A benchmark above its ceiling in `bench_max_ns_op`, or a budgeted benchmark missing from the output.
 
 Blocks merge: build, vet, any test failure (including a flipped `*_KnownGap` test), race failure, a gate failure, a missing DCO sign-off, an unlabelled test file.
-Blocks release: all of the above, the kernel suite on the LTS kernel and kernel 6.1 once Wave 1 §24 lands, and `make verify-evidence` on the demo evidence.
+Blocks release: all of the above, the kernel suite on the LTS kernel and kernel 6.1 (Debian 12 via `deploy/ec2`, see `deploy/ec2/README.md`), and `make verify-evidence` on the demo evidence.
 
 ## Flake policy
 

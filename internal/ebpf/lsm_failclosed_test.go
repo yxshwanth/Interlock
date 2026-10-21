@@ -21,7 +21,7 @@ func TestSensor_FailClosedQuarantineAll(t *testing.T) {
 	pid := os.Getpid()
 	const unrelatedPID = 999998
 
-	sensor, err := interlockebpf.NewSensor(nil, nil, true, nil)
+	sensor, err := interlockebpf.NewSensor(nil, nil, true, nil, interlockebpf.WithKeepSYSAdmin())
 	if err != nil {
 		t.Fatalf("NewSensor: %v", err)
 	}

@@ -10,7 +10,8 @@
 # Usage:
 #   ./deploy/ec2/setup-instance.sh
 #
-# Env overrides: NAME, AWS_REGION, INSTANCE_TYPE, VOLUME_SIZE
+# Env overrides: NAME, AWS_REGION, INSTANCE_TYPE, VOLUME_SIZE, SSH_USER, AMI_PARAM
+#   Debian 12 (kernel 6.1): SSH_USER=admin AMI_PARAM=/aws/service/debian/release/12/latest/amd64
 set -euo pipefail
 export PATH="${HOME}/.local/bin:${PATH}"
 export AWS_PAGER=""
@@ -25,6 +26,8 @@ INSTANCE_TYPE="${INSTANCE_TYPE:-m7i-flex.large}"
 VOLUME_SIZE="${VOLUME_SIZE:-30}"
 KEY_DIR="${ROOT}/deploy/ec2/.keys"
 KEY_PATH="${KEY_DIR}/${NAME}.pem"
+SSH_USER="${SSH_USER:-ubuntu}"
+AMI_PARAM="${AMI_PARAM:-/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}"
 
 echo "==> caller:"
 aws sts get-caller-identity --region "${AWS_REGION}"
@@ -84,14 +87,15 @@ if [[ "${EXISTING}" != "None" && -n "${EXISTING}" ]]; then
   INSTANCE_ID="${EXISTING}"
 else
   AMI_ID="$(aws ssm get-parameter --region "${AWS_REGION}" \
-    --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
-    --query 'Parameter.Value' --output text)"
-  echo "==> launching ${INSTANCE_TYPE} (${AMI_ID}, Ubuntu 24.04) in ${SUBNET_ID}"
+    --name "${AMI_PARAM}" --query 'Parameter.Value' --output text)"
+  ROOT_DEV="$(aws ec2 describe-images --region "${AWS_REGION}" --image-ids "${AMI_ID}" \
+    --query 'Images[0].RootDeviceName' --output text)"
+  echo "==> launching ${INSTANCE_TYPE} (${AMI_ID}, ${AMI_PARAM}) in ${SUBNET_ID}"
   INSTANCE_ID="$(aws ec2 run-instances --region "${AWS_REGION}" \
     --image-id "${AMI_ID}" --instance-type "${INSTANCE_TYPE}" \
     --key-name "${NAME}" --security-group-ids "${SG_ID}" --subnet-id "${SUBNET_ID}" \
     --associate-public-ip-address \
-    --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${VOLUME_SIZE},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
+    --block-device-mappings "[{\"DeviceName\":\"${ROOT_DEV}\",\"Ebs\":{\"VolumeSize\":${VOLUME_SIZE},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
     --user-data "file://${ROOT}/deploy/ec2/bootstrap.sh" \
     --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${NAME}},{Key=project,Value=interlock},{Key=purpose,Value=lsm-krsi-prototype},{Key=throwaway,Value=true}]" \
     --query 'Instances[0].InstanceId' --output text)"
@@ -105,7 +109,7 @@ PUBLIC_IP="$(aws ec2 describe-instances --region "${AWS_REGION}" --instance-ids 
 echo "==> waiting for SSH on ${PUBLIC_IP}"
 for _ in $(seq 1 30); do
   if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-      -i "${KEY_PATH}" "ubuntu@${PUBLIC_IP}" true 2>/dev/null; then
+      -i "${KEY_PATH}" "${SSH_USER}@${PUBLIC_IP}" true 2>/dev/null; then
     break
   fi
   sleep 10
@@ -114,7 +118,7 @@ done
 echo
 echo "instance:   ${INSTANCE_ID}"
 echo "public ip:  ${PUBLIC_IP}"
-echo "ssh:        ssh -i ${KEY_PATH} ubuntu@${PUBLIC_IP}"
+echo "ssh:        ssh -i ${KEY_PATH} ${SSH_USER}@${PUBLIC_IP}"
 echo "  or:       ./deploy/ec2/ssh.sh"
 echo
 echo "Bootstrap (build deps + BPF-LSM check) runs in the background via"

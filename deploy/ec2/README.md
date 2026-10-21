@@ -36,6 +36,18 @@ make lsm-vm-down
 instance/key/security-group instead of creating duplicates, and refreshes the
 SSH allow-list to wherever you're currently connecting from.
 
+### Kernel 6.1 (Debian 12)
+
+Verifier acceptance differs by kernel, so the plan requires a 6.1 run too:
+
+```bash
+export SSH_USER=admin AMI_PARAM=/aws/service/debian/release/12/latest/amd64
+./deploy/ec2/setup-instance.sh   # same scripts, different image and login
+./deploy/ec2/sync.sh
+./deploy/ec2/ssh.sh 'cd interlock && git init -q && git add -A && sudo env PATH=/usr/local/go/bin:$PATH CGO_ENABLED=0 REQUIRE_KERNEL=1 scripts/verify-all.sh'
+./deploy/ec2/destroy-instance.sh
+```
+
 ## What's on it
 
 `bootstrap.sh` runs once via cloud-init at first boot (background — tail it

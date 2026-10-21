@@ -100,7 +100,7 @@ func TestSensor_LSMDenyEmitsEvidence(t *testing.T) {
 		return eng.IngestSyscallSensor(ev)
 	}
 
-	sensor, err := interlockebpf.NewSensor(nil, nil, true, handler)
+	sensor, err := interlockebpf.NewSensor(nil, nil, true, handler, interlockebpf.WithKeepSYSAdmin())
 	if err != nil {
 		t.Fatalf("NewSensor(lsmEnforce=true): %v", err)
 	}

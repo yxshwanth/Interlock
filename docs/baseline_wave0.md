@@ -72,7 +72,20 @@ The first run on this kernel failed and found real defects, all fixed in `7def40
 - `DropPostAttach` cleared `CAP_SYS_ADMIN` on one thread only.
 - Two tests were wrong as written: the connect-flood test counted the Go runtime's eventfd writes as critical drops, and the `ReadContainerFile` oracle test assumed pid 1 has a different root than the test.
 
-Not run: kernel 6.1 (the plan asks for it; only the current-LTS image was run), and the container-built `.o` (`make bpf-generate` needs Docker; the committed object was built with the VM's clang).
+Not run: the container-built `.o` (`make bpf-generate` needs Docker; the committed object was built with the host clang).
+
+## Kernel 6.1 run
+
+Debian 12 AWS image (`SSH_USER=admin AMI_PARAM=/aws/service/debian/release/12/latest/amd64 deploy/ec2/setup-instance.sh`), Linux 6.1.0-54-cloud-amd64, `m7i-flex.large`, `CONFIG_BPF_LSM=y` and `bpf` already in the active LSM list, `perf_event_paranoid=3`, Go 1.26.4, root, `CGO_ENABLED=0`. `REQUIRE_KERNEL=1 scripts/verify-all.sh`: every step PASS; kernel suite 40 tests, 0 skipped.
+
+The Ubuntu 7.0 object did not load on 6.1. The verifier is stricter there, which is why the plan asks for this run:
+
+- `sendmmsg` was rejected (`invalid access to map value, value_size=4096 off=4094 size=2047`). 6.1 tracks a wider offset range through the masked iovec gather than 7.0 does. The scratch buffer is now `8 * PAYLOAD_MAX`.
+- `sendto` and the `write` family were rejected (`R2 min value is negative`). clang spills `cap` to the stack across the helper calls and reloads it unbounded, so the bound is now re-proved with `barrier_var(cap)` right before each payload read. Found by loading the object with `bpftool -d prog loadall`.
+- `TestDropPostAttach_RootGated` dropped `CAP_SYS_ADMIN` for the whole test process. On 6.1 with `perf_event_paranoid=3`, tracepoint attach needs `CAP_SYS_ADMIN` (`CAP_PERFMON` is not enough), so every later sensor test failed to attach. The test now runs in a child process, and the sensor tests that never exercise the drop pass `WithKeepSYSAdmin()`. Production is unaffected because it attaches once and then drops.
+- The static asserts in `connect.c` do not compile under Debian's clang 14. The object is built on the dev host and copied over, so this does not block the run. It does mean the pinned container toolchain should be checked before release.
+
+The regenerated object was rerun on Ubuntu 24.04 (Linux 7.0.0-1014-aws): kernel suite 40 tests, 0 skipped, so it still loads there.
 
 ## Benchmarks on the VM
 
@@ -80,9 +93,9 @@ Five engine runs and three HTTP runs on the same VM. Worst runs were below the l
 
 ## Not yet recorded
 
-- Kernel 6.1 run
 - Benchmarks on a GitHub-hosted runner
 
 ## Flakes seen while recording
 
 - One `go build` died with an internal compiler error (`collision: types v1beta3.FlowSchemaConditionType`) and one `-race` run crashed in the Go GC; both passed on immediate rerun. Probably memory pressure from other processes. Relevant to the §80 flake policy.
+- `TestEventLogger_DropBackpressure` failed once in the `race` step of a full `verify-all` run on the 7.0 VM and then passed 300 isolated `-race` runs and 3 reruns of the race step. It floods a queue of size 1 and assumes the consumer goroutine cannot drain 10 events first, so it depends on scheduling. Not fixed.

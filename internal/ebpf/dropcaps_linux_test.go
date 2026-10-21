@@ -6,6 +6,8 @@ package ebpf
 
 import (
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -27,6 +29,21 @@ func TestFormatCapSummary_Parse(t *testing.T) {
 func TestDropPostAttach_RootGated(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires root for Capset / eBPF load")
+	}
+	// The drop is irreversible and process-wide. On 6.1 (perf_event_paranoid=3)
+	// tracepoint attach needs CAP_SYS_ADMIN, so later tests in this process
+	// would fail to load. Run the body in a child process.
+	if os.Getenv("INTERLOCK_DROP_CHILD") == "" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDropPostAttach_RootGated$", "-test.v")
+		cmd.Env = append(os.Environ(), "INTERLOCK_DROP_CHILD=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("child: %v\n%s", err, out)
+		}
+		if strings.Contains(string(out), "--- SKIP") {
+			t.Skip("child skipped: " + string(out))
+		}
+		return
 	}
 
 	before, err := ReadCapEff()

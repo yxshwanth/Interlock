@@ -154,7 +154,7 @@ func TestLSM_QuarantineNegativeControl_OtherPIDUnaffected(t *testing.T) {
 func TestLSM_FailClosedQuarantineAllDeniesConnect(t *testing.T) {
 	requireRootAndBPFLSM(t)
 
-	sensor, err := NewSensor(nil, nil, true, nil)
+	sensor, err := NewSensor(nil, nil, true, nil, WithKeepSYSAdmin())
 	if err != nil {
 		t.Fatalf("NewSensor: %v", err)
 	}

@@ -4,7 +4,7 @@ Items Wave 0 could not finish on a dev laptop, plus follow-ups its checks surfac
 
 ## Needs infrastructure or history
 
-- [x] **Kernel replay run once** (Linux 7.0 AWS, root, BTF, BPF LSM; see `baseline_wave0.md`). Still to do: kernel 6.1.
+- [x] **Kernel replay run once** (Linux 7.0 AWS, root, BTF, BPF LSM; see `baseline_wave0.md`). Kernel 6.1 run also done (Debian 12, Linux 6.1.0-54-cloud, 40 tests, 0 skipped).
 - [x] **Dashboard of the last 30 CI runs** (§29): `scripts/ci-dashboard.sh` writes `docs/ci_dashboard.md`.
 - [x] **PR-tier p90 under 15 minutes** (§80): p90 is 149 s over the last 30 runs (`docs/ci_dashboard.md`). It predates the coverage, govulncheck and gitleaks steps, so re-run the script after they have run a few times.
 - [x] **Re-derive benchmark ceilings on the VM** (done; CI-runner numbers still unmeasured). Original item: `docs/budgets.json` ceilings are 2x the worst of repeated laptop runs; they are not tight and are not comparable across machines.

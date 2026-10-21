@@ -15,7 +15,7 @@ import (
 
 type connectIovScratch struct {
 	_   structs.HostLayout
-	Buf [2048]int8
+	Buf [8192]int8
 }
 
 // Names of all BPF objects in the ELF.

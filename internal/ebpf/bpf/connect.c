@@ -235,10 +235,10 @@ static __always_inline __u32 clamp_cap(__u64 count) {
 
 /* Per-CPU gather buffer for multi-iovec captures. Offset and length are both
  * masked to IOV_MASK (2*PAYLOAD_MAX-1) so the verifier sees a non-negative,
- * bounded range; 4x PAYLOAD_MAX keeps offset+length inside the buffer. */
+ * bounded range; 8x PAYLOAD_MAX is slack: 6.1 tracks a wider offset range than 7.0. */
 #define IOV_MASK (2 * PAYLOAD_MAX - 1)
 struct iov_scratch {
-	char buf[4 * PAYLOAD_MAX];
+	char buf[8 * PAYLOAD_MAX];
 };
 
 struct {
@@ -357,6 +357,11 @@ static __always_inline int emit_write(__u32 fd, const char *buf, __u64 count) {
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
+	/* clang spills cap across the helper calls above and reloads it unbounded;
+	 * 6.1 then rejects the read. Re-prove the bound at the use site. */
+	barrier_var(cap);
+	if (cap > PAYLOAD_MAX)
+		cap = PAYLOAD_MAX;
 	if (bpf_probe_read_user(ev->payload, cap, buf) < 0) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
@@ -481,6 +486,11 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	ev->dest_port = dest_port;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
+	/* clang spills cap across the helper calls above and reloads it unbounded;
+	 * 6.1 then rejects the read. Re-prove the bound at the use site. */
+	barrier_var(cap);
+	if (cap > PAYLOAD_MAX)
+		cap = PAYLOAD_MAX;
 	if (bpf_probe_read_user(ev->payload, cap, buf) < 0) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
