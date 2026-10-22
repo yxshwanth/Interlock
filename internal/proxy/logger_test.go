@@ -22,10 +22,13 @@ func TestEventLogger_DropBackpressure(t *testing.T) {
 	}
 	defer logger.Close()
 
+	// Holding mu parks the writer on its first job, so the queue of 1 must overflow.
+	logger.mu.Lock()
 	ev := model.InterceptedEvent{SessionID: "s", Seq: 1, Method: "ping"}
 	for i := 0; i < 10; i++ {
 		logger.Log(ev)
 	}
+	logger.mu.Unlock()
 	if stats.DroppedEvents.Load() == 0 {
 		t.Fatal("expected dropped events under saturated drop queue")
 	}

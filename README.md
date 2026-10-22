@@ -556,7 +556,7 @@ Items 1–9 are design boundaries, not unfinished TODOs. Items 1–5 and 8 have 
 
 **10. Open review findings and residuals.** Tracked in [`docs/security_review_status.md`](docs/security_review_status.md):
 
-- Kernel-plane fixes for #1, #2, #3, #4 and #6 and the privilege drop for #7 were loaded and exercised as root on two kernels (Ubuntu 24.04 AWS Linux 7.0 and Debian 12 AWS Linux 6.1, BPF LSM on). The pinned-container `.o` build has not been run.
+- Kernel-plane fixes for #1, #2, #3, #4 and #6 and the privilege drop for #7 were loaded and exercised as root on two kernels (Ubuntu 24.04 AWS Linux 7.0 and Debian 12 AWS Linux 6.1, BPF LSM on). The committed `.o` is built by the pinned container.
 - Still open: `close(2)` is not probed, so a reused fd number can inherit a stale destination for up to 10 minutes (#4, fd-keyed correlation landed and kernel-tested); probes read user memory at `sys_enter`, so a second thread can swap bytes or the destination (#5, pinned); `write`/`writev` on fds 0–2 are skipped (#2, pinned); `pwrite64`, `pwritev`, `sendfile` and `io_uring` are not probed (#1).
 - Pinned residuals of fixed findings: a secret split across two DNS labels (#16), slow trickle and 32-decoy-flow eviction (#17), a padded layer nested in another encoding (#18), values shed past the per-session taint cap (#9).
 

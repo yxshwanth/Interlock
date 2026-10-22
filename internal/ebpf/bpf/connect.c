@@ -71,13 +71,13 @@ struct sendto_event {
 };
 
 /* Wire offsets the Go decoder (loader.go) hard-codes. */
-_Static_assert(offsetof(struct connect_event, dest_port) == 42, "connect port");
-_Static_assert(offsetof(struct connect_event, fd) == 44, "connect fd");
-_Static_assert(offsetof(struct connect_event, cgroup_id) == 48, "connect cgroup");
-_Static_assert(offsetof(struct connect_event, comm) == 56, "connect comm");
-_Static_assert(offsetof(struct sendto_event, dest_port) == 42, "sendto port");
-_Static_assert(offsetof(struct sendto_event, cgroup_id) == 48, "sendto cgroup");
-_Static_assert(offsetof(struct sendto_event, payload) == 72, "sendto payload");
+_Static_assert(__builtin_offsetof(struct connect_event, dest_port) == 42, "connect port");
+_Static_assert(__builtin_offsetof(struct connect_event, fd) == 44, "connect fd");
+_Static_assert(__builtin_offsetof(struct connect_event, cgroup_id) == 48, "connect cgroup");
+_Static_assert(__builtin_offsetof(struct connect_event, comm) == 56, "connect comm");
+_Static_assert(__builtin_offsetof(struct sendto_event, dest_port) == 42, "sendto port");
+_Static_assert(__builtin_offsetof(struct sendto_event, cgroup_id) == 48, "sendto cgroup");
+_Static_assert(__builtin_offsetof(struct sendto_event, payload) == 72, "sendto payload");
 
 struct openat_event {
 	__u32 type; /* EVENT_OPENAT */
@@ -224,6 +224,17 @@ static __always_inline int read_dest(__u8 *family_out, __u8 dest_addr[16], __u16
 	return -1;
 }
 
+/* Payload read with a size the verifier can prove. clang spills the clamped
+ * length across helper calls and merges the clamp into u32 arithmetic, which
+ * 6.1 rejects as unbounded. A constant on one path and a masked value on the
+ * other holds on every kernel and clang tried (7.0, 6.1; host clang, clang 14). */
+static __always_inline long read_payload(void *dst, __u32 n, const void *src) {
+	if (n >= PAYLOAD_MAX)
+		return bpf_probe_read_user(dst, PAYLOAD_MAX, src);
+	barrier_var(n);
+	return bpf_probe_read_user(dst, n & (PAYLOAD_MAX - 1), src);
+}
+
 static __always_inline __u32 clamp_cap(__u64 count) {
 	__u32 cap = payload_limit();
 	if (cap > PAYLOAD_MAX)
@@ -357,12 +368,7 @@ static __always_inline int emit_write(__u32 fd, const char *buf, __u64 count) {
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	/* clang spills cap across the helper calls above and reloads it unbounded;
-	 * 6.1 then rejects the read. Re-prove the bound at the use site. */
-	barrier_var(cap);
-	if (cap > PAYLOAD_MAX)
-		cap = PAYLOAD_MAX;
-	if (bpf_probe_read_user(ev->payload, cap, buf) < 0) {
+	if (read_payload(ev->payload, cap, buf) < 0) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
 	}
@@ -486,12 +492,7 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	ev->dest_port = dest_port;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	/* clang spills cap across the helper calls above and reloads it unbounded;
-	 * 6.1 then rejects the read. Re-prove the bound at the use site. */
-	barrier_var(cap);
-	if (cap > PAYLOAD_MAX)
-		cap = PAYLOAD_MAX;
-	if (bpf_probe_read_user(ev->payload, cap, buf) < 0) {
+	if (read_payload(ev->payload, cap, buf) < 0) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
 	}

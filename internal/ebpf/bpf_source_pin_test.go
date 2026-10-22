@@ -43,7 +43,7 @@ func probeBody(t *testing.T, name string) string {
 }
 
 func TestBPFSource_PayloadReadsCheckedAndCapSized(t *testing.T) {
-	read := regexp.MustCompile(`bpf_probe_read_(user|kernel)\(ev->payload,\s*([^,]+),`)
+	read := regexp.MustCompile(`(?:bpf_probe_read_(?:user|kernel)|read_payload)\(ev->payload,\s*([^,]+),`)
 	for _, name := range []string{"write", "writev", "sendto", "sendmsg"} {
 		body := probeBody(t, name)
 		if strings.Contains(body, "bpf_probe_read_user(ev->payload, PAYLOAD_MAX") {
@@ -82,7 +82,7 @@ func TestBPFSource_MultiIovecGather(t *testing.T) {
 func TestBPFSource_PayloadProbesAreSysEnter_TOCTOUKnownGap(t *testing.T) {
 	for _, name := range []string{"write", "writev", "sendto", "sendmsg", "sendmmsg"} {
 		body := probeBody(t, name)
-		if !strings.Contains(body, "bpf_probe_read_user(") && !strings.Contains(body, "gather_iov(") && !strings.Contains(body, "emit_sendmsg(") {
+		if !strings.Contains(body, "bpf_probe_read_user(") && !strings.Contains(body, "read_payload(") && !strings.Contains(body, "gather_iov(") && !strings.Contains(body, "emit_sendmsg(") {
 			t.Errorf("%s: no longer reads user memory at sys_enter; revisit the TOCTOU gap in docs/threat_model.md", name)
 		}
 	}
