@@ -10,12 +10,12 @@ Every `*_test.go` file is labelled with a layer in [`scripts/test_layers.tsv`](.
 |---|---|---|
 | L0 Static | `go vet`, `go build`; no secret scanner, `govulncheck` or SPDX check in the PR tier yet | CI, `scripts/check-spdx.sh` |
 | L1 Unit | 42 files | most of `internal/*` |
-| L2 Property / metamorphic | none yet | Wave 2 (§83) |
+| L2 Property / metamorphic | generated attacks and benign flows (`internal/corpus/generate_test.go`), planted-literal relation (`internal/engine/fuzz_test.go`) | `internal/corpus`, `internal/engine` |
 | L3 Differential | none yet | Wave 3 onward (Go vs Rust) |
-| L4 Corpus | 4 test files + `cmd/fp-corpus`, `cmd/cve-corpus`, `cmd/gate` | `internal/corpus` |
+| L4 Corpus | 5 test files + `cmd/fp-corpus`, `cmd/cve-corpus`, `cmd/gate` | `internal/corpus` |
 | L5 Integration | 8 files (proxy, HTTP transport, bridge, demo narrative) | `internal/proxy`, `internal/bridge`, `cmd/demo` |
 | L6 End to end | manual (`make demo*`, `make demo-k8s`) | not automated |
-| L7 Fuzz | none yet | Wave 2 (§84) |
+| L7 Fuzz | 11 Go native targets in 6 packages; seeds run in PRs, `scripts/fuzz.sh` and the nightly job explore | `internal/engine`, `config`, `ebpf`, `model`, `proxy/http`, `k8s` |
 | L8 Kernel | 6 files; need root and BTF, skip otherwise | `internal/ebpf` |
 | L9 Isolation / escape | 1 file (netns); privilege-drop escape tests land in Wave 1 | `internal/proxy` |
 | L10 Chaos / crash | none yet | later wave |

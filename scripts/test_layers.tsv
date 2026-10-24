@@ -73,5 +73,11 @@ internal/engine/ingest_panic_test.go	L1
 web/viewer_test.go	L1
 internal/ebpf/kernel_probes_test.go	L8
 internal/corpus/data_test.go	L4
-internal/corpus/generate_test.go	L4
+internal/corpus/generate_test.go	L2
 internal/corpus/heldout_test.go	L4
+internal/engine/fuzz_test.go	L7
+internal/model/fuzz_test.go	L7
+internal/config/fuzz_test.go	L7
+internal/ebpf/fuzz_test.go	L7
+internal/proxy/http/fuzz_test.go	L7
+internal/k8s/fuzz_test.go	L7
