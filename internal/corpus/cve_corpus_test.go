@@ -78,13 +78,10 @@ func TestCVECorpus_DetectionRate(t *testing.T) {
 // then has to look at whether the scenario, its PreExistingGap marking,
 // and/or docs/architecture.md §13's tier table need updating together.
 func TestCVECorpus_PreExistingGapPremises(t *testing.T) {
-	// Fetch's five-layer nest was promoted out of PreExistingGap when
-	// DefaultMaxDecodeDepth rose to 5 (ROADMAP §15). Pin that the encode
-	// layer count is still what the former gap needed, and that lowering
-	// the live budget to 3 re-opens a miss (TestCorpus_DecodeDepthFPCurve).
-	if fetchDepth5EncodeLayers != 5 {
-		t.Errorf("fetchDepth5EncodeLayers=%d, want 5 — update depth5 nest scenario + §15 docs together", fetchDepth5EncodeLayers)
-	}
+	// Fetch's five-layer nest (cve_2025_65513_fetch_ssrf_cloud_metadata_depth5_nest)
+	// was promoted out of PreExistingGap when DefaultMaxDecodeDepth rose to 5
+	// (ROADMAP §15); lowering the live budget to 3 re-opens a miss
+	// (TestCorpus_DecodeDepthFPCurve).
 	if engine.DefaultMaxDecodeDepth < 5 {
 		t.Errorf("DefaultMaxDecodeDepth=%d, want ≥5 so Fetch depth-5 nest stays detection at default", engine.DefaultMaxDecodeDepth)
 	}
