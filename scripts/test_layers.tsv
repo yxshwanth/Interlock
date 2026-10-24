@@ -81,3 +81,4 @@ internal/config/fuzz_test.go	L7
 internal/ebpf/fuzz_test.go	L7
 internal/proxy/http/fuzz_test.go	L7
 internal/k8s/fuzz_test.go	L7
+internal/corpus/property_test.go	L2
