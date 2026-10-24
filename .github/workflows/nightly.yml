@@ -16,7 +16,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version: '~1.26.10'
 
       - name: Everything the hosted runner can run (kernel suite is skipped, not passed)
         run: scripts/verify-all.sh
