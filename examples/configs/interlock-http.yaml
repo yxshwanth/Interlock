@@ -12,7 +12,6 @@ enforcement: block
 
 egress_allowlist:
   - 127.0.0.1
-  - api.anthropic.com
 
 servers:
   - id: tickets

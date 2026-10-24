@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //go:build linux
 
 package ebpf
@@ -9,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -32,8 +36,13 @@ func DropPostAttach(keepSYSAdmin bool) error {
 
 	clearCap(&data, unix.CAP_SYS_ADMIN)
 
-	if err := unix.Capset(&hdr, &data[0]); err != nil {
-		return fmt.Errorf("capset: %w", err)
+	// capset(2) is per-thread; a plain Capset would clear only the calling
+	// thread and leave every other Go thread with CAP_SYS_ADMIN. This needs a
+	// pure-Go build (CGO_ENABLED=0, as the release build uses); with cgo it
+	// returns ENOTSUP and we fail rather than claim a drop that did not happen.
+	if _, _, errno := syscall.AllThreadsSyscall(unix.SYS_CAPSET,
+		uintptr(unsafe.Pointer(&hdr)), uintptr(unsafe.Pointer(&data[0])), 0); errno != 0 {
+		return fmt.Errorf("capset on all threads: %w", errno)
 	}
 
 	after, _ := ReadCapEff()

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package corpus
 
 import (
@@ -42,7 +44,7 @@ func TestCVECorpus_DetectionRate(t *testing.T) {
 		"cve_2025_53967_figma_proxy_tied_connect_only_demo":                  true,  // proxy-tied: AllLit reachable, demonstrates the fix
 		"cve_2025_65720_gpt_researcher_dns_fragmented_exfil":                 true,  // promoted: bounded egress reassembly proves EXFIL on fragmented DNS exfil
 		"cve_2025_66335_doris_blind_sql_injection_exfil_gap":                 false, // secret never observed in any single message
-		"cve_2025_53109_filesystem_escaperoute_pem_ebpf_capture_ceiling_gap": true, // promoted: chunk_32 overlap in truncated excerpt (ROADMAP §8)
+		"cve_2025_53109_filesystem_escaperoute_pem_ebpf_capture_ceiling_gap": true,  // promoted: chunk_32 overlap in truncated excerpt (ROADMAP §8)
 		// cve_2025_65513_fetch_ssrf_cloud_metadata_depth5_nest promoted out of
 		// KnownGap when default max_decode_depth rose to 5 (ROADMAP §15).
 		// cve_2025_53109_filesystem_escaperoute_pem_exfil is intentionally

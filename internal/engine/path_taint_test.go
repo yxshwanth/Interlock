@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package engine
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"math/rand"
 	"testing"
 
 	"github.com/yxshwanth/Interlock/internal/config"
@@ -43,8 +47,102 @@ func TestTaintPathDrivenContent_RegistersBlob(t *testing.T) {
 	if vals[0].Value != blob {
 		t.Fatal("expected full blob tainted")
 	}
-	if len(vals[0].Variants) == 0 {
-		t.Fatal("expected canonical variants")
+	if vals[0].Hash != HashValue(blob) {
+		t.Fatal("expected hash of the blob")
+	}
+}
+
+// Whole-file taint keeps the first 64 KiB: a slice exfiltrated only from
+// past the cap is not registered.
+func TestTaintPathDrivenContent_TailPastCap_KnownGap(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	b := make([]byte, 40*1024)
+	r.Read(b)
+	blob := hex.EncodeToString(b)
+	eng, _ := newTestEngine("block")
+	st := eng.store.GetOrCreate("tail-cap")
+	eng.addTainted(st, TaintPathDrivenContent(blob, "/x/credentials", "src", 1))
+	if hit := CheckOverlapPayload(st.Tainted, blob[len(blob)-200:]); hit != nil {
+		t.Fatal("tail past the cap now matched: gap closed, flip this pin")
+	}
+	if hit := CheckOverlapPayload(st.Tainted, blob); hit == nil {
+		t.Fatal("whole-file exfil must still match the kept head")
+	}
+}
+
+// Review #9: a pod looping open() on a 64 KiB credentials file must not grow
+// taint without bound. Re-reading identical content adds nothing; distinct
+// content sheds the oldest values, and the newest stays detectable.
+func TestEngine_SensorPodLoopTaintBounded(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "k8s:pod-loop"
+	blob := func(i int) string {
+		r := rand.New(rand.NewSource(int64(i)))
+		b := make([]byte, 32*1024)
+		r.Read(b)
+		return hex.EncodeToString(b)
+	}
+	open := func(contents string) {
+		eng.IngestSyscallSensor(model.SyscallEvent{
+			SessionID: sid, Syscall: "openat", Path: "/x/credentials",
+			PID: 1, Comm: "agent", FileContents: contents,
+		})
+	}
+
+	same := blob(0)
+	for i := 0; i < 50; i++ {
+		open(same)
+	}
+	if n := len(eng.store.Get(sid).Tainted); n != 1 {
+		t.Fatalf("identical re-reads registered %d values, want 1", n)
+	}
+
+	const iterations = 64
+	for i := 1; i <= iterations; i++ {
+		open(blob(i))
+	}
+	st := eng.store.Get(sid)
+	total := 0
+	for _, tv := range st.Tainted {
+		total += len(tv.Value)
+	}
+	if len(st.Tainted) > maxTaintedPerSession || total > maxTaintedBytesPerSession {
+		t.Fatalf("taint unbounded: %d values, %d bytes", len(st.Tainted), total)
+	}
+
+	newest := blob(iterations)
+	dec := eng.IngestSyscallSensor(model.SyscallEvent{
+		SessionID: sid, Syscall: "write", DestIP: "203.0.113.9", DestPort: 443,
+		PID: 1, Comm: "agent", PayloadExcerpt: newest[1000:1200],
+	})
+	if dec.Verdict != model.VerdictExfil {
+		t.Fatalf("newest value must stay detectable after shedding, got %q", dec.Verdict)
+	}
+}
+
+// Shedding drops the oldest values: a slice of the first file read before
+// the session filled its taint budget is no longer matched.
+func TestEngine_SensorTaintShedOldest_KnownGap(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "k8s:pod-shed"
+	blob := func(i int) string {
+		r := rand.New(rand.NewSource(int64(i)))
+		b := make([]byte, 32*1024)
+		r.Read(b)
+		return hex.EncodeToString(b)
+	}
+	for i := 0; i <= maxTaintedBytesPerSession/len(blob(0)); i++ {
+		eng.IngestSyscallSensor(model.SyscallEvent{
+			SessionID: sid, Syscall: "openat", Path: "/x/credentials",
+			PID: 1, Comm: "agent", FileContents: blob(i),
+		})
+	}
+	dec := eng.IngestSyscallSensor(model.SyscallEvent{
+		SessionID: sid, Syscall: "write", DestIP: "203.0.113.9", DestPort: 443,
+		PID: 1, Comm: "agent", PayloadExcerpt: blob(0)[1000:1200],
+	})
+	if dec.Verdict == model.VerdictExfil {
+		t.Fatal("shed value still matched: gap closed, flip this pin")
 	}
 }
 

@@ -9,6 +9,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 NAME="${NAME:-interlock-lsm-vm}"
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 KEY_PATH="${ROOT}/deploy/ec2/.keys/${NAME}.pem"
+SSH_USER="${SSH_USER:-ubuntu}"
 
 INSTANCE_ID="$(aws ec2 describe-instances --region "${AWS_REGION}" \
   --filters "Name=tag:Name,Values=${NAME}" "Name=instance-state-name,Values=running" \
@@ -21,4 +22,4 @@ fi
 PUBLIC_IP="$(aws ec2 describe-instances --region "${AWS_REGION}" --instance-ids "${INSTANCE_ID}" \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
 
-exec ssh -o StrictHostKeyChecking=accept-new -i "${KEY_PATH}" "ubuntu@${PUBLIC_IP}" "$@"
+exec ssh -o StrictHostKeyChecking=accept-new -i "${KEY_PATH}" "${SSH_USER}@${PUBLIC_IP}" "$@"

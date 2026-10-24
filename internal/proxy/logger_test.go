@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
+	"os"
 	"testing"
 
 	"github.com/yxshwanth/Interlock/internal/config"
@@ -19,12 +22,33 @@ func TestEventLogger_DropBackpressure(t *testing.T) {
 	}
 	defer logger.Close()
 
+	// Holding mu parks the writer on its first job, so the queue of 1 must overflow.
+	logger.mu.Lock()
 	ev := model.InterceptedEvent{SessionID: "s", Seq: 1, Method: "ping"}
 	for i := 0; i < 10; i++ {
 		logger.Log(ev)
 	}
+	logger.mu.Unlock()
 	if stats.DroppedEvents.Load() == 0 {
 		t.Fatal("expected dropped events under saturated drop queue")
+	}
+}
+
+// Review #13: event logs carry tool args and results, so they must not be
+// world-readable.
+func TestEventLogger_CreatesFileOwnerOnly(t *testing.T) {
+	path := t.TempDir() + "/events.jsonl"
+	logger, err := NewEventLogger(path, config.LoggingConfig{}, &model.RuntimeStats{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("event log mode %o, want 600", perm)
 	}
 }
 

@@ -1,0 +1,29 @@
+{
+  "_note": "Wave 0 baseline (docs/baseline_wave0.md). Corpus numbers are exact pins: a change in either direction fails the gate and must be an explicit edit of this file. Bench ceilings are max ns/op, each the larger of 2x the worst laptop run (5 engine, 2 HTTP) and 2x the worst run on the deploy/ec2 VM (m7i-flex.large, 5 engine, 3 HTTP); loose by design, they catch order-of-magnitude regressions only.",
+  "fp_corpus": {
+    "scenarios": 80,
+    "exfil_false_positives": 0,
+    "detection_true_positives": 34,
+    "detection_false_negatives": 0,
+    "known_gap_misses": 9,
+    "bonus_catches": 0
+  },
+  "cve_corpus": {
+    "scenarios": 16,
+    "exfil_caught": 12,
+    "exfil_total": 15,
+    "known_gap_misses": 4,
+    "regression_misses": 0,
+    "bonus_catches": 0
+  },
+  "bench_max_ns_op": {
+    "BenchmarkCheckOverlap_1Tainted": 9958,
+    "BenchmarkCheckOverlap_Scale/10000": 3608098,
+    "BenchmarkCheckOverlap_HitPath/10000": 213,
+    "BenchmarkEngine_EvaluateRequest_Exfil": 902580,
+    "BenchmarkEngine_IngestResult_TaintExtract": 5959968,
+    "BenchmarkCanonicalEncodings": 2045412,
+    "BenchmarkHTTP_EngineDelta_ReadTicket/EngineOn": 13162694,
+    "BenchmarkHTTP_EngineDelta_MonitorSinkBenign/EngineOn": 1321206
+  }
+}

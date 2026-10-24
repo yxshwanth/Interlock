@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
@@ -155,11 +157,11 @@ func (p *Proxy) dispatchToolsCall(ctx context.Context, rt *SessionRuntime, frame
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — FAIL-OPEN for this call, notifying fail-closed breaker: %v", r)
+					p.log.Printf("[SECURITY] engine panic during EvaluateRequest — blocking this call (fail-closed), notifying fail-closed breaker: %v", r)
 					if p.onEnginePanic != nil {
 						p.onEnginePanic(r)
 					}
-					decision = model.Decision{Allow: true}
+					decision = model.Decision{Allow: false, Reason: "engine_panic"}
 				}
 			}()
 			decision = p.engine.EvaluateRequest(ev)
@@ -270,10 +272,12 @@ func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []b
 	}
 
 	if p.engine != nil && ev.ToolName != "" {
+		panicked := false
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					p.log.Printf("[SECURITY] engine panic during IngestResult — FAIL-OPEN for this result, notifying fail-closed breaker: %v", r)
+					panicked = true
+					p.log.Printf("[SECURITY] engine panic during IngestResult — withholding result (fail-closed), notifying fail-closed breaker: %v", r)
 					if p.onEnginePanic != nil {
 						p.onEnginePanic(r)
 					}
@@ -281,11 +285,24 @@ func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []b
 			}()
 			p.engine.IngestResult(ev)
 		}()
-		if p.engine.VaultEnabled() {
-			frame = p.engine.VaultRewriteFrame(ev.SessionID, frame)
+		if panicked {
+			// The engine may still hold its lock, so do not call back into
+			// it; drop the unredacted body instead of logging it.
+			ev.Result = nil
+			ev.Decision = "blocked"
+			ev.BlockReason = "engine_panic"
+			p.writeEvent(ev)
+			frame = p.buildErrorResponse(msg.ID, jsonRPCServerError,
+				"result withheld by Interlock: engine panic during result ingest")
+		} else {
+			if p.engine.VaultEnabled() {
+				frame = p.engine.VaultRewriteFrame(ev.SessionID, frame)
+			}
+			p.logEvent(ev)
 		}
+	} else {
+		p.logEvent(ev)
 	}
-	p.logEvent(ev)
 
 	if idKey != "" {
 		rt.mu.Lock()

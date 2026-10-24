@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package engine
 
 import (
@@ -16,13 +18,13 @@ import (
 type ContainerAbortReason string
 
 const (
-	ContainerAbortNone          ContainerAbortReason = ""
-	ContainerAbortMaxBytes      ContainerAbortReason = "max_decompressed_bytes"
-	ContainerAbortMaxDepth      ContainerAbortReason = "max_descent_depth"
-	ContainerAbortMaxParts      ContainerAbortReason = "max_parts"
-	ContainerAbortMaxTime       ContainerAbortReason = "max_inspect_ms"
-	ContainerAbortEncrypted     ContainerAbortReason = "encrypted"
-	ContainerAbortCorrupt       ContainerAbortReason = "corrupt"
+	ContainerAbortNone      ContainerAbortReason = ""
+	ContainerAbortMaxBytes  ContainerAbortReason = "max_decompressed_bytes"
+	ContainerAbortMaxDepth  ContainerAbortReason = "max_descent_depth"
+	ContainerAbortMaxParts  ContainerAbortReason = "max_parts"
+	ContainerAbortMaxTime   ContainerAbortReason = "max_inspect_ms"
+	ContainerAbortEncrypted ContainerAbortReason = "encrypted"
+	ContainerAbortCorrupt   ContainerAbortReason = "corrupt"
 )
 
 // ContainerLimits are hard caps for one InspectContainer walk (ROADMAP §20).

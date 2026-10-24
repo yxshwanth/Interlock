@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package k8s
 
 import (
@@ -23,9 +25,9 @@ const MonitorLabel = "interlock.io/monitor"
 
 // PIDHooks are called when host PIDs / cgroups should be added/removed from the eBPF filter.
 type PIDHooks struct {
-	OnWatch         func(pids []int)
-	OnUnwatch       func(pids []int)
-	OnWatchCgroups  func(ids []uint64)
+	OnWatch          func(pids []int)
+	OnUnwatch        func(pids []int)
+	OnWatchCgroups   func(ids []uint64)
 	OnUnwatchCgroups func(ids []uint64)
 }
 

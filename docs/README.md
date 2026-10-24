@@ -85,7 +85,7 @@ All three true → **trip**: block + emit evidence.
 ## The two attacks it catches
 
 - **Variant A — chained tools (proxy catches).** A poisoned ticket tells the agent to read auth tokens and send them via a second, legitimate MCP tool. The proxy sees the sink call forming with the sensitive value inside, and blocks it pre-forward.
-- **Variant B — server side channel (eBPF catches).** The poisoned MCP *server subprocess itself* opens a socket straight to the attacker — a path the proxy never observes. eBPF catches the `connect()` from the child PID to a non-allowlisted destination, correlates it in time with the sensitive read, and flags it.
+- **Variant B — server side channel (eBPF catches).** The poisoned MCP *server subprocess itself* opens a socket straight to the attacker — a path the proxy never observes. eBPF sees the `connect()` from the child PID to a non-allowlisted destination and the payload of the write that follows; the session is found by PID or cgroup, not by timing. A payload that overlaps a registered secret is `EXFIL` and the process is killed; a bare connect is at most soft `SUSPICIOUS`. Open evasions of this plane are listed in [`security_review_status.md`](security_review_status.md).
 
 "My two layers cover what each other misses" is the security-architecture story.
 

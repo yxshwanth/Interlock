@@ -11,6 +11,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 NAME="${NAME:-interlock-lsm-vm}"
 AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 KEY_PATH="${ROOT}/deploy/ec2/.keys/${NAME}.pem"
+SSH_USER="${SSH_USER:-ubuntu}"
 REMOTE_DIR="${REMOTE_DIR:-~/interlock}"
 
 INSTANCE_ID="$(aws ec2 describe-instances --region "${AWS_REGION}" \
@@ -24,10 +25,10 @@ fi
 PUBLIC_IP="$(aws ec2 describe-instances --region "${AWS_REGION}" --instance-ids "${INSTANCE_ID}" \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
 
-echo "==> syncing ${ROOT} -> ubuntu@${PUBLIC_IP}:${REMOTE_DIR}"
+echo "==> syncing ${ROOT} -> ${SSH_USER}@${PUBLIC_IP}:${REMOTE_DIR}"
 rsync -az --delete \
   --filter=':- .gitignore' \
   --exclude='.git/' --exclude='deploy/ec2/.keys/' \
   -e "ssh -o StrictHostKeyChecking=accept-new -i ${KEY_PATH}" \
-  "${ROOT}/" "ubuntu@${PUBLIC_IP}:${REMOTE_DIR}/"
+  "${ROOT}/" "${SSH_USER}@${PUBLIC_IP}:${REMOTE_DIR}/"
 echo "done — ./deploy/ec2/ssh.sh to build/test"

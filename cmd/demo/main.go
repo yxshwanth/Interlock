@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command demo is a scripted MCP client that exercises the full Interlock
 // proxy pipeline in three passes:
 //

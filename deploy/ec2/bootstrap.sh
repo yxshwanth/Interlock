@@ -10,6 +10,7 @@ exec > >(tee -a /var/log/interlock-bootstrap.log) 2>&1
 echo "==> $(date -u) bootstrap start"
 
 export DEBIAN_FRONTEND=noninteractive
+U="$(ls -d /home/* | head -1)" # ubuntu on Ubuntu, admin on Debian
 apt-get update -y
 
 # Core toolchain — always available on Ubuntu 24.04.
@@ -24,11 +25,12 @@ apt-get install -y --no-install-recommends "linux-headers-$(uname -r)" \
   || apt-get install -y --no-install-recommends linux-headers-generic || true
 apt-get install -y --no-install-recommends "linux-tools-$(uname -r)" linux-tools-common \
   || apt-get install -y --no-install-recommends linux-tools-generic || true
+apt-get install -y --no-install-recommends bpftool || true # Debian ships it standalone
 # bpftool is a virtual package resolved by linux-tools-<version> above (via
 # update-alternatives to /usr/sbin/bpftool) — no separate package to install.
 
 # Go toolchain (for building/testing the Interlock sensor itself).
-GOVER="1.23.4"
+GOVER="1.26.4" # go.mod needs >= 1.26.0
 if ! command -v go >/dev/null 2>&1; then
   curl -fsSL "https://go.dev/dl/go${GOVER}.linux-amd64.tar.gz" -o /tmp/go.tgz
   tar -C /usr/local -xzf /tmp/go.tgz
@@ -50,12 +52,11 @@ if ! grep -qw bpf /sys/kernel/security/lsm 2>/dev/null; then
     sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 lsm=landlock,lockdown,yama,integrity,apparmor,bpf"/' /etc/default/grub
     update-grub
   fi
-  touch /home/ubuntu/REBOOT_REQUIRED
+  touch "${U}/REBOOT_REQUIRED"
 else
   echo "==> bpf LSM already active — no reboot needed"
 fi
 
-touch /home/ubuntu/BOOTSTRAP_DONE
-chown ubuntu:ubuntu /home/ubuntu/BOOTSTRAP_DONE 2>/dev/null || true
-[[ -f /home/ubuntu/REBOOT_REQUIRED ]] && chown ubuntu:ubuntu /home/ubuntu/REBOOT_REQUIRED
+touch "${U}/BOOTSTRAP_DONE"
+chown "$(stat -c %U "${U}")" "${U}/BOOTSTRAP_DONE" "${U}/REBOOT_REQUIRED" 2>/dev/null || true
 echo "==> $(date -u) bootstrap done"

@@ -208,7 +208,7 @@ A green CI badge on the README is instant credibility with the audience that che
 - On every push and PR: `go build ./...`, `go vet ./...`, `go test ./...`.
 - The badge in the README proving it passes.
 
-**The eBPF caveat for CI:** the eBPF paths need a Linux runner with a suitable kernel and privileges, and GitHub's hosted runners may not load your probes. Realistic approach: run the full non-eBPF suite in CI (which is most of the current 178 tests — see `make test` for the live count), and either gate the eBPF integration tests behind a self-hosted runner or a build tag, or document them as "run locally on a BTF-enabled kernel." Don't claim CI covers the eBPF path if it can't — that's the honesty discipline applied to your own badges. A passing badge that quietly skips the kernel tests, unstated, is a small dishonesty a sharp reviewer will catch.
+**The eBPF caveat for CI:** the eBPF paths need a Linux runner with a suitable kernel and privileges, and GitHub's hosted runners may not load your probes. Realistic approach: run the full non-eBPF suite in CI (which is most of the tests — 385 test functions; see `make test` for the live count), and either gate the eBPF integration tests behind a self-hosted runner or a build tag, or document them as "run locally on a BTF-enabled kernel." Don't claim CI covers the eBPF path if it can't — that's the honesty discipline applied to your own badges. A passing badge that quietly skips the kernel tests, unstated, is a small dishonesty a sharp reviewer will catch.
 
 Add later as the project matures: `golangci-lint`, race detector in CI (`go test -race`), release automation.
 

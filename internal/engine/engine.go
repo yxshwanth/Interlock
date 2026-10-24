@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package engine implements the correlation and policy engine: the trifecta
 // state machine, value-overlap taint checking, and verdict/evidence emission.
 package engine
@@ -7,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,14 +19,20 @@ import (
 )
 
 const (
-	maxUntrustedExcerpts  = 8
-	maxUntrustedExcerpt   = 4096
-	defaultFragmentChunks = 16
-	defaultFragmentBytes  = 64 * 1024
+	maxUntrustedExcerpts        = 8
+	maxUntrustedExcerpt         = 4096
+	defaultFragmentChunks       = 16
+	defaultFragmentBytes        = 64 * 1024
 	defaultEgressFragmentChunks = 16
 	defaultEgressFragmentBytes  = 4 * 1024
 	defaultEgressFragmentAge    = 10 * time.Second
 	defaultEgressMaxFlows       = 32
+
+	// Per-session taint bounds (review #9). Past either cap the oldest values
+	// are shed. 1 MiB is 16 whole 64 KiB files, about 32k chunks to scan per
+	// egress event under Engine.mu.
+	maxTaintedPerSession      = 1024
+	maxTaintedBytesPerSession = 1 << 20
 )
 
 // EvidenceSink receives evidence records when a trifecta trips.
@@ -60,23 +69,23 @@ type Engine struct {
 	log    *log.Logger
 	mu     sync.Mutex
 
-	untrustedToolResults bool
-	legTTL               time.Duration
-	decayAfterCalls      int
-	contentBindMinLen    int
-	fragmentMaxChunks    int
-	fragmentMaxBytes     int
-	chunkMatchBytes      int
-	chunkMatchMinLen     int
+	untrustedToolResults    bool
+	legTTL                  time.Duration
+	decayAfterCalls         int
+	contentBindMinLen       int
+	fragmentMaxChunks       int
+	fragmentMaxBytes        int
+	chunkMatchBytes         int
+	chunkMatchMinLen        int
 	egressReassemblyEnabled bool
 	egressFragmentMaxChunks int
 	egressFragmentMaxBytes  int
 	egressFragmentMaxAge    time.Duration
 	egressMaxFlows          int
-	vaultEnabled         bool
-	vaultAuthorize       []config.VaultAuthorizeEntry
-	sensitivePaths       []string
-	containerLimits      ContainerLimits
+	vaultEnabled            bool
+	vaultAuthorize          []config.VaultAuthorizeEntry
+	sensitivePaths          []string
+	containerLimits         ContainerLimits
 
 	taintForwarder     TaintForwarder
 	untrustedForwarder UntrustedForwarder
@@ -101,19 +110,19 @@ func NewEngine(store *SessionStore, tagger *Tagger, mode string, sink EvidenceSi
 	}
 
 	return &Engine{
-		store:                store,
-		tagger:               tagger,
-		sink:                 sink,
-		mode:                 mode,
-		log:                  l,
-		untrustedToolResults: true,
-		legTTL:               30 * time.Minute,
-		decayAfterCalls:      32,
-		contentBindMinLen:    defaultContentBindMinLen,
-		fragmentMaxChunks:    defaultFragmentChunks,
-		fragmentMaxBytes:     defaultFragmentBytes,
-		chunkMatchBytes:      defaultChunkMatchBytes,
-		chunkMatchMinLen:     defaultChunkMatchMinLen,
+		store:                   store,
+		tagger:                  tagger,
+		sink:                    sink,
+		mode:                    mode,
+		log:                     l,
+		untrustedToolResults:    true,
+		legTTL:                  30 * time.Minute,
+		decayAfterCalls:         32,
+		contentBindMinLen:       defaultContentBindMinLen,
+		fragmentMaxChunks:       defaultFragmentChunks,
+		fragmentMaxBytes:        defaultFragmentBytes,
+		chunkMatchBytes:         defaultChunkMatchBytes,
+		chunkMatchMinLen:        defaultChunkMatchMinLen,
 		egressReassemblyEnabled: true,
 		egressFragmentMaxChunks: defaultEgressFragmentChunks,
 		egressFragmentMaxBytes:  defaultEgressFragmentBytes,
@@ -205,12 +214,6 @@ func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
 		}
 	}
 
-	if len(tv.Variants) == 0 {
-		tv.Variants = CanonicalEncodings(tv.Value)
-	}
-	if len(tv.Chunks) == 0 {
-		AttachChunks(&tv, e.chunkMatchBytes, e.chunkMatchMinLen)
-	}
 	if tv.Hash == "" {
 		tv.Hash = HashValue(tv.Value)
 	}
@@ -221,11 +224,10 @@ func (e *Engine) RegisterRemoteTaint(sessionID string, tv model.TaintedValue) {
 		tv.RegisteredAt = time.Now().UnixNano()
 	}
 
-	added := appendUniqueTainted(state.Tainted, tv)
+	added := e.addTainted(state, []model.TaintedValue{tv})
 	if len(added) == 0 {
 		return
 	}
-	state.Tainted = append(state.Tainted, added...)
 	e.log.Printf("remote taint: session=%s source=%s registered %d value(s)",
 		sessionID, tv.Source, len(added))
 }
@@ -277,49 +279,49 @@ func (e *Engine) IngestResult(ev model.InterceptedEvent) {
 	var newlyUntrusted bool
 	var untrustedForwarder UntrustedForwarder
 
-	e.mu.Lock()
-	state := e.store.GetOrCreate(ev.SessionID)
-	e.touchSession(state, ev.Seq, fmt.Sprintf("%s result returned", ev.ToolName))
+	func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		state := e.store.GetOrCreate(ev.SessionID)
+		e.touchSession(state, ev.Seq, fmt.Sprintf("%s result returned", ev.ToolName))
 
-	sensitive := e.tagger != nil && e.tagger.IsSensitiveSource(ev.ToolName, ev.ServerID)
-	if sensitive {
-		e.setSensitiveSourceTouched(state, ev)
+		sensitive := e.tagger != nil && e.tagger.IsSensitiveSource(ev.ToolName, ev.ServerID)
+		if sensitive {
+			e.setSensitiveSourceTouched(state, ev)
 
-		resultText := extractResultText(ev.Result)
-		if resultText != "" {
-			source := fmt.Sprintf("%s/%s", ev.ServerID, ev.ToolName)
-			e.appendFragment(state, resultText)
-			tainted := ExtractTaintedValues(resultText, source, ev.Seq)
-			// Reassembly-first: secrets split across calls may only match
-			// secretPatterns on the concatenated fragment buffer.
-			reassembled := ExtractTaintedValues(strings.Join(state.FragmentChunks, ""), source, ev.Seq)
-			combined := append(tainted, reassembled...)
-			if readPath := consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName); readPath != "" &&
-				IsSensitiveResourcePath(readPath, e.sensitivePaths) {
-				combined = append(combined, TaintPathDrivenContent(resultText, readPath, source, ev.Seq)...)
+			resultText := extractResultText(ev.Result)
+			if resultText != "" {
+				source := fmt.Sprintf("%s/%s", ev.ServerID, ev.ToolName)
+				e.appendFragment(state, resultText)
+				tainted := ExtractTaintedValues(resultText, source, ev.Seq)
+				// Reassembly-first: secrets split across calls may only match
+				// secretPatterns on the concatenated fragment buffer.
+				reassembled := ExtractTaintedValues(strings.Join(state.FragmentChunks, ""), source, ev.Seq)
+				combined := append(tainted, reassembled...)
+				if readPath := consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName); readPath != "" &&
+					IsSensitiveResourcePath(readPath, e.sensitivePaths) {
+					combined = append(combined, TaintPathDrivenContent(resultText, readPath, source, ev.Seq)...)
+				}
+				combined = append(combined, e.taintFromContainer(resultText, source, ev.Seq)...)
+				added := e.addTainted(state, combined)
+				e.vaultMint(state, added)
+				if len(added) > 0 {
+					e.log.Printf("extracted %d tainted value(s) from %s (session=%s)",
+						len(added), source, ev.SessionID)
+					toForward = added
+					forwarder = e.taintForwarder
+				}
+			} else {
+				consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName)
 			}
-			combined = append(combined, e.taintFromContainer(resultText, source, ev.Seq)...)
-			e.attachChunksAll(combined)
-			added := appendUniqueTainted(state.Tainted, combined...)
-			state.Tainted = append(state.Tainted, added...)
-			e.vaultMint(state, added)
-			if len(added) > 0 {
-				e.log.Printf("extracted %d tainted value(s) from %s (session=%s)",
-					len(added), source, ev.SessionID)
-				toForward = added
-				forwarder = e.taintForwarder
+		} else if e.untrustedToolResults {
+			if !state.Legs.UntrustedContentPresent.Lit {
+				newlyUntrusted = true
+				untrustedForwarder = e.untrustedForwarder
 			}
-		} else {
-			consumePendingSensitiveReadPath(state, ev.ServerID, ev.ToolName)
+			e.setUntrustedContentPresent(state, ev, extractResultText(ev.Result))
 		}
-	} else if e.untrustedToolResults {
-		if !state.Legs.UntrustedContentPresent.Lit {
-			newlyUntrusted = true
-			untrustedForwarder = e.untrustedForwarder
-		}
-		e.setUntrustedContentPresent(state, ev, extractResultText(ev.Result))
-	}
-	e.mu.Unlock()
+	}()
 
 	if len(toForward) > 0 && forwarder != nil {
 		forwarder(toForward)
@@ -874,10 +876,9 @@ func (e *Engine) seedSensorSensitiveOpen(state *model.SessionState, ev model.Sys
 			path, state.SessionID, len(ev.FileContents))
 		return
 	}
-	e.attachChunksAll(tainted)
-	state.Tainted = append(state.Tainted, tainted...)
-	e.log.Printf("sensor seed: openat %s session=%s — registered %d tainted value(s)",
-		path, state.SessionID, len(tainted))
+	added := e.addTainted(state, tainted)
+	e.log.Printf("sensor seed: openat %s session=%s — registered %d new tainted value(s)",
+		path, state.SessionID, len(added))
 }
 
 func (e *Engine) recordUnattributedSyscall(ev model.SyscallEvent, reason string) {
@@ -1162,10 +1163,16 @@ func (e *Engine) egressCandidatePayload(state *model.SessionState, ev model.Sysc
 	if fragment == "" {
 		return ev.PayloadExcerpt
 	}
-	if !e.egressReassemblyEnabled {
-		return fragment
+	window := fragment
+	if e.egressReassemblyEnabled {
+		window = e.appendEgressFlowFragment(state, ev, fragment)
 	}
-	return e.appendEgressFlowFragment(state, ev, fragment)
+	if fragment != ev.PayloadExcerpt {
+		// DNS: the window holds first labels only; scan the raw query too or a
+		// leading junk label hides the secret (review #16).
+		window += "\n" + ev.PayloadExcerpt
+	}
+	return window
 }
 
 func normalizedEgressFragment(ev model.SyscallEvent) string {
@@ -1189,18 +1196,31 @@ func (e *Engine) appendEgressFlowFragment(state *model.SessionState, ev model.Sy
 	if state.EgressFlows == nil {
 		state.EgressFlows = make(map[string]*model.EgressFlowBuffer)
 	}
+	if state.EgressPIDFlows == nil {
+		state.EgressPIDFlows = make(map[string]*model.EgressFlowBuffer)
+	}
 	now := e.egressEventTime(ev)
-	e.pruneEgressFlows(state, now)
-
 	key, dest := e.egressFlowKey(ev)
-	flow, ok := state.EgressFlows[key]
+	window := e.appendFlow(state.EgressFlows, key, ev.PID, dest, fragment, now)
+	// One more buffer per pid across all destinations, so round-robining
+	// fragments over destinations still joins (review #17).
+	pidWindow := e.appendFlow(state.EgressPIDFlows, strconv.Itoa(ev.PID), ev.PID, "*", fragment, now)
+	if pidWindow == window {
+		return window
+	}
+	return window + "\n" + pidWindow
+}
+
+func (e *Engine) appendFlow(flows map[string]*model.EgressFlowBuffer, key string, pid int, dest, fragment string, now int64) string {
+	e.pruneEgressFlows(flows, now)
+	flow, ok := flows[key]
 	if !ok {
-		e.enforceEgressFlowCap(state)
+		e.enforceEgressFlowCap(flows)
 		flow = &model.EgressFlowBuffer{
-			PID:         ev.PID,
+			PID:         pid,
 			Destination: dest,
 		}
-		state.EgressFlows[key] = flow
+		flows[key] = flow
 	}
 
 	// Slow-trickle boundary: if the flow sat idle longer than the window,
@@ -1237,8 +1257,8 @@ func (e *Engine) appendEgressFlowFragment(state *model.SessionState, ev model.Sy
 	return strings.Join(flow.Chunks, "")
 }
 
-func (e *Engine) pruneEgressFlows(state *model.SessionState, now int64) {
-	if len(state.EgressFlows) == 0 {
+func (e *Engine) pruneEgressFlows(flows map[string]*model.EgressFlowBuffer, now int64) {
+	if len(flows) == 0 {
 		return
 	}
 	maxAge := e.egressFragmentMaxAge
@@ -1246,24 +1266,24 @@ func (e *Engine) pruneEgressFlows(state *model.SessionState, now int64) {
 		maxAge = defaultEgressFragmentAge
 	}
 	cutoff := now - maxAge.Nanoseconds()
-	for k, flow := range state.EgressFlows {
+	for k, flow := range flows {
 		if flow == nil || flow.LastAppendNS < cutoff {
-			delete(state.EgressFlows, k)
+			delete(flows, k)
 		}
 	}
 }
 
-func (e *Engine) enforceEgressFlowCap(state *model.SessionState) {
+func (e *Engine) enforceEgressFlowCap(flows map[string]*model.EgressFlowBuffer) {
 	maxFlows := e.egressMaxFlows
 	if maxFlows <= 0 {
 		maxFlows = defaultEgressMaxFlows
 	}
-	if len(state.EgressFlows) < maxFlows {
+	if len(flows) < maxFlows {
 		return
 	}
 	var oldestKey string
 	oldest := int64(1<<63 - 1)
-	for k, flow := range state.EgressFlows {
+	for k, flow := range flows {
 		ts := int64(0)
 		if flow != nil {
 			ts = flow.LastAppendNS
@@ -1274,7 +1294,7 @@ func (e *Engine) enforceEgressFlowCap(state *model.SessionState) {
 		}
 	}
 	if oldestKey != "" {
-		delete(state.EgressFlows, oldestKey)
+		delete(flows, oldestKey)
 	}
 }
 
@@ -1310,6 +1330,41 @@ func (e *Engine) attachChunksAll(values []model.TaintedValue) {
 			AttachChunks(&values[i], n, minLen)
 		}
 	}
+}
+
+// addTainted registers candidates not already present by Hash, computing
+// variants and chunks for new values only, then sheds the oldest values past
+// the per-session caps (review #9). Returns the newly added values.
+func (e *Engine) addTainted(state *model.SessionState, candidates []model.TaintedValue) []model.TaintedValue {
+	added := appendUniqueTainted(state.Tainted, candidates...)
+	if len(added) == 0 {
+		return nil
+	}
+	for i := range added {
+		if len(added[i].Variants) == 0 {
+			added[i].Variants = CanonicalEncodings(added[i].Value)
+		}
+	}
+	e.attachChunksAll(added)
+	state.Tainted = append(state.Tainted, added...)
+
+	total := 0
+	for _, tv := range state.Tainted {
+		total += len(tv.Value)
+	}
+	shed := 0
+	for shed < len(state.Tainted)-1 &&
+		(len(state.Tainted)-shed > maxTaintedPerSession || total > maxTaintedBytesPerSession) {
+		total -= len(state.Tainted[shed].Value)
+		shed++
+	}
+	if shed > 0 {
+		// Copy so the shed values' backing memory is released.
+		state.Tainted = append([]model.TaintedValue(nil), state.Tainted[shed:]...)
+		e.log.Printf("[SECURITY] taint cap reached (session=%s): shed %d oldest value(s), %d remain",
+			state.SessionID, shed, len(state.Tainted))
+	}
+	return added
 }
 
 // appendUniqueTainted returns values in candidates whose Hash is not already

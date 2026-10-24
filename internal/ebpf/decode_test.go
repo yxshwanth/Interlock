@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package ebpf
 
 import (
@@ -13,7 +15,8 @@ func TestDecode_ConnectIPv4AndIPv6(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[20:24], 7)
 	raw[24] = afInet
 	copy(raw[25:29], []byte{203, 0, 113, 1})
-	binary.LittleEndian.PutUint16(raw[41:43], 443)
+	binary.LittleEndian.PutUint16(raw[42:44], 443)
+	binary.LittleEndian.PutUint32(raw[44:48], 9)
 	binary.LittleEndian.PutUint64(raw[48:56], 99)
 	copy(raw[56:72], []byte("curl"))
 
@@ -21,7 +24,7 @@ func TestDecode_ConnectIPv4AndIPv6(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.Connect == nil || ev.Connect.DestIPString() != "203.0.113.1" || ev.Connect.DestPort != 443 {
+	if ev.Connect == nil || ev.Connect.DestIPString() != "203.0.113.1" || ev.Connect.DestPort != 443 || ev.Connect.FD != 9 {
 		t.Fatalf("ipv4 connect decode: %+v", ev.Connect)
 	}
 
@@ -57,7 +60,7 @@ func TestDecode_WritevAndNamedSendmsg(t *testing.T) {
 	binary.LittleEndian.PutUint32(s[4:8], 3)
 	s[24] = afInet
 	copy(s[25:29], []byte{1, 2, 3, 4})
-	binary.LittleEndian.PutUint16(s[41:43], 53)
+	binary.LittleEndian.PutUint16(s[42:44], 53)
 	binary.LittleEndian.PutUint64(s[48:56], 1)
 	copy(s[sendtoHeaderLen:], []byte("dns"))
 	ev2, err := decodeRingEvent(s)

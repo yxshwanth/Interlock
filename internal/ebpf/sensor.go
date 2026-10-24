@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package ebpf
 
 import (
@@ -15,9 +17,22 @@ import (
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
-// SuspiciousConnectTTL is how long a non-allowlisted connect stays eligible
-// for write-payload correlation.
+// SuspiciousConnectTTL is how long a pid-wide arming (sendto, which carries
+// no fd for later writes) stays eligible for write-payload correlation.
 const SuspiciousConnectTTL = 5 * time.Second
+
+// staleFDTTL bounds how long a connect()-armed fd stays eligible. connect is
+// keyed by (pid, fd) so it does not expire after seconds; this only reaps an
+// entry whose fd was likely closed and reused.
+// ponytail: close(2) is not probed, so a reused fd can inherit a stale dest
+// for up to this long; add a sys_enter_close probe to delete exactly.
+const staleFDTTL = 10 * time.Minute
+
+// anyFD keys a pid-wide arming in suspiciousByPID.
+const anyFD = -1
+
+// maxFDsPerPID caps armed fds per pid so a connect storm cannot grow the map.
+const maxFDsPerPID = 256
 
 // SyscallHandler is called for each relevant syscall event.
 type SyscallHandler func(ev model.SyscallEvent) model.Decision
@@ -46,7 +61,7 @@ type Sensor struct {
 	sensitivePaths []string
 
 	mu              sync.Mutex
-	suspiciousByPID map[int]pendingConnect
+	suspiciousByPID map[int]map[int]pendingConnect // pid -> fd (or anyFD) -> dest
 
 	// Fail-closed bookkeeping: entries this sensor added for fail-closed
 	// (not pre-existing EXFIL quarantines). Guarded by fcMu.
@@ -82,20 +97,31 @@ func NewSensor(allowedIPs []string, sensitivePaths []string, lsmEnforce bool, ha
 		return nil, fmt.Errorf("sensor: drop caps post-attach: %w", err)
 	}
 
-	allow := make(map[string]bool, len(allowedIPs))
-	for _, ip := range allowedIPs {
-		allow[ip] = true
-	}
-
+	logger := log.New(os.Stderr, "[sensor] ", log.LstdFlags)
 	return &Sensor{
 		loader:          loader,
-		allowlist:       allow,
+		allowlist:       buildAllowlist(allowedIPs, logger),
 		sensitivePaths:  append([]string(nil), sensitivePaths...),
 		handler:         handler,
-		log:             log.New(os.Stderr, "[sensor] ", log.LstdFlags),
+		log:             logger,
 		stopCh:          make(chan struct{}),
-		suspiciousByPID: make(map[int]pendingConnect),
+		suspiciousByPID: make(map[int]map[int]pendingConnect),
 	}, nil
+}
+
+// buildAllowlist keeps IP literals only. The sensor matches destination IPs,
+// so a hostname entry would never match; it is dropped with a warning rather
+// than left in place looking effective.
+func buildAllowlist(entries []string, logger *log.Logger) map[string]bool {
+	allow := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if net.ParseIP(e) == nil {
+			logger.Printf("[WARN] egress_allowlist entry %q is not an IP address and is ignored: the sensor matches destination IPs, never hostnames", e)
+			continue
+		}
+		allow[e] = true
+	}
+	return allow
 }
 
 type sensorOpts struct {
@@ -126,10 +152,7 @@ func (s *Sensor) SetPayloadCaptureBytes(n int) error {
 
 // UpdateAllowlist replaces the egress allowlist (SIGHUP hot-reload).
 func (s *Sensor) UpdateAllowlist(allowedIPs []string) {
-	allow := make(map[string]bool, len(allowedIPs))
-	for _, ip := range allowedIPs {
-		allow[ip] = true
-	}
+	allow := buildAllowlist(allowedIPs, s.log)
 	s.cfgMu.Lock()
 	s.allowlist = allow
 	s.cfgMu.Unlock()
@@ -457,6 +480,54 @@ func (s *Sensor) callHandler(ev model.SyscallEvent) (decision model.Decision) {
 	return s.handler(ev)
 }
 
+// arm records a non-allowlisted destination for (pid, fd).
+func (s *Sensor) arm(pid, fd int, destIP string, port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fds := s.suspiciousByPID[pid]
+	if fds == nil {
+		fds = make(map[int]pendingConnect)
+		s.suspiciousByPID[pid] = fds
+	}
+	if _, ok := fds[fd]; !ok && len(fds) >= maxFDsPerPID {
+		for k, v := range fds {
+			if time.Since(v.at) > ttlFor(k) {
+				delete(fds, k)
+			}
+		}
+		if len(fds) >= maxFDsPerPID {
+			return
+		}
+	}
+	fds[fd] = pendingConnect{destIP: destIP, destPort: port, at: time.Now()}
+}
+
+func ttlFor(fd int) time.Duration {
+	if fd == anyFD {
+		return SuspiciousConnectTTL
+	}
+	return staleFDTTL
+}
+
+// armed returns the destination a write on (pid, fd) correlates to: the fd's
+// own connect, else a fresh pid-wide arming.
+func (s *Sensor) armed(pid, fd int) (pendingConnect, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, k := range [2]int{fd, anyFD} {
+		pc, ok := s.suspiciousByPID[pid][k]
+		if !ok {
+			continue
+		}
+		if time.Since(pc.at) > ttlFor(k) {
+			delete(s.suspiciousByPID[pid], k)
+			continue
+		}
+		return pc, true
+	}
+	return pendingConnect{}, false
+}
+
 func (s *Sensor) handleConnect(raw *ConnectEvent) {
 	destIP := raw.DestIPString()
 	s.log.Printf("connect observed: pid=%d cgroup=%d comm=%s dest=%s:%d",
@@ -467,13 +538,7 @@ func (s *Sensor) handleConnect(raw *ConnectEvent) {
 	}
 
 	pid := int(raw.PID)
-	s.mu.Lock()
-	s.suspiciousByPID[pid] = pendingConnect{
-		destIP:   destIP,
-		destPort: int(raw.DestPort),
-		at:       time.Now(),
-	}
-	s.mu.Unlock()
+	s.arm(pid, int(raw.FD), destIP, int(raw.DestPort))
 
 	ev := model.SyscallEvent{
 		TSMono:      int64(raw.TSNs),
@@ -510,13 +575,7 @@ func (s *Sensor) handleConnect(raw *ConnectEvent) {
 
 func (s *Sensor) handleWrite(raw *WriteEvent) {
 	pid := int(raw.PID)
-	s.mu.Lock()
-	pc, ok := s.suspiciousByPID[pid]
-	if ok && time.Since(pc.at) > SuspiciousConnectTTL {
-		delete(s.suspiciousByPID, pid)
-		ok = false
-	}
-	s.mu.Unlock()
+	pc, ok := s.armed(pid, int(raw.FD))
 	if !ok {
 		return
 	}
@@ -562,13 +621,7 @@ func (s *Sensor) handleSendto(raw *SendtoEvent) {
 	port := int(raw.DestPort)
 
 	// Arm write correlation for the same PID (TCP-style follow-up writes).
-	s.mu.Lock()
-	s.suspiciousByPID[pid] = pendingConnect{
-		destIP:   destIP,
-		destPort: port,
-		at:       time.Now(),
-	}
-	s.mu.Unlock()
+	s.arm(pid, anyFD, destIP, port)
 
 	syscallName := raw.Syscall
 	if syscallName == "" {
@@ -665,7 +718,12 @@ func (s *Sensor) stopping() bool {
 	}
 }
 
-// KillProcess sends SIGKILL to the process group of the given PID.
+// KillProcess sends SIGKILL to pid and to the process group that pid leads.
+// kill(-pid) only reaches a group whose ID is pid, so when pid merely belongs
+// to someone else's group, that leader and its other members are untouched
+// (TestKillProcess_SparesLeaderOfJoinedGroup). Residual: if pid exited and
+// its number was reused by an unrelated group leader, that whole group dies;
+// a single-PID kill has the same race with a smaller blast radius.
 func KillProcess(pid int) {
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 	_ = syscall.Kill(pid, syscall.SIGKILL)

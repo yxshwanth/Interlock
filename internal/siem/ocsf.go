@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package siem
 
 import (
@@ -16,6 +18,7 @@ import (
 	"github.com/yxshwanth/Interlock/internal/config"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
+
 const (
 	ocsfCategoryUID = 2
 	ocsfClassUID    = 2004

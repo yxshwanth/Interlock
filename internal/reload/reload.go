@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package reload
 
 import (
@@ -14,15 +16,15 @@ import (
 
 // Runtime holds live references updated on SIGHUP.
 type Runtime struct {
-	mu       sync.Mutex
-	Logger   *log.Logger
-	Metrics  *observability.Metrics
-	Async    *engine.AsyncEvidenceSink
-	Sensor   *interlockebpf.Sensor
-	Engine   *engine.Engine
-	Webhook  *alerting.WebhookNotifier
-	SIEM     *siem.Exporter
-	Cfg      *config.Config
+	mu      sync.Mutex
+	Logger  *log.Logger
+	Metrics *observability.Metrics
+	Async   *engine.AsyncEvidenceSink
+	Sensor  *interlockebpf.Sensor
+	Engine  *engine.Engine
+	Webhook *alerting.WebhookNotifier
+	SIEM    *siem.Exporter
+	Cfg     *config.Config
 }
 
 // CurrentCfg returns the last applied config.

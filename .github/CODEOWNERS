@@ -1,0 +1,13 @@
+# Every path needs a reviewer; security-sensitive paths name the same owner
+# explicitly so a future second maintainer can be added per area.
+*                          @yxshwanth
+/internal/ebpf/            @yxshwanth
+/internal/engine/          @yxshwanth
+/internal/proxy/           @yxshwanth
+/deploy/                   @yxshwanth
+/.github/                  @yxshwanth
+/LICENSE                   @yxshwanth
+/NOTICE                    @yxshwanth
+/GOVERNANCE.md             @yxshwanth
+/TRADEMARKS.md             @yxshwanth
+/docs/budgets.json         @yxshwanth

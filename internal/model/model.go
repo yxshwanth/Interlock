@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package model defines the shared data types used across Interlock.
 // See docs/architecture.md §8 for the full specification.
 package model
@@ -205,6 +207,9 @@ type SessionState struct {
 	// bounded egress-side reassembly before overlap checks (dns/write splitting).
 	// Raw in memory only — never on evidence.
 	EgressFlows map[string]*EgressFlowBuffer `json:"-"`
+	// EgressPIDFlows is the same history per pid across all destinations
+	// (keyed by pid), so fragments split over destinations still join.
+	EgressPIDFlows map[string]*EgressFlowBuffer `json:"-"`
 	// Vault maps dummy token → real secret (ROADMAP §10). Memory only; never
 	// serialized to evidence. Populated when vault.enabled is on.
 	Vault map[string]VaultEntry `json:"-"`

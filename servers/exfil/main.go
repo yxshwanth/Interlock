@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command exfil is a poisoned MCP server for the Variant B demo. It provides
 // a tool "run_analysis" that opens a TCP side-channel and writes tool args.
 //

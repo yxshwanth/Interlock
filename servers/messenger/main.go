@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command messenger is a toy MCP server that exposes send_message and
 // http_post tools. It acts as an external sink for the exfiltration demo.
 package main

@@ -34,8 +34,9 @@ struct connect_event {
 	__u32 tid;
 	__u8  family; /* AF_INET / AF_INET6 */
 	__u8  dest_addr[16];
+	__u8  _pad2;
 	__u16 dest_port;
-	__u8  _pad2[5];
+	__u32 fd;
 	__u64 cgroup_id;
 	char  comm[16];
 };
@@ -61,12 +62,22 @@ struct sendto_event {
 	__u32 tid;
 	__u8  family;
 	__u8  dest_addr[16];
+	__u8  _pad1;
 	__u16 dest_port;
-	__u8  _pad[5];
+	__u32 _pad2;
 	__u64 cgroup_id;
 	char  comm[16];
 	char  payload[PAYLOAD_MAX];
 };
+
+/* Wire offsets the Go decoder (loader.go) hard-codes. */
+_Static_assert(__builtin_offsetof(struct connect_event, dest_port) == 42, "connect port");
+_Static_assert(__builtin_offsetof(struct connect_event, fd) == 44, "connect fd");
+_Static_assert(__builtin_offsetof(struct connect_event, cgroup_id) == 48, "connect cgroup");
+_Static_assert(__builtin_offsetof(struct connect_event, comm) == 56, "connect comm");
+_Static_assert(__builtin_offsetof(struct sendto_event, dest_port) == 42, "sendto port");
+_Static_assert(__builtin_offsetof(struct sendto_event, cgroup_id) == 48, "sendto cgroup");
+_Static_assert(__builtin_offsetof(struct sendto_event, payload) == 72, "sendto payload");
 
 struct openat_event {
 	__u32 type; /* EVENT_OPENAT */
@@ -213,6 +224,17 @@ static __always_inline int read_dest(__u8 *family_out, __u8 dest_addr[16], __u16
 	return -1;
 }
 
+/* Payload read with a size the verifier can prove. clang spills the clamped
+ * length across helper calls and merges the clamp into u32 arithmetic, which
+ * 6.1 rejects as unbounded. A constant on one path and a masked value on the
+ * other holds on every kernel and clang tried (7.0, 6.1; host clang, clang 14). */
+static __always_inline long read_payload(void *dst, __u32 n, const void *src) {
+	if (n >= PAYLOAD_MAX)
+		return bpf_probe_read_user(dst, PAYLOAD_MAX, src);
+	barrier_var(n);
+	return bpf_probe_read_user(dst, n & (PAYLOAD_MAX - 1), src);
+}
+
 static __always_inline __u32 clamp_cap(__u64 count) {
 	__u32 cap = payload_limit();
 	if (cap > PAYLOAD_MAX)
@@ -220,6 +242,59 @@ static __always_inline __u32 clamp_cap(__u64 count) {
 	if (count < cap)
 		cap = (__u32)count;
 	return cap;
+}
+
+/* Per-CPU gather buffer for multi-iovec captures. Offset and length are both
+ * masked to IOV_MASK (2*PAYLOAD_MAX-1) so the verifier sees a non-negative,
+ * bounded range; 8x PAYLOAD_MAX is slack: 6.1 tracks a wider offset range than 7.0. */
+#define IOV_MASK (2 * PAYLOAD_MAX - 1)
+struct iov_scratch {
+	char buf[8 * PAYLOAD_MAX];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct iov_scratch);
+} iov_scratch_map SEC(".maps");
+
+static __always_inline char *iov_scratch_buf(void) {
+	__u32 key = 0;
+	struct iov_scratch *s = bpf_map_lookup_elem(&iov_scratch_map, &key);
+	return s ? s->buf : 0;
+}
+
+#define IOV_MAX 4
+
+/* Copy the first IOV_MAX iovecs back to back into out, up to the payload
+ * limit. Returns bytes gathered (0 if nothing readable). */
+static __always_inline __u32 gather_iov(char *out, const struct iovec *iovp, __u64 iovcnt) {
+	__u32 limit = clamp_cap(PAYLOAD_MAX);
+	__u32 total = 0;
+#pragma unroll
+	for (int i = 0; i < IOV_MAX; i++) {
+		struct iovec iov;
+		if (i >= iovcnt || total >= limit)
+			break;
+		if (bpf_probe_read_user(&iov, sizeof(iov), &iovp[i]) < 0)
+			break;
+		if (!iov.iov_base || iov.iov_len == 0)
+			continue;
+		__u32 n = limit - total;
+		if (iov.iov_len < n)
+			n = iov.iov_len;
+		if (n > PAYLOAD_MAX || total > PAYLOAD_MAX)
+			break;
+		/* Without the barrier clang re-reads iov.iov_len from the stack for
+		 * the helper call and the verifier loses the bounds proved above. */
+		barrier_var(n);
+		n &= IOV_MASK;
+		if (bpf_probe_read_user(out + (total & IOV_MASK), n, iov.iov_base) < 0)
+			break;
+		total += n;
+	}
+	return total > PAYLOAD_MAX ? PAYLOAD_MAX : total;
 }
 
 SEC("tracepoint/syscalls/sys_enter_connect")
@@ -257,6 +332,7 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	ev->family = family;
 	__builtin_memcpy(ev->dest_addr, dest_addr, 16);
 	ev->dest_port = dest_port;
+	ev->fd = (__u32)ctx->args[0];
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
 
@@ -264,21 +340,13 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_enter_write")
-int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx) {
-	if (!monitored_task())
-		return 0;
-
+/* Capture buf as a plain write-layout event (write, and sendto without an
+ * address, which correlates to its connect by fd). */
+static __always_inline int emit_write(__u32 fd, const char *buf, __u64 count) {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
 
-	__u32 fd = (__u32)ctx->args[0];
-	if (fd < 3)
-		return 0;
-
-	const char *buf = (const char *)(unsigned long)ctx->args[1];
-	__u64 count = (__u64)ctx->args[2];
 	if (!buf || count == 0)
 		return 0;
 
@@ -300,13 +368,32 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, buf);
+	if (read_payload(ev->payload, cap, buf) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
 }
 
-/* writev(fd, iov, iovcnt) — capture first iovec only (verifier-safe). */
+SEC("tracepoint/syscalls/sys_enter_write")
+int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx) {
+	if (!monitored_task())
+		return 0;
+
+	__u32 fd = (__u32)ctx->args[0];
+	/* Known gap: write(2) to a socket dup2'd onto fd 0-2 is skipped. The
+	 * tracepoint cannot tell a socket from a tty/pipe without walking
+	 * task->files, and logging to stdout/stderr would flood the critical
+	 * ring. sendto/sendmsg have no such skip. */
+	if (fd < 3)
+		return 0;
+
+	return emit_write(fd, (const char *)(unsigned long)ctx->args[1], (__u64)ctx->args[2]);
+}
+
+/* writev(fd, iov, iovcnt) — first IOV_MAX iovecs gathered contiguously. */
 SEC("tracepoint/syscalls/sys_enter_writev")
 int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx) {
 	if (!monitored_task())
@@ -325,12 +412,12 @@ int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx
 	if (!iovp || iovcnt == 0)
 		return 0;
 
-	struct iovec iov0;
-	bpf_probe_read_user(&iov0, sizeof(iov0), iovp);
-	if (!iov0.iov_base || iov0.iov_len == 0)
+	char *scratch = iov_scratch_buf();
+	if (!scratch)
 		return 0;
-
-	__u32 cap = clamp_cap(iov0.iov_len);
+	__u32 total = gather_iov(scratch, iovp, iovcnt);
+	if (total == 0 || total > PAYLOAD_MAX)
+		return 0;
 
 	struct write_event *ev;
 	ev = bpf_ringbuf_reserve(&critical_events, sizeof(*ev), 0);
@@ -341,14 +428,17 @@ int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter *ctx
 
 	__builtin_memset(ev, 0, offsetof(struct write_event, payload));
 	ev->type = EVENT_WRITEV;
-	ev->len = cap;
+	ev->len = total;
 	ev->ts_ns = bpf_ktime_get_ns();
 	ev->pid = pid;
 	ev->tid = tid;
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, iov0.iov_base);
+	if (bpf_probe_read_kernel(ev->payload, total, scratch) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
@@ -363,15 +453,17 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
 
-	__u32 fd = (__u32)ctx->args[0];
-	if (fd < 3)
-		return 0;
-
+	/* No fd<3 skip: sendto/sendmsg only work on sockets, so a socket dup2'd
+	 * onto fd 0-2 must still be seen (review #2). */
 	const char *buf = (const char *)(unsigned long)ctx->args[1];
 	__u64 count = (__u64)ctx->args[2];
 	struct sockaddr *sa = (struct sockaddr *)(unsigned long)ctx->args[4];
-	if (!buf || count == 0 || !sa)
+	if (!buf || count == 0)
 		return 0;
+	/* send(2) is sendto with a NULL address: capture it as a write on the fd
+	 * so it correlates to its connect (review #1). */
+	if (!sa)
+		return emit_write((__u32)ctx->args[0], buf, count);
 
 	__u8 family = 0;
 	__u8 dest_addr[16];
@@ -400,41 +492,37 @@ int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter *ctx
 	ev->dest_port = dest_port;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, buf);
+	if (read_payload(ev->payload, cap, buf) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
 }
 
-/* sendmsg(fd, msg, flags) — first iov; named dest → sendto layout, else write layout. */
-SEC("tracepoint/syscalls/sys_enter_sendmsg")
-int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ctx) {
-	if (!monitored_task())
-		return 0;
-
+/* Shared by sendmsg and sendmmsg: first IOV_MAX iovecs; named dest → sendto
+ * layout, else write layout. Caller has already checked monitored_task(). */
+static __always_inline int emit_sendmsg(__u32 fd, const struct user_msghdr *umsg) {
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 pid = pid_tgid >> 32;
 	__u32 tid = (__u32)pid_tgid;
 
-	__u32 fd = (__u32)ctx->args[0];
-	if (fd < 3)
-		return 0;
-
-	const struct user_msghdr *umsg = (const struct user_msghdr *)(unsigned long)ctx->args[1];
 	if (!umsg)
 		return 0;
 
 	struct user_msghdr hdr;
-	bpf_probe_read_user(&hdr, sizeof(hdr), umsg);
+	if (bpf_probe_read_user(&hdr, sizeof(hdr), umsg) < 0)
+		return 0;
 	if (!hdr.msg_iov || hdr.msg_iovlen == 0)
 		return 0;
 
-	struct iovec iov0;
-	bpf_probe_read_user(&iov0, sizeof(iov0), hdr.msg_iov);
-	if (!iov0.iov_base || iov0.iov_len == 0)
+	char *scratch = iov_scratch_buf();
+	if (!scratch)
 		return 0;
-
-	__u32 cap = clamp_cap(iov0.iov_len);
+	__u32 total = gather_iov(scratch, hdr.msg_iov, hdr.msg_iovlen);
+	if (total == 0 || total > PAYLOAD_MAX)
+		return 0;
 
 	__u8 family = 0;
 	__u8 dest_addr[16];
@@ -455,7 +543,7 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 		}
 		__builtin_memset(ev, 0, offsetof(struct sendto_event, payload));
 		ev->type = EVENT_SENDMSG;
-		ev->len = cap;
+		ev->len = total;
 		ev->ts_ns = bpf_ktime_get_ns();
 		ev->pid = pid;
 		ev->tid = tid;
@@ -464,7 +552,10 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 		ev->dest_port = dest_port;
 		ev->cgroup_id = bpf_get_current_cgroup_id();
 		bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-		bpf_probe_read_user(ev->payload, PAYLOAD_MAX, iov0.iov_base);
+		if (bpf_probe_read_kernel(ev->payload, total, scratch) < 0) {
+			bpf_ringbuf_discard(ev, 0);
+			return 0;
+		}
 		bpf_ringbuf_submit(ev, 0);
 		return 0;
 	}
@@ -477,16 +568,39 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ct
 	}
 	__builtin_memset(ev, 0, offsetof(struct write_event, payload));
 	ev->type = EVENT_SENDMSG;
-	ev->len = cap;
+	ev->len = total;
 	ev->ts_ns = bpf_ktime_get_ns();
 	ev->pid = pid;
 	ev->tid = tid;
 	ev->fd = fd;
 	ev->cgroup_id = bpf_get_current_cgroup_id();
 	bpf_get_current_comm(&ev->comm, sizeof(ev->comm));
-	bpf_probe_read_user(ev->payload, PAYLOAD_MAX, iov0.iov_base);
+	if (bpf_probe_read_kernel(ev->payload, total, scratch) < 0) {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendmsg")
+int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter *ctx) {
+	if (!monitored_task())
+		return 0;
+	return emit_sendmsg((__u32)ctx->args[0],
+			    (const struct user_msghdr *)(unsigned long)ctx->args[1]);
+}
+
+/* sendmmsg(fd, msgvec, vlen, flags) — only msgvec[0] is captured (an
+ * mmsghdr starts with its msghdr). Later messages are a documented gap. */
+SEC("tracepoint/syscalls/sys_enter_sendmmsg")
+int tracepoint__syscalls__sys_enter_sendmmsg(struct trace_event_raw_sys_enter *ctx) {
+	if (!monitored_task())
+		return 0;
+	if ((__u32)ctx->args[2] == 0)
+		return 0;
+	return emit_sendmsg((__u32)ctx->args[0],
+			    (const struct user_msghdr *)(unsigned long)ctx->args[1]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat")

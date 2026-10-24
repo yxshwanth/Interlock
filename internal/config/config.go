@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package config
 
 import (
@@ -24,7 +26,7 @@ type TransportConfig struct {
 	Endpoint           string  `yaml:"endpoint"`
 	ProtocolVersion    string  `yaml:"protocol_version"`
 	PreferSSEResponses bool    `yaml:"prefer_sse_responses"`
-	BearerToken        string  `yaml:"bearer_token"`    // optional; required on HTTP when set
+	BearerToken        string  `yaml:"bearer_token"`   // optional; required on HTTP when set
 	RateLimitRPS       float64 `yaml:"rate_limit_rps"` // optional per-client IP limit (HTTP only)
 }
 
@@ -492,28 +494,28 @@ func parsePositiveDuration(s string, def time.Duration) time.Duration {
 
 // Config is the top-level Interlock configuration, loaded from interlock.yaml.
 type Config struct {
-	Transport        TransportConfig     `yaml:"transport"`
-	Sessions         SessionsConfig      `yaml:"sessions"`
-	Evidence         EvidenceConfig      `yaml:"evidence"`
-	Logging          LoggingConfig       `yaml:"logging"`
-	Observability    ObservabilityConfig `yaml:"observability"`
-	Alerting         AlertingConfig      `yaml:"alerting"`
-	SIEM             SIEMConfig          `yaml:"siem"`
-	EBPF             EBPFConfig          `yaml:"ebpf"`
-	FailClosed       FailClosedConfig    `yaml:"fail_closed"`
-	Enforcement      string              `yaml:"enforcement"`
-	Trifecta         TrifectaConfig      `yaml:"trifecta"`
-	Sandbox          SandboxConfig       `yaml:"sandbox"`
-	Vault            VaultConfig         `yaml:"vault"`
-	ServerDefaults   ServerDefaultsConfig `yaml:"server_defaults"`
-	TaintBridge      TaintBridgeConfig   `yaml:"taint_bridge"`
-	EgressAllowlist  []string            `yaml:"egress_allowlist"`
-	SensitivePaths   []string            `yaml:"sensitive_paths"` // openat pathname prefixes; empty = ignore
-	Servers               []ServerConfig      `yaml:"servers"`
-	ResolvedSpawnCommands map[string]string `yaml:"-"` // server ID -> resolved executable (set at load)
-	ResolvedSpawnAllowlist []string         `yaml:"-"` // resolved sandbox.spawn_allowlist
-	ToolTags              map[string][]string `yaml:"tool_tags"`
-	UntrustedOrigins struct {
+	Transport              TransportConfig      `yaml:"transport"`
+	Sessions               SessionsConfig       `yaml:"sessions"`
+	Evidence               EvidenceConfig       `yaml:"evidence"`
+	Logging                LoggingConfig        `yaml:"logging"`
+	Observability          ObservabilityConfig  `yaml:"observability"`
+	Alerting               AlertingConfig       `yaml:"alerting"`
+	SIEM                   SIEMConfig           `yaml:"siem"`
+	EBPF                   EBPFConfig           `yaml:"ebpf"`
+	FailClosed             FailClosedConfig     `yaml:"fail_closed"`
+	Enforcement            string               `yaml:"enforcement"`
+	Trifecta               TrifectaConfig       `yaml:"trifecta"`
+	Sandbox                SandboxConfig        `yaml:"sandbox"`
+	Vault                  VaultConfig          `yaml:"vault"`
+	ServerDefaults         ServerDefaultsConfig `yaml:"server_defaults"`
+	TaintBridge            TaintBridgeConfig    `yaml:"taint_bridge"`
+	EgressAllowlist        []string             `yaml:"egress_allowlist"`
+	SensitivePaths         []string             `yaml:"sensitive_paths"` // openat pathname prefixes; empty = ignore
+	Servers                []ServerConfig       `yaml:"servers"`
+	ResolvedSpawnCommands  map[string]string    `yaml:"-"` // server ID -> resolved executable (set at load)
+	ResolvedSpawnAllowlist []string             `yaml:"-"` // resolved sandbox.spawn_allowlist
+	ToolTags               map[string][]string  `yaml:"tool_tags"`
+	UntrustedOrigins       struct {
 		ToolResults bool `yaml:"tool_results"`
 		WebFetches  bool `yaml:"web_fetches"`
 	} `yaml:"untrusted_origins"`

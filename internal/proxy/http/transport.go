@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package mcphttp
 
 import (
@@ -27,9 +29,9 @@ type Server struct {
 // NewServer creates an HTTP MCP front-end for p.
 func NewServer(p *proxy.Proxy, cfg *config.Config, logger *log.Logger) *Server {
 	return &Server{
-		proxy: p,
-		cfg:   cfg,
-		log:   logger,
+		proxy:   p,
+		cfg:     cfg,
+		log:     logger,
 		limiter: newIPRateLimiter(cfg.Transport.RateLimitRPS),
 	}
 }
