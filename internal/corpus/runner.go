@@ -36,33 +36,6 @@ type Result struct {
 	Outcome      Outcome
 }
 
-// testConfig builds the tool-tags/servers config every scenario replays
-// against, matching the demo fixture shape (servers/tickets, messenger,
-// exfil) used throughout internal/engine's own tests.
-func testConfig(mode string) *config.Config {
-	return &config.Config{
-		Enforcement: mode,
-		Servers: []config.ServerConfig{
-			{ID: "tickets", Command: "./tickets", ProvidesTags: []string{"sensitive_source"}},
-			{ID: "messenger", Command: "./messenger", ProvidesTags: []string{"external_sink"}},
-			{ID: "web", Command: "./web", ProvidesTags: []string{}},
-		},
-		ToolTags: map[string][]string{
-			"read_ticket":  {"sensitive_source"},
-			"send_message": {"external_sink"},
-			"http_post":    {"external_sink"},
-			"fetch_page":   {},
-			// Untagged override on the sensitive tickets server — neither
-			// sensitive_source nor external_sink (covers intra-server relay gap).
-			"internal_note": {},
-		},
-		UntrustedOrigins: struct {
-			ToolResults bool `yaml:"tool_results"`
-			WebFetches  bool `yaml:"web_fetches"`
-		}{ToolResults: true},
-	}
-}
-
 // Run replays every scenario against a fresh Engine + SessionStore
 // (one session per scenario, no shared state across scenarios) and scores
 // the outcome, using the shared fp-corpus fixture config (testConfig).
