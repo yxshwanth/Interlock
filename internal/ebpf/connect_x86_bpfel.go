@@ -8,30 +8,38 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type connectIovScratch struct {
+	_   structs.HostLayout
+	Buf [8192]int8
+}
 
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	connectMapCgroupFilter                       = "cgroup_filter"
-	connectMapCriticalDropCount                  = "critical_drop_count"
-	connectMapCriticalEvents                     = "critical_events"
-	connectMapDropCount                          = "drop_count"
-	connectMapEvents                             = "events"
-	connectMapLsmBlocklistCgroup                 = "lsm_blocklist_cgroup"
-	connectMapLsmBlocklistPid                    = "lsm_blocklist_pid"
-	connectMapPayloadCap                         = "payload_cap"
-	connectMapPidFilter                          = "pid_filter"
-	connectProgLsmSocketConnect                  = "lsm_socket_connect"
-	connectProgTracepointSyscallsSysEnterConnect = "tracepoint__syscalls__sys_enter_connect"
-	connectProgTracepointSyscallsSysEnterOpenat  = "tracepoint__syscalls__sys_enter_openat"
-	connectProgTracepointSyscallsSysEnterSendmsg = "tracepoint__syscalls__sys_enter_sendmsg"
-	connectProgTracepointSyscallsSysEnterSendto  = "tracepoint__syscalls__sys_enter_sendto"
-	connectProgTracepointSyscallsSysEnterWrite   = "tracepoint__syscalls__sys_enter_write"
-	connectProgTracepointSyscallsSysEnterWritev  = "tracepoint__syscalls__sys_enter_writev"
+	connectMapCgroupFilter                        = "cgroup_filter"
+	connectMapCriticalDropCount                   = "critical_drop_count"
+	connectMapCriticalEvents                      = "critical_events"
+	connectMapDropCount                           = "drop_count"
+	connectMapEvents                              = "events"
+	connectMapIovScratchMap                       = "iov_scratch_map"
+	connectMapLsmBlocklistCgroup                  = "lsm_blocklist_cgroup"
+	connectMapLsmBlocklistPid                     = "lsm_blocklist_pid"
+	connectMapPayloadCap                          = "payload_cap"
+	connectMapPidFilter                           = "pid_filter"
+	connectProgLsmSocketConnect                   = "lsm_socket_connect"
+	connectProgTracepointSyscallsSysEnterConnect  = "tracepoint__syscalls__sys_enter_connect"
+	connectProgTracepointSyscallsSysEnterOpenat   = "tracepoint__syscalls__sys_enter_openat"
+	connectProgTracepointSyscallsSysEnterSendmmsg = "tracepoint__syscalls__sys_enter_sendmmsg"
+	connectProgTracepointSyscallsSysEnterSendmsg  = "tracepoint__syscalls__sys_enter_sendmsg"
+	connectProgTracepointSyscallsSysEnterSendto   = "tracepoint__syscalls__sys_enter_sendto"
+	connectProgTracepointSyscallsSysEnterWrite    = "tracepoint__syscalls__sys_enter_write"
+	connectProgTracepointSyscallsSysEnterWritev   = "tracepoint__syscalls__sys_enter_writev"
 )
 
 // loadConnect returns the embedded CollectionSpec for connect.
@@ -76,13 +84,14 @@ type connectSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type connectProgramSpecs struct {
-	LsmSocketConnect                  *ebpf.ProgramSpec `ebpf:"lsm_socket_connect"`
-	TracepointSyscallsSysEnterConnect *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_connect"`
-	TracepointSyscallsSysEnterOpenat  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_openat"`
-	TracepointSyscallsSysEnterSendmsg *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
-	TracepointSyscallsSysEnterSendto  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
-	TracepointSyscallsSysEnterWrite   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_write"`
-	TracepointSyscallsSysEnterWritev  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_writev"`
+	LsmSocketConnect                   *ebpf.ProgramSpec `ebpf:"lsm_socket_connect"`
+	TracepointSyscallsSysEnterConnect  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterOpenat   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_openat"`
+	TracepointSyscallsSysEnterSendmmsg *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendmmsg"`
+	TracepointSyscallsSysEnterSendmsg  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
+	TracepointSyscallsSysEnterSendto   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
+	TracepointSyscallsSysEnterWrite    *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_write"`
+	TracepointSyscallsSysEnterWritev   *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_enter_writev"`
 }
 
 // connectMapSpecs contains maps before they are loaded into the kernel.
@@ -94,6 +103,7 @@ type connectMapSpecs struct {
 	CriticalEvents     *ebpf.MapSpec `ebpf:"critical_events"`
 	DropCount          *ebpf.MapSpec `ebpf:"drop_count"`
 	Events             *ebpf.MapSpec `ebpf:"events"`
+	IovScratchMap      *ebpf.MapSpec `ebpf:"iov_scratch_map"`
 	LsmBlocklistCgroup *ebpf.MapSpec `ebpf:"lsm_blocklist_cgroup"`
 	LsmBlocklistPid    *ebpf.MapSpec `ebpf:"lsm_blocklist_pid"`
 	PayloadCap         *ebpf.MapSpec `ebpf:"payload_cap"`
@@ -131,6 +141,7 @@ type connectMaps struct {
 	CriticalEvents     *ebpf.Map `ebpf:"critical_events"`
 	DropCount          *ebpf.Map `ebpf:"drop_count"`
 	Events             *ebpf.Map `ebpf:"events"`
+	IovScratchMap      *ebpf.Map `ebpf:"iov_scratch_map"`
 	LsmBlocklistCgroup *ebpf.Map `ebpf:"lsm_blocklist_cgroup"`
 	LsmBlocklistPid    *ebpf.Map `ebpf:"lsm_blocklist_pid"`
 	PayloadCap         *ebpf.Map `ebpf:"payload_cap"`
@@ -144,6 +155,7 @@ func (m *connectMaps) Close() error {
 		m.CriticalEvents,
 		m.DropCount,
 		m.Events,
+		m.IovScratchMap,
 		m.LsmBlocklistCgroup,
 		m.LsmBlocklistPid,
 		m.PayloadCap,
@@ -161,13 +173,14 @@ type connectVariables struct {
 //
 // It can be passed to loadConnectObjects or ebpf.CollectionSpec.LoadAndAssign.
 type connectPrograms struct {
-	LsmSocketConnect                  *ebpf.Program `ebpf:"lsm_socket_connect"`
-	TracepointSyscallsSysEnterConnect *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_connect"`
-	TracepointSyscallsSysEnterOpenat  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_openat"`
-	TracepointSyscallsSysEnterSendmsg *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
-	TracepointSyscallsSysEnterSendto  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
-	TracepointSyscallsSysEnterWrite   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_write"`
-	TracepointSyscallsSysEnterWritev  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_writev"`
+	LsmSocketConnect                   *ebpf.Program `ebpf:"lsm_socket_connect"`
+	TracepointSyscallsSysEnterConnect  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_connect"`
+	TracepointSyscallsSysEnterOpenat   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_openat"`
+	TracepointSyscallsSysEnterSendmmsg *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendmmsg"`
+	TracepointSyscallsSysEnterSendmsg  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendmsg"`
+	TracepointSyscallsSysEnterSendto   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_sendto"`
+	TracepointSyscallsSysEnterWrite    *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_write"`
+	TracepointSyscallsSysEnterWritev   *ebpf.Program `ebpf:"tracepoint__syscalls__sys_enter_writev"`
 }
 
 func (p *connectPrograms) Close() error {
@@ -175,6 +188,7 @@ func (p *connectPrograms) Close() error {
 		p.LsmSocketConnect,
 		p.TracepointSyscallsSysEnterConnect,
 		p.TracepointSyscallsSysEnterOpenat,
+		p.TracepointSyscallsSysEnterSendmmsg,
 		p.TracepointSyscallsSysEnterSendmsg,
 		p.TracepointSyscallsSysEnterSendto,
 		p.TracepointSyscallsSysEnterWrite,

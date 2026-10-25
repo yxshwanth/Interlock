@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package ebpf
 
 import (
@@ -152,7 +154,7 @@ func TestLSM_QuarantineNegativeControl_OtherPIDUnaffected(t *testing.T) {
 func TestLSM_FailClosedQuarantineAllDeniesConnect(t *testing.T) {
 	requireRootAndBPFLSM(t)
 
-	sensor, err := NewSensor(nil, nil, true, nil)
+	sensor, err := NewSensor(nil, nil, true, nil, WithKeepSYSAdmin())
 	if err != nil {
 		t.Fatalf("NewSensor: %v", err)
 	}
@@ -230,6 +232,24 @@ func TestLSM_DenySurvivesConnectFlood(t *testing.T) {
 		t.Fatalf("AddPID: %v", err)
 	}
 
+	// One reader drains the critical ring for the whole test: the Go runtime's
+	// own 8-byte eventfd wakeups (write, fd >= 3) from the dial loop would
+	// otherwise fill it and show up as critical drops unrelated to lsm_deny.
+	gotDeny := make(chan *LSMDenyEvent, 1)
+	go func() {
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			ev, err := loader.ReadCriticalEvent()
+			if err != nil {
+				continue
+			}
+			if ev != nil && ev.LSMDeny != nil && int(ev.LSMDeny.PID) == pid {
+				gotDeny <- ev.LSMDeny
+				return
+			}
+		}
+	}()
+
 	// Fill the undrained routine ring with connect events, then stop flooding
 	// before quarantine so denied connects do not also pressure critical_events.
 	deadline := time.Now().Add(2 * time.Second)
@@ -248,26 +268,15 @@ func TestLSM_DenySurvivesConnectFlood(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DropCount: %v", err)
 	}
-	t.Logf("pre-quarantine drop_count=%d (routine undrained)", drops)
+	critBefore, err := loader.CriticalDropCount()
+	if err != nil {
+		t.Fatalf("CriticalDropCount: %v", err)
+	}
+	t.Logf("pre-quarantine drop_count=%d critical_drop_count=%d (routine undrained)", drops, critBefore)
 
 	if err := loader.Quarantine(pid, 0); err != nil {
 		t.Fatalf("Quarantine: %v", err)
 	}
-
-	gotDeny := make(chan *LSMDenyEvent, 1)
-	go func() {
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			ev, err := loader.ReadCriticalEvent()
-			if err != nil {
-				continue
-			}
-			if ev != nil && ev.LSMDeny != nil && int(ev.LSMDeny.PID) == pid {
-				gotDeny <- ev.LSMDeny
-				return
-			}
-		}
-	}()
 
 	if err := dialUDPTestNet(); err == nil {
 		t.Fatal("expected EPERM for quarantined pid")
@@ -287,7 +296,7 @@ func TestLSM_DenySurvivesConnectFlood(t *testing.T) {
 		t.Fatalf("CriticalDropCount: %v", err)
 	}
 	t.Logf("after deny: drop_count=%d critical_drop_count=%d", drops, crit)
-	if crit != 0 {
-		t.Fatalf("unexpected critical drops while delivering lsm_deny: %d", crit)
+	if crit != critBefore {
+		t.Fatalf("critical drops while delivering lsm_deny: %d before quarantine, %d after", critBefore, crit)
 	}
 }

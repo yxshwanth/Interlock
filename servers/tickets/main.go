@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command tickets is a toy MCP server that exposes a read_ticket tool.
 // It returns customer support tickets containing sensitive data (auth tokens)
 // and a hidden poisoned instruction for the Week 2 exfiltration demo.

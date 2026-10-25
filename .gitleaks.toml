@@ -1,0 +1,13 @@
+# Interlock is a secret-detection tool: tests, corpora, demos and docs carry
+# deliberate fake secrets. Everything else is scanned.
+[allowlist]
+description = "fixture paths with synthetic secrets"
+paths = [
+  '''_test\.go$''',
+  '''^internal/corpus/''',
+  '''^cmd/demo/''',
+  '''^servers/''',
+  '''^scripts/demo-k8s\.sh$''',
+  '''^docs/''',
+  '''^README\.md$''',
+]

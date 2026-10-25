@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package corpus drives the trifecta engine directly (no MCP proxy, no
 // kernel) through a catalog of malicious and benign scenarios, and scores
 // the results into a confusion matrix. See docs/fp_corpus.md for the

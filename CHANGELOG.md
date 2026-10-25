@@ -4,8 +4,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Licence
+
+- **Relicensed from MIT to Apache-2.0** (ROADMAP §30). Releases up to and including v0.4.0 were published under the MIT License and remain MIT; this and later releases are Apache-2.0. `internal/ebpf/bpf/connect.c` stays GPL-2.0 (kernel BPF helper requirement).
+
 ### Added
 
+- **Wave 0 baseline and gates (ROADMAP §29, §30, §80)** — `scripts/verify-all.sh` (one command: build, vet, tests, race, corpora, benchmarks, kernel suite with explicit SKIPPED), `cmd/gate` + `docs/budgets.json` (exact corpus pins, benchmark ceilings), `docs/baseline_wave0.md`, `docs/testing.md` with per-file test layers (`scripts/test_layers.tsv`), `docs/security_review_status.md`; SPDX headers, DCO check, CODEOWNERS, `GOVERNANCE.md`, `TRADEMARKS.md`
 - **CEF SIEM export (ROADMAP §5)** — `siem.format: cef` ArcSight CEF 0 text lines beside existing OCSF; OCSF path unchanged
 - **Cross-session evidence query (ROADMAP §5)** — SQLite `Query` by `session_id` / `verdict` / `pod_name`; `make query-evidence`; viewer multi-record list mode
 - **Shannon entropy dark measurement (ROADMAP §12)** — corpus-only would-fire rates in `docs/fp_corpus.md`; not wired to verdicts/alerts

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package engine
 
 import (
@@ -86,33 +88,106 @@ func TestEgressReassembly_WriteFragmentsSameDestination_EXFIL(t *testing.T) {
 	}
 }
 
-func TestEgressReassembly_CrossDestinationSplit_KnownGap(t *testing.T) {
+// Review #16: a secret in a non-leading DNS label must still be scanned; the
+// first-label reassembly window is an addition to the raw query, not a
+// replacement for it.
+func TestEgressReassembly_DNSSecretAfterJunkLabel_EXFIL(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "egress-dns-junk-label"
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: `+secret+`"}]}`))
+
+	dec := eng.IngestSyscall(model.SyscallEvent{
+		SessionID:      sid,
+		Syscall:        "dns",
+		DestIP:         "8.8.8.8",
+		DestPort:       53,
+		PID:            7704,
+		Comm:           "reverse_shell",
+		PayloadExcerpt: "junk." + secret + ".evil.example",
+	})
+	if dec.Verdict != model.VerdictExfil {
+		t.Fatalf("secret in second DNS label must trip EXFIL, got %q", dec.Verdict)
+	}
+}
+
+// A secret split across labels of one query ("<a>.<b>.evil.example") is not
+// joined: the raw query keeps its dots and only the first label feeds
+// cross-query reassembly.
+func TestEgressReassembly_DNSSecretSplitAcrossLabels_KnownGap(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "egress-dns-label-split"
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: `+secret+`"}]}`))
+
+	dec := eng.IngestSyscall(model.SyscallEvent{
+		SessionID:      sid,
+		Syscall:        "dns",
+		DestIP:         "8.8.8.8",
+		DestPort:       53,
+		PID:            7704,
+		Comm:           "reverse_shell",
+		PayloadExcerpt: secret[:20] + "." + secret[20:] + ".evil.example",
+	})
+	if dec.Verdict == model.VerdictExfil {
+		t.Fatal("label-split secret now caught: gap closed, flip this pin")
+	}
+}
+
+// Review #17: the per-pid buffer joins fragments round-robined across
+// destinations.
+func TestEgressReassembly_CrossDestinationSplit_EXFIL(t *testing.T) {
 	eng, _ := newTestEngine("block")
 	sid := "egress-reassembly-cross-dest"
 	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
 	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
 		`{"content":[{"type":"text","text":"Token: `+secret+`"}]}`))
 
-	frags := []string{
-		secret[:10] + ".exfil.evil.example",
-		secret[10:22] + ".exfil.evil.example",
-		secret[22:34] + ".exfil.evil.example",
-		secret[34:] + ".exfil.evil.example",
-	}
-	dests := []string{"8.8.8.8", "1.1.1.1", "8.8.8.8", "1.1.1.1"}
-	for i := range frags {
+	mid := len(secret) / 2
+	for i, p := range []struct{ ip, payload string }{
+		{"203.0.113.1", secret[:mid]},
+		{"203.0.113.2", secret[mid:]},
+	} {
 		dec := eng.IngestSyscall(model.SyscallEvent{
 			SessionID:      sid,
-			Syscall:        "dns",
-			DestIP:         dests[i],
-			DestPort:       53,
+			Syscall:        "write",
+			DestIP:         p.ip,
+			DestPort:       443,
 			PID:            7704,
-			Comm:           "reverse_shell",
-			PayloadExcerpt: frags[i],
+			Comm:           "exfil",
+			PayloadExcerpt: p.payload,
 		})
-		if dec.Verdict == model.VerdictExfil {
-			t.Fatalf("unexpected EXFIL when fragments split across destinations at step %d", i)
+		if i == 1 && dec.Verdict != model.VerdictExfil {
+			t.Fatalf("halves split across two destinations must join, got %q", dec.Verdict)
 		}
+	}
+}
+
+// Decoy traffic between the halves fills both the per-destination flow cap
+// (evicting the accumulating flow) and the per-pid window, so the halves are
+// never contiguous in any buffer.
+func TestEgressReassembly_DecoyFlowEviction_KnownGap(t *testing.T) {
+	eng, _ := newTestEngine("block")
+	sid := "egress-reassembly-decoys"
+	secret := "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef"
+	eng.IngestResult(makeResultEvent(sid, "read_ticket", "tickets", 1,
+		`{"content":[{"type":"text","text":"Token: `+secret+`"}]}`))
+
+	write := func(ip, payload string) model.Decision {
+		return eng.IngestSyscall(model.SyscallEvent{
+			SessionID: sid, Syscall: "write", DestIP: ip, DestPort: 443,
+			PID: 7704, Comm: "exfil", PayloadExcerpt: payload,
+		})
+	}
+	mid := len(secret) / 2
+	write("203.0.113.1", secret[:mid])
+	for i := 0; i < defaultEgressMaxFlows; i++ {
+		write(fmt.Sprintf("198.51.100.%d", i+1), "x")
+	}
+	if dec := write("203.0.113.1", secret[mid:]); dec.Verdict == model.VerdictExfil {
+		t.Fatal("decoy-flow eviction now caught: gap closed, flip this pin")
 	}
 }
 

@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
 
 # Least privilege: CI only needs to read the repo.
 permissions:
@@ -15,25 +16,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version: '~1.26.10'
+
+      - name: Secret scan
+        run: go run github.com/zricethezav/gitleaks/v8@v8.18.4 detect --no-banner --redact
 
       - name: Build
         run: go build ./...
 
+      - name: Format
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+
       - name: Vet
         run: go vet ./...
+
+      # Before Test: the integration tests skip with "server binaries not built"
+      # when these are missing, and used to skip silently on every CI run.
+      - name: Build server binaries
+        run: make build
 
       - name: Test
         run: go test -v ./...
 
+      - name: Test layer labels and SPDX headers
+        run: scripts/check-test-layers.sh && scripts/check-spdx.sh
+
+      - name: Coverage floor (scripts/coverage_floor.tsv)
+        run: scripts/check-coverage.sh
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+      - name: Corpus and benchmark gate (docs/budgets.json)
+        run: |
+          go test -run='^$' -bench=. -benchmem -benchtime=50ms ./internal/engine/... | grep '^Benchmark' > bench.txt
+          go run ./cmd/gate -bench bench.txt -skip '^BenchmarkHTTP_'
+
       - name: Benchmark smoke
         run: go test -run=^$ -bench=BenchmarkCheckOverlap_1Tainted -benchtime=10ms ./internal/engine/...
-
-      - name: Build server binaries
-        run: make build
 
       - name: HTTP overhead bench smoke
         run: OVERHEAD_SAMPLES=100 go test -run=TestHTTP_OverheadReport_ReadTicket -bench=BenchmarkHTTP_EngineDelta_ReadTicket/EngineOn -benchmem -benchtime=50ms ./internal/proxy/http/...
@@ -48,7 +73,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version: '~1.26.10'
 
       - name: Build (server binaries for integration tests)
         run: make build

@@ -1,11 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package bridge
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/yxshwanth/Interlock/internal/engine"
 	"github.com/yxshwanth/Interlock/internal/model"
 )
 
@@ -29,7 +33,7 @@ func TestClientServer_RegisterRoundTrip(t *testing.T) {
 
 	tv := model.TaintedValue{
 		Value:    "sk-live-testsecret1234567890abcdef",
-		Hash:     "abc",
+		Hash:     engine.HashValue("sk-live-testsecret1234567890abcdef"),
 		Preview:  "sk-...def",
 		Source:   "tickets/read_ticket",
 		Seq:      7,
@@ -141,6 +145,23 @@ func TestClientServer_RejectsDisallowedUID(t *testing.T) {
 		t.Fatal("handler must not run for disallowed peer")
 	case <-time.After(300 * time.Millisecond):
 		// ok
+	}
+}
+
+func TestParseRegister_RejectsShortValueAndForgedHash(t *testing.T) {
+	const secret = "sk-live-testsecret1234567890abcdef"
+	line := func(value, hash string) []byte {
+		b, _ := json.Marshal(RegisterTaintMsg{Op: OpRegisterTaint, PodUID: "p", Value: value, Hash: hash})
+		return b
+	}
+	if _, err := parseRegisterLine(line("e", engine.HashValue("e"))); err == nil {
+		t.Fatal("1-byte value accepted")
+	}
+	if _, err := parseRegisterLine(line(secret, engine.HashValue("something else"))); err == nil {
+		t.Fatal("forged hash accepted")
+	}
+	if _, err := parseRegisterLine(line(secret, engine.HashValue(secret))); err != nil {
+		t.Fatalf("valid message rejected: %v", err)
 	}
 }
 

@@ -53,3 +53,4 @@ events-*.jsonl
 # Agents
 .cursor/
 .claude/
+docs/IMPLEMENTATION_PLAN.md

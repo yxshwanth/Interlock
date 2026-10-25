@@ -66,7 +66,7 @@ Priority order (highest leverage first):
 Talking points this project already earns, mapped to what they demonstrate:
 
 - **Systems design** — two-plane architecture (proxy = enforcement, eBPF = ground truth), verdict/action separation, session state machine with leg decay.
-- **Security engineering** — threat modeling own TCB (T1–T6), fail-open vs. fail-closed tradeoffs, least-privilege capability dropping, tamper-evident hash chains.
+- **Security engineering** — threat modeling own TCB (T1–T7), fail-open vs. fail-closed tradeoffs, least-privilege capability dropping, tamper-evident hash chains.
 - **Kernel/eBPF** — tracepoints vs. LSM hooks, ring-buffer design (dual severity-class rings), CO-RE/BTF reality vs. `bpf_probe_read_user`, verifier constraints (bounded iovec unrolling).
 - **Distributed systems** — PID/cgroup attribution across clock domains, session concurrency races, `go test -race` discipline.
 - **Data/detection engineering** — precision/recall tradeoffs measured with a real corpus, false-positive remediation story (46.7% → 18.9%), the discipline of `KnownGap` tests as living documentation of scope.

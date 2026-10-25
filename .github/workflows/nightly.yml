@@ -1,0 +1,22 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-all:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '~1.26.10'
+
+      - name: Everything the hosted runner can run (kernel suite is skipped, not passed)
+        run: scripts/verify-all.sh

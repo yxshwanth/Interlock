@@ -23,6 +23,18 @@ Honest read: Rust fixes the memory-safety subset (6) and makes the userspace loa
 
 Keep the existing seam: the sensor emits `model.SyscallEvent`. Stage 1 ships the Rust sensor as a separate process (`interlock-sensor-rs`) that writes newline-delimited `SyscallEvent` JSON to a Unix socket; Go's `IngestSyscall` / `IngestSyscallSensor` consume it via a small adapter. Reverse channel (Go → Rust): allowlist/PID/cgroup updates and `Quarantine` over the same socket. No FFI, no cgo.
 
+## Parity spec (from the fixed C probes)
+
+The Rust sensor must reproduce these behaviours, which the C sensor now has:
+
+- **Correlation key.** A non-allowlisted `connect` arms `(pid, fd)`; a `write`/`writev`/unnamed `sendmsg` on that fd correlates to the connect destination. A `sendto` arms the pid with no fd and expires after 5 s. A connect-armed fd is reaped after 10 min (`close(2)` is not probed yet; adding it is a parity-improving change, not a regression). At most 256 armed fds per pid.
+- **Wire layouts.** `connect_event` and `sendto_event` use explicit padding with compile-time offset asserts (`_Static_assert` in `connect.c`): `dest_port` at 42, `fd` at 44 (connect only), `cgroup_id` at 48, `comm` at 56, `sendto` payload at 72, `write_event` payload at 56. A natural-alignment layout silently disagreed with the Go decoder before this; the Rust port must carry the same asserts (`const _: () = assert!(offset_of!(...) == 42)`) and `#[repr(C)]`.
+- **Replay trace.** Record the ring-buffer bytes, not decoded events, so layout drift shows up in the parity diff.
+
+## aya surface to pin in the spike
+
+Verify, against the pinned `aya` and `aya-ebpf` versions, that each exists and loads on both target kernels before committing to the port: `#[tracepoint]` for `sys_enter_{connect,write,writev,sendto,sendmsg,sendmmsg,openat}`, `#[lsm]` for `socket_connect`, `RingBuf` (two maps, routine and critical), a per-CPU array for iovec scratch, `HashMap` for PID and cgroup watch and quarantine sets, and `bpf_probe_read_user` with its `Result` handled. A missing item is a no-go signal for that probe, not a reason to fall back silently.
+
 ## Acceptance criteria
 
 1. `go test ./internal/corpus/...` and `make fp-corpus` / `make cve-corpus` unchanged (corpus drives the engine, so it validates the adapter, not the probes).

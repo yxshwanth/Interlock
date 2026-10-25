@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package ebpf
 
 import (
@@ -39,6 +41,7 @@ type ConnectEvent struct {
 	Family   uint8
 	DestAddr [16]byte
 	DestPort uint16
+	FD       uint32
 	CgroupID uint64
 	Comm     [16]byte
 }
@@ -150,6 +153,7 @@ type Loader struct {
 	writevLink     link.Link
 	sendtoLink     link.Link
 	sendmsgLink    link.Link
+	sendmmsgLink   link.Link
 	openatLink     link.Link
 	lsmLink        link.Link       // nil unless lsmEnforce requested it and attach succeeded
 	reader         *ringbuf.Reader // routine: connect/openat
@@ -208,22 +212,28 @@ func NewLoader(lsmEnforce bool) (*Loader, error) {
 		return nil, fmt.Errorf("attaching sendmsg tracepoint: %w", err)
 	}
 
-	tpOpenat, err := link.Tracepoint("syscalls", "sys_enter_openat", objs.TracepointSyscallsSysEnterOpenat, nil)
+	tpSendmmsg, err := link.Tracepoint("syscalls", "sys_enter_sendmmsg", objs.TracepointSyscallsSysEnterSendmmsg, nil)
 	if err != nil {
 		cleanup(tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
+		return nil, fmt.Errorf("attaching sendmmsg tracepoint: %w", err)
+	}
+
+	tpOpenat, err := link.Tracepoint("syscalls", "sys_enter_openat", objs.TracepointSyscallsSysEnterOpenat, nil)
+	if err != nil {
+		cleanup(tpSendmmsg, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
 		return nil, fmt.Errorf("attaching openat tracepoint: %w", err)
 	}
 
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
-		cleanup(tpOpenat, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
+		cleanup(tpOpenat, tpSendmmsg, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
 		return nil, fmt.Errorf("creating ring buffer reader: %w", err)
 	}
 
 	critRD, err := ringbuf.NewReader(objs.CriticalEvents)
 	if err != nil {
 		rd.Close()
-		cleanup(tpOpenat, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
+		cleanup(tpOpenat, tpSendmmsg, tpSendmsg, tpSendto, tpWritev, tpWrite, tpConnect)
 		return nil, fmt.Errorf("creating critical ring buffer reader: %w", err)
 	}
 
@@ -234,6 +244,7 @@ func NewLoader(lsmEnforce bool) (*Loader, error) {
 		writevLink:     tpWritev,
 		sendtoLink:     tpSendto,
 		sendmsgLink:    tpSendmsg,
+		sendmmsgLink:   tpSendmmsg,
 		openatLink:     tpOpenat,
 		reader:         rd,
 		criticalReader: critRD,
@@ -615,7 +626,8 @@ func decodeConnect(raw []byte) (*RingEvent, error) {
 		PID:      binary.LittleEndian.Uint32(raw[16:20]),
 		TID:      binary.LittleEndian.Uint32(raw[20:24]),
 		Family:   raw[24],
-		DestPort: binary.LittleEndian.Uint16(raw[41:43]),
+		DestPort: binary.LittleEndian.Uint16(raw[42:44]),
+		FD:       binary.LittleEndian.Uint32(raw[44:48]),
 		CgroupID: binary.LittleEndian.Uint64(raw[48:56]),
 	}
 	copy(ev.DestAddr[:], raw[25:41])
@@ -640,7 +652,11 @@ func decodeWritePayload(raw []byte) (*WriteEvent, error) {
 		CgroupID: binary.LittleEndian.Uint64(raw[32:40]),
 	}
 	copy(ev.Comm[:], raw[40:56])
-	if int(n) > 0 && len(raw) >= writeHeaderLen+int(n) {
+	if avail := len(raw) - writeHeaderLen; int(n) > avail {
+		n = uint32(avail)
+		ev.Len = n
+	}
+	if n > 0 {
 		ev.Payload = append([]byte(nil), raw[writeHeaderLen:writeHeaderLen+int(n)]...)
 	}
 	return ev, nil
@@ -660,12 +676,16 @@ func decodeSendtoPayload(raw []byte) (*SendtoEvent, error) {
 		PID:      binary.LittleEndian.Uint32(raw[16:20]),
 		TID:      binary.LittleEndian.Uint32(raw[20:24]),
 		Family:   raw[24],
-		DestPort: binary.LittleEndian.Uint16(raw[41:43]),
+		DestPort: binary.LittleEndian.Uint16(raw[42:44]),
 		CgroupID: binary.LittleEndian.Uint64(raw[48:56]),
 	}
 	copy(ev.DestAddr[:], raw[25:41])
 	copy(ev.Comm[:], raw[56:72])
-	if int(n) > 0 && len(raw) >= sendtoHeaderLen+int(n) {
+	if avail := len(raw) - sendtoHeaderLen; int(n) > avail {
+		n = uint32(avail)
+		ev.Len = n
+	}
+	if n > 0 {
 		ev.Payload = append([]byte(nil), raw[sendtoHeaderLen:sendtoHeaderLen+int(n)]...)
 	}
 	return ev, nil
@@ -724,6 +744,9 @@ func (l *Loader) Close() error {
 	}
 	if l.openatLink != nil {
 		l.openatLink.Close()
+	}
+	if l.sendmmsgLink != nil {
+		l.sendmmsgLink.Close()
 	}
 	if l.sendmsgLink != nil {
 		l.sendmsgLink.Close()

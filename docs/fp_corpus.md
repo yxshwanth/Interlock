@@ -17,20 +17,20 @@ Two outcome dimensions are scored per scenario, and they answer different questi
 
 | Metric | Value |
 |---|---|
-| Corpus size | 75 scenarios (38 malicious, 37 benign) |
-| **Detection rate** (EXFIL-tier, non-gap malicious) | **100.0%** (31/31) |
+| Corpus size | 80 scenarios (43 malicious, 37 benign) |
+| **Detection rate** (EXFIL-tier, non-gap malicious) | **100.0%** (34/34) |
 | **False-positive rate** (any trip, benign) | **18.9%** (7/37) |
 | False-positive rate (EXFIL-tier only, benign) | 0.0% (0/37) |
-| Known-gap misses (expected, catalogued) | 7 |
+| Known-gap misses (expected, catalogued) | 9 |
 | Bonus catches (gap unexpectedly closed) | 0 |
 
 ## Confusion matrix
 
 | | Count |
 |---|---:|
-| True positive (EXFIL proven, non-gap malicious) | 31 |
+| True positive (EXFIL proven, non-gap malicious) | 34 |
 | False negative (EXFIL missed, non-gap malicious) | 0 |
-| Known-gap miss (EXFIL missed, documented gap) | 7 |
+| Known-gap miss (EXFIL missed, documented gap) | 9 |
 | Bonus catch (EXFIL achieved, documented gap) | 0 |
 | True negative (benign, no trip) | 30 |
 | False positive — tripwire (benign, SUSPICIOUS only) | 7 |
@@ -40,8 +40,8 @@ Two outcome dimensions are scored per scenario, and they answer different questi
 
 | Variant | TP | FN | GapMiss | Bonus | TN | FP (tripwire) | FP (EXFIL) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `ebpf_variant_b` | 6 | 0 | 3 | 0 | 2 | 2 | 0 |
-| `proxy_variant_a` | 24 | 0 | 4 | 0 | 26 | 5 | 0 |
+| `ebpf_variant_b` | 8 | 0 | 4 | 0 | 2 | 2 | 0 |
+| `proxy_variant_a` | 25 | 0 | 5 | 0 | 26 | 5 | 0 |
 | `sensor_variant_b` | 1 | 0 | 0 | 0 | 2 | 0 | 0 |
 
 ## Known-gap misses (expected)
@@ -53,7 +53,9 @@ Each corresponds to a `*_KnownGap` unit test in `internal/engine` — the corpus
 | `malicious_gap_custom_cipher` | TestCheckOverlap_CustomCipher_KnownGap — brotli/zstd/lz4 are precomputed canonical forms (ROADMAP §9); arbitrary ciphers still produce byte sequences with no registered variant to match |
 | `malicious_gap_payload_truncated` | TestCheckOverlap_PayloadTruncated_KnownGap — secrets past the configured/compiled capture window (ebpf.payload_capture_bytes ≤ PAYLOAD_MAX=1024) are not in PayloadExcerpt |
 | `malicious_gap_untagged_tool_on_sensitive_server` | EvaluateRequest only gates tools tagged external_sink by default; empty tool_tags override shadows server provides_tags. Opt-in server_defaults.inherit_sink_suspicion closes this — empty [] still inherits; sole exemption is sink_suspicion_allowlist (see malicious_proxy_a_untagged_inherit_sink / benign_proxy_a_inherit_allowlisted_note) |
-| `malicious_gap_egress_cross_destination_split` | TestEgressReassembly_CrossDestinationSplit_KnownGap — egress reassembly is intentionally keyed by (pid,destination). Fragments split across different destinations are not concatenated. |
+| `malicious_gap_egress_decoy_flow_eviction` | TestEgressReassembly_DecoyFlowEviction_KnownGap — egress_max_destinations_per_session evicts the oldest flow, and the per-pid window holds the decoy bytes between the halves. |
+| `malicious_gap_padded_nested_decode_layer` | TestCheckOverlapPayload_LargeNestedDecodeLayer_KnownGap — layers up to 64 KiB are matched but only layers up to 8 KiB are unwrapped again. |
+| `malicious_gap_dns_label_split` | TestEgressReassembly_DNSSecretSplitAcrossLabels_KnownGap — the raw dotted query and the first-label reassembly window are scanned; labels of one query are not concatenated. |
 | `malicious_gap_egress_slow_trickle` | TestEgressReassembly_SlowTrickle_KnownGap — finite egress_fragment_max_age bounds reassembly; fragments arriving slower than the window re-miss. |
 | `malicious_gap_container_inspect_bomb` | ROADMAP §20 aborts container walks on hard caps (max_parts / max_decompressed_bytes / max_inspect_ms / max_descent_depth / encrypted). An aborted walk never invents EXFIL; classifyTrip may soft-SUSPICIOUS with reason container_inspect_limit when AllLit. Zip-bombs and depth>2 nests remain NamedGaps. |
 | `malicious_gap_semantic_paraphrase_exfil` | Detection boundary — Interlock is byte/encoding overlap, not semantic: paraphrases, descriptions, and meaning-preserving transforms without a registered variant do not reach EXFIL (see docs/detection_boundary.md). Paired benign TN: benign_proxy_a_paraphrase_summary |
@@ -96,7 +98,7 @@ Research-only signal: sensitive read already registered, then a sink/egress blob
 |---|---|
 | Thresholds | min_len=32, min_entropy=7.0 bits/byte |
 | Benign would-fire rate | **0.0%** (0/37) |
-| KnownGap malicious would-fire | 0/7 |
+| KnownGap malicious would-fire | 0/9 |
 
 No benign scenario would fire under these thresholds.
 

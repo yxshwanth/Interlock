@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package proxy
 
 import (
@@ -151,7 +153,7 @@ func (p *Proxy) FailClosed() (bool, string) {
 	return true, reason
 }
 
-// SetOnEnginePanic registers a hook invoked when EvaluateRequest panics.
+// SetOnEnginePanic registers a hook invoked when EvaluateRequest or IngestResult panics.
 func (p *Proxy) SetOnEnginePanic(fn func(recovered any)) {
 	p.onEnginePanic = fn
 }
@@ -160,6 +162,12 @@ func (p *Proxy) logEvent(ev model.InterceptedEvent) {
 	if p.engine != nil {
 		p.engine.RedactEvent(&ev)
 	}
+	p.writeEvent(ev)
+}
+
+// writeEvent logs ev without calling into the engine. Used directly only
+// after an engine panic, when engine state (and its lock) is undefined.
+func (p *Proxy) writeEvent(ev model.InterceptedEvent) {
 	if p.logger != nil {
 		p.logger.Log(ev)
 	} else {

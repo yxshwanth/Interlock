@@ -175,7 +175,7 @@ flowchart LR
 
 | Mode | Who spawns the workload | Variant B story |
 |---|---|---|
-| **Proxy mode** with `sandbox.netns: true` | Interlock (`StartServer` → `applySandboxNetNS` in `internal/proxy/sandbox_linux.go`) | Children get `CLONE_NEWNET` with an empty netns (loopback not brought up). Non-loopback connect fails with `ENETUNREACH` / `EHOSTUNREACH`. Side channel is **prevented** at spawn, not detected after the fact. Default `sandbox.netns` is **false** (opt-in; needs `CAP_SYS_ADMIN`). |
+| **Proxy mode** with `sandbox.netns: true` | Interlock (`StartServer` → `applySandboxNetNS` in `internal/proxy/sandbox_linux.go`) | Children get `CLONE_NEWNET` with an empty netns (loopback not brought up). Non-loopback connect fails with `ENETUNREACH` / `EHOSTUNREACH`. Side channel is **prevented** at spawn for an unprivileged child, not detected after the fact. Children inherit the proxy's uid and capabilities (only `Setpgid` + `CLONE_NEWNET` are set), so a root child can `setns` back to the host netns — known gap, review #7, see [`security_review_status.md`](security_review_status.md). Default `sandbox.netns` is **false** (opt-in; needs `CAP_SYS_ADMIN`). |
 | **Sensor-only DaemonSet** | Not Interlock (kubelet / workload controller) | Interlock cannot wrap the pod in netns. Side channel is **contained**: payload overlap → SIGKILL (`contained_by_kill`); optional LSM stops *repeat* connects. See `deploy/k8s/PRIVILEGE.md`. |
 
 Chose netns prevention in proxy mode over pretending the DaemonSet can do the same thing, because only the spawning parent can set `CLONE_NEWNET` before exec. That costs privilege (`CAP_SYS_ADMIN`) and breaks any legitimate outbound networking from sandboxed children (by design). Default payload capture is **1024** bytes (`PAYLOAD_MAX`).
@@ -420,7 +420,7 @@ Current path: on `decision.Action == model.ActionContained` (EXFIL only via `var
 
 ### Allowlist and write↔connect correlation
 
-Config `egress_allowlist` feeds `Sensor.allowlist`. `isAllowlisted` matches exact and normalized IPs. Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the PID has a pending non-allowlisted connect within `SuspiciousConnectTTL` (**5 seconds**, `internal/ebpf/sensor.go`), or via self-contained sendto/sendmsg with destination.
+Config `egress_allowlist` feeds `Sensor.allowlist`. `isAllowlisted` matches exact and normalized IPs. Hostnames are never resolved, so a hostname entry (the sample config's `api.anthropic.com`) never matches; the sample's `127.0.0.1` entry means loopback connects arm no write correlation (review #22, open). Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the `(pid, fd)` has a pending non-allowlisted connect (reaped after `staleFDTTL`, **10 minutes**), a pid-wide `sendto` arming within `SuspiciousConnectTTL` (**5 seconds**), or via self-contained sendto/sendmsg with destination (`internal/ebpf/sensor.go`).
 
 This TTL is **not** a proxy↔syscall “recency window” (see [§9](#9-the-correlation-engine)).
 
@@ -494,7 +494,7 @@ On overlap miss, `decodeMatchCandidates` (`internal/engine/decode.go`) unwraps b
 
 Overlap uses the reassembled string. **Content-bind still uses the single-event `PayloadExcerpt`**, not the join. Fragmented DNS can EXFIL while soft bind still sees one fragment.
 
-**Closes:** normal DNS/write splitting (`cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). **Misses:** slow trickle past `egress_fragment_max_age` (`malicious_gap_egress_slow_trickle`); cross-destination split (`malicious_gap_egress_cross_destination_split`). Unbounded reassembly was rejected ([§17](#17-considered-and-rejected)).
+**Closes:** normal DNS/write splitting (`cve_2025_65720_gpt_researcher_dns_fragmented_exfil`). **Misses:** slow trickle past `egress_fragment_max_age` (`malicious_gap_egress_slow_trickle`); decoy-flow eviction (`malicious_gap_egress_decoy_flow_eviction`); a split across destinations is caught by the per-pid buffer (`malicious_ebpf_b_egress_cross_destination_split`). Unbounded reassembly was rejected ([§17](#17-considered-and-rejected)).
 
 ### Container descent and bomb defense
 
@@ -623,7 +623,8 @@ There is **no** sliding “recency window” that joins a syscall to a recent pr
 
 | Window | Default | Purpose |
 |---|---|---|
-| `SuspiciousConnectTTL` | 5s | Sensor write↔prior connect correlation |
+| `SuspiciousConnectTTL` | 5s | Sensor pid-wide arming from `sendto` |
+| `staleFDTTL` | 10m | Sensor `(pid, fd)` connect↔write correlation reap |
 | `leg_ttl` | 30m | Soft-leg expiry |
 | `decay_after_calls` | 32 | Soft-leg expiry |
 | `egress_fragment_max_age` | 10s | Egress reassembly idle reset |
@@ -690,7 +691,10 @@ Sinks seal on write (`evidence_sink.go`, `evidence_sqlite.go`). CLI: `cmd/verify
 | Mid-chain edit of a field | Yes (hash mismatch) |
 | Mid-chain delete | Yes (seq / link break) |
 | Truncate from tip inconsistently | Yes if remaining chain breaks |
-| Full-file replace with a freshly forged genesis chain by node root | **No** (local FS integrity equals host integrity) |
+| Truncate whole records from the tail | **No** (remaining chain is still contiguous) |
+| Truncate whole records from the head | **No** (`VerifyChain` accepts a first record with `chain_seq > 0`, by design for SQLite pruning) |
+| Edit a record and recompute every later hash | **No** (unkeyed SHA-256; any writer can recompute) |
+| Full-file replace with a freshly forged genesis chain | **No** (any writer, not only node root; local FS integrity equals host integrity) |
 | Disable SIEM/webhook off-node | Not a chain problem; durability requires external sink |
 
 No WORM volume and no external signing/timestamping ship today. On-node chain is convenient self-check; off-node SIEM/webhook is durability.
@@ -985,7 +989,8 @@ From `CVEOutOfScope()` / `docs/cve_corpus.md`:
 | Long-secret truncated capture (partial) | Chunk matching §8 |
 | ZIP/xlsx whole-file + extracted interiors on inspected bytes | Path taint §18 + container descent §20 |
 | DNS / write fragmentation (normal) | Egress reassembly §19 |
-| writev/sendmsg/IPv6 | BPF probes on critical ring |
+| IPv6 destinations | family + 16B addr on connect/sendto/named-sendmsg |
+| writev/sendmsg (**partial**) | Probed on the critical ring, but only `iov[0]` is captured — open, review #3 |
 | Dual-ring flood of connect | Routine vs critical rings |
 | Taint to sensor DaemonSet | Bridge `register_taint` |
 | Soft SUSPICIOUS in sensor (opt-in) | Bridge `register_untrusted` |
@@ -993,7 +998,22 @@ From `CVEOutOfScope()` / `docs/cve_corpus.md`:
 | Spawn binary swap (Interlock-exec) | Resolved spawn pinning §17 |
 | Untagged sink on sensitive server | Opt-in `inherit_sink_suspicion` §14 |
 | Repeat connect after EXFIL | Opt-in LSM Slice 1 |
-| Proxy uncontrolled TCP | Opt-in `sandbox.netns` §7 |
+| Proxy uncontrolled TCP (**partial**) | Opt-in `sandbox.netns` §7, for unprivileged children; a root child can `setns` out (review #7, open) |
+
+### Open security-review findings
+
+Known gaps in the code on this tree, from [`security_review.md`](security_review.md); status per finding in [`security_review_status.md`](security_review_status.md). Most have no `KnownGap` pin yet. Re-check this ledger after the Wave 1 merge.
+
+| Gap | Review # |
+|---|---|
+| Fixed and kernel-tested on one kernel: NULL-address `send`, `fd < 3` on send paths, 4-iovec gather, fd-keyed connect→write (#1–#4, #6). Still open: `write`/`writev` skip `fd < 3`; `pwrite64`/`pwritev`/`sendfile`/`io_uring` unprobed; `sys_enter` TOCTOU (#5) | 1–6 |
+| Spawned servers inherit proxy uid/caps (fixed; escape test passed as root) | 7 |
+| No cap on taint count/size or sessions | 9 |
+| Bridge: no minimum value length, hash unchecked | 14 |
+| DNS first label only; decoy-flow eviction; decoded layer > 8 KiB skipped | 16–18 |
+| `IngestResult` panic fails open for that result | 20 (partial) |
+| Containment kills the whole process group | 21 |
+| `egress_allowlist` hostnames never match; `127.0.0.1` exempts loopback | 22 |
 
 ### Demand-gated (named, not built)
 
@@ -1001,7 +1021,7 @@ From `CVEOutOfScope()` / `docs/cve_corpus.md`:
 |---|---|
 | **Protocol-aware egress parsers** (git pkt-line/pack, HTTP `Content-Encoding` body, SMTP DATA) - ROADMAP §21 | Would close family-at-a-time structured-protocol exfil (`cve_2025_68143_mcp_git_push_wire_protocol_gap`), but each dissector grows untrusted-input TCB (Wireshark-class risk) for poor effort/gap ratio. Build only if a deployment shows that MCP family. Flat zlib/ZIP on ToolArgs/PayloadExcerpt is already closed (§20); framing *outside* those surfaces is not. |
 | Per-pod ringbuf drop maps | Dual severity-class globals only today |
-| Shannon entropy as product signal | Monitor-dark measurement published in [`fp_corpus.md`](fp_corpus.md) (ROADMAP §12); benign would-fire **0%** under research thresholds — still **not wired** to SUSPICIOUS/EXFIL |
+| Shannon entropy as product signal | Monitor-dark measurement published in [`fp_corpus.md`](fp_corpus.md) (ROADMAP §12); benign would-fire **0%** under research thresholds — still **not wired** to SUSPICIOUS/EXFIL as a verdict signal. Separately, chunk minting now skips chunks below 3.0 bits/byte (`minChunkEntropyBitsPerByte`, `internal/engine/chunk.go`; review #10/#19) |
 | Capability drop post-attach | **Shipped (ROADMAP §13):** `SYS_ADMIN` dropped after attach; `BPF`/`PERFMON`/`KILL` retained — see PRIVILEGE.md |
 | Non-token taint shapes still open (e.g. X.509, DB URLs) without path heuristics | Expand patterns only with FP measurement |
 
@@ -1014,7 +1034,7 @@ For each: this is a boundary of the observation model, not unfinished backlog.
 | **Semantic / paraphrased exfil** | Proof is registered byte forms. Meaning-level DLP requires another model (or human) on the path and a different FP regime. Pin: `malicious_gap_semantic_paraphrase_exfil`. |
 | **Blind SQLi / boolean inference** | Secret bytes never appear on any inspected surface; overlap has nothing to match. Pin: `cve_2025_66335_doris_blind_sql_injection_exfil_gap`. Rejected as EXFIL (§22). |
 | **Custom cipher EXFIL** | Infinite transform space; closed set of encodings is the product choice that keeps EXFIL-tier FP at 0%. Pin: `malicious_gap_custom_cipher`. |
-| **DNS trickle / cross-dest residuals** | Any finite reassembly window is defeated by going slower or splitting destinations. Unbounded reassembly rejected. Pins: `malicious_gap_egress_slow_trickle`, `malicious_gap_egress_cross_destination_split`. |
+| **DNS trickle / cross-dest residuals** | Any finite reassembly window is defeated by going slower or by evicting the flow with decoys. Unbounded reassembly rejected. Pins: `malicious_gap_egress_slow_trickle`, `malicious_gap_egress_decoy_flow_eviction`. |
 | **Container bomb-interior / encrypted / depth>2** | Hard caps abort; aborted walks must not invent EXFIL. Pin: `malicious_gap_container_inspect_bomb`. ZIP CD parse cost residual remains inside the inspector. |
 | **Secrets entirely past PAYLOAD_MAX** | Kernel capture ceiling; cannot overlap bytes never copied. Pin: `malicious_gap_payload_truncated`. |
 | **First EXFIL packet kernel-prevented** | `connect()` has no payload; detection is after handshake. Always first-packet `contained_by_kill` (or netns prevention in proxy mode). Pin: `TestIngestSyscall_FirstPacketStillContained_KnownGap`. |

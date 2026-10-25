@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package k8s
 
 import (
@@ -158,7 +160,7 @@ func (r *PodAttribution) LookupByCgroup(cgroupID uint64) (Attribution, bool) {
 		return Attribution{}, false
 	}
 	return Attribution{
-		SessionID:   SessionIDForPod(info.UID),
+		SessionID: SessionIDForPod(info.UID),
 		Pod: model.PodContext{
 			Namespace: info.Namespace,
 			PodName:   info.Name,

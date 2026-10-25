@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package mcpserver provides a reusable MCP stdio server harness.
 // It handles the JSON-RPC dispatch loop, initialize handshake, tools/list,
 // tools/call routing, ping, and error responses so toy servers only need

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command k8s-exfil-demo reads a sensitive secret, then connect()+write()s it.
 // Used by deploy/k8s/demo so the sensor can seed taint on openat and prove EXFIL.
 package main

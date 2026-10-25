@@ -36,7 +36,7 @@ regardless of leg state) — now fixed.
 Pinned by non-gap malicious corpus scenarios (must stay at 100% EXFIL-tier):
 
 - **Literal secret** in `external_sink` tool args (Variant A)
-- **Canonical encodings** — base64, hex, URL, reversal, closed depth-2 nests, `gzip_base64` / `brotli_base64` / `zstd_base64` / `lz4_base64`
+- **Canonical encodings** — base64, hex, URL, reversal, closed depth-2 nests, `gzip_base64` / `brotli_base64` / `zstd_base64` / `lz4_base64` (brotli/zstd/lz4 match only byte-exact output of Go's encoders at default settings on the secret alone; nothing decompresses them at scan time)
 - **Long-secret chunk overlap** — when a tainted value is ≥64 bytes, contiguous 32-byte body chunks (PEM/PuTTY armor stripped) are searched in sink args and egress payloads (`match_form=chunk_32`); closes truncated-capture cases that still contain a body chunk
 - **Token vaulting (opt-in `vault.enabled`)** — agent-visible sensitive results rewrite to `ilk.vault.*` dummies; authorized sinks detokenize then overlap-scan (`malicious_proxy_a_vault_authorized_wrong_dest`)
 - **Same-call JSON string reassembly** (secret split across fields in one tools/call)
@@ -88,15 +88,37 @@ Soft SUSPICIOUS may still fire if untrusted content and the sink share a long
 | Container inspect hard-cap abort (zip-bomb / max_parts / depth / encrypted) | `malicious_gap_container_inspect_bomb` — aborted walks never EXFIL; soft `SUSPICIOUS` may fire with `container_inspect_limit` when AllLit (ROADMAP §20). Extracted-cell + sink ZIP/zlib on inspected bytes are closed (`malicious_proxy_a_extracted_from_xlsx_container`, `malicious_proxy_a_sink_zip_contains_secret`, `malicious_ebpf_b_zlib_wrapped_secret`) |
 | Git pack / pkt-line / structured-protocol wire (Named §21) | `cve_2025_68143_mcp_git_push_wire_protocol_gap` — §20 closes flat zlib/ZIP on ToolArgs/PayloadExcerpt; framing outside those surfaces (git smart HTTP/SSH, HTTP `Content-Encoding` body, SMTP DATA) is demand-gated — no dissector shipped |
 | Blind side-channel / boolean inference (rejected §22) | `cve_2025_66335_doris_blind_sql_injection_exfil_gap` — secret bytes never observed; EXFIL unreachable by construction; do not build query-pattern anomaly as EXFIL |
-| Finite egress reassembly window | Normal DNS/write fragmentation is now closed (`cve_2025_65720_gpt_researcher_dns_fragmented_exfil`), but fragments slower than `trifecta.egress_fragment_max_age` or split across different destinations remain misses (`malicious_gap_egress_slow_trickle`, `malicious_gap_egress_cross_destination_split`) |
+| Finite egress reassembly window | Normal DNS/write fragmentation is now closed (`cve_2025_65720_gpt_researcher_dns_fragmented_exfil`), but fragments slower than `trifecta.egress_fragment_max_age` remain misses (`malicious_gap_egress_slow_trickle`), as does eviction by 32 decoy flows (`malicious_gap_egress_decoy_flow_eviction`); a split across destinations is joined by the per-pid buffer |
 | Authorized-sink vault rehydration | When `vault.authorize` lists a tool, Interlock rehydrates the real secret after allow — a wrong allow still forwards the secret (`malicious_proxy_a_vault_authorized_wrong_dest` proves wrong-dest EXFIL; correct-dest forward is by design) |
 | eBPF payload past capture window (zero secret bytes in excerpt) | Permanent KnownGap even at default 1024 (= `PAYLOAD_MAX`): `malicious_gap_payload_truncated`. `payload_capture_bytes` only reduces from the compiled ceiling |
 | Untagged write tool on a sensitive server (default Option C) | `malicious_gap_untagged_tool_on_sensitive_server`; closed under opt-in inherit — exemption is **only** `sink_suspicion_allowlist` (`internal_note: []` still inherits): `malicious_proxy_a_untagged_inherit_sink` |
 | Semantic / paraphrased exfil | `malicious_gap_semantic_paraphrase_exfil` |
 | First EXFIL-carrying packet is never kernel-prevented — `connect()` has no payload, so even with `ebpf.lsm_enforce` on, detection lands after `connect()` succeeds; only *repeat* attempts get `prevented` | `TestIngestSyscall_FirstPacketStillContained_KnownGap` |
+| Syscall-argument TOCTOU — payload bytes are read from user memory at `sys_enter_*`, so a second thread can rewrite the buffer after the probe reads it and before the kernel copies it | `TestBPFSource_PayloadProbesAreSysEnter_TOCTOUKnownGap` (review #5). Not fixable from tracepoints; an LSM/fentry hook on the post-copy path is the only closure, not built |
+| `write`/`writev` to a socket `dup2`'d onto fd 0-2 | `TestBPFSource_WriteStdioSkip_KnownGap` (review #2). `sendto`/`sendmsg` no longer skip stdio fds; `write`/`writev` still do because stdout/stderr logging would flood the critical ring |
+| Messages 1..n of `sendmmsg`, iovecs past the fourth in `writev`/`sendmsg`, and `pwrite64` / `pwritev` / `sendfile` / `io_uring` sends | Not probed or only partially captured (review #1, #3); `sendmmsg` msgvec[0] and the first 4 iovecs are captured |
 
 Closing a gap means flipping the scenario out of KnownGap and keeping EXFIL-tier
 FP at 0% on the benign corpus.
+
+### Open security-review findings (not yet pinned)
+
+Found by [`security_review.md`](security_review.md) and still open in the code
+on this tree ([`security_review_status.md`](security_review_status.md)). None
+has a `KnownGap` pin yet; Wave 1 either fixes or pins each. Re-check this list
+after the Wave 1 merge.
+
+| Gap | Review # |
+|---|---|
+| `pwrite64`, `pwritev`, `sendfile`, `io_uring` and `sendmmsg` beyond msgvec[0] are not probed (`send()`, `sendto`, `sendmsg`, `sendmmsg[0]` are captured, kernel-tested) | 1 |
+| `write`/`writev` skip `fd < 3`; `dup2(sock, 1)` then `write` evades (`sendto`/`sendmsg` have no skip) | 2 |
+| `writev` / `sendmsg` capture only the first 4 iovecs | 3 |
+| A reused fd number can inherit a closed connection's destination for up to 10 min (`close(2)` not probed; #4 replaced the 5 s window with fd-keyed state) | 4 |
+| `sys_enter` user-memory reads are TOCTOU-racy (payload and destination) | 5 |
+| DNS matching sees only the first label | 16 |
+| Decoy flows evict an accumulating egress flow (32-flow cap) | 17 (cross-destination and trickle parts are pinned above) |
+| A decoded layer larger than 8 KiB is skipped | 18 |
+| Hostname entries in `egress_allowlist` never match; `127.0.0.1` exempts loopback | 22 |
 
 ---
 

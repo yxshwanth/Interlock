@@ -11,9 +11,10 @@ sessions:
 
 enforcement: block          # block | monitor
 
-egress_allowlist:
-  - 127.0.0.1
-  - api.anthropic.com
+# egress_allowlist: IP literals only (the sensor matches destination IPs;
+# hostnames are ignored with a warning). Loopback is deliberately not listed:
+# a local collector on 127.0.0.1 is an exfil path (security review #22).
+egress_allowlist: []
 
 # sensitive_paths:           # openat pathname prefixes; empty = ignore openat trips
 #   - /etc/shadow

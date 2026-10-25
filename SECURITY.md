@@ -52,7 +52,9 @@ Critical issues (remote code execution, privilege escalation via Interlock) get 
 
 Interlock detects **programmatic** runtime exfiltration (lethal trifecta + value overlap across MCP and eBPF). See **[`docs/detection_boundary.md`](docs/detection_boundary.md)** for what it catches, what it does not (including **semantic / paraphrased exfil**), and why.
 
-As of this tree (v0.3.0 + Unreleased robustness):
+As of this tree (v0.4.0 + Wave 0):
+
+- Known open findings from an external review: [`docs/security_review.md`](docs/security_review.md), current status per finding in [`docs/security_review_status.md`](docs/security_review_status.md). Check there before reporting; most kernel-plane evasions (findings 1–6) and the privilege inheritance of spawned servers (7) are still open
 
 - Published detection / FP corpus: [`docs/fp_corpus.md`](docs/fp_corpus.md)
 - Signed tags (since `v0.2.0`); reproducible build path + release workflow — [`docs/reproducible_builds.md`](docs/reproducible_builds.md)
@@ -63,7 +65,7 @@ As of this tree (v0.3.0 + Unreleased robustness):
 
 ## eBPF probe transparency
 
-The only kernel code Interlock loads is [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c) (connect / write / sendto / openat probes; dual ringbufs `events` + `critical_events`; `drop_count` / `critical_drop_count`; opt-in LSM `socket_connect`). Precompiled objects are committed and embedded — read the C source before trusting it. Regen: [`docs/reproducible_builds.md`](docs/reproducible_builds.md).
+The only kernel code Interlock loads is [`internal/ebpf/bpf/connect.c`](internal/ebpf/bpf/connect.c) (connect / write / writev / sendto / sendmsg / openat probes; dual ringbufs `events` + `critical_events`; `drop_count` / `critical_drop_count`; opt-in LSM `socket_connect`). Precompiled objects are committed and embedded — read the C source before trusting it. Regen: [`docs/reproducible_builds.md`](docs/reproducible_builds.md).
 
 ## Signed releases
 

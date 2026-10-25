@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package engine
 
 import (
@@ -165,5 +167,21 @@ func TestJSONLEvidenceSink_MultipleEmits(t *testing.T) {
 	}
 	if got.Verdict != model.VerdictSuspicious {
 		t.Errorf("standalone verdict should be SUSPICIOUS, got %q", got.Verdict)
+	}
+}
+
+func TestJSONLEvidenceSink_FileMode0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	s, err := NewJSONLEvidenceSink(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("evidence file mode = %o, want 600", perm)
 	}
 }

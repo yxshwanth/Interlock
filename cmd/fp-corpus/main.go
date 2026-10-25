@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command fp-corpus runs the internal/corpus benign/malicious corpus and
 // writes the published detection-rate / false-positive-rate report.
 //
