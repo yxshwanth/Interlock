@@ -10,6 +10,7 @@ import (
 	"compress/zlib"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
@@ -176,6 +177,18 @@ func containerVectors(t *testing.T) []containerVector {
 		{"cap_max_depth", gzipBytes(t, gzipBytes(t, gzipBytes(t, text))), limits(func(l *ContainerLimits) { l.MaxDescentDepth = 1 })},
 	}
 
+	tarPair := tarBytes(t, containerMember{"first", []byte("first\n")}, containerMember{"next", []byte("next\n")})
+	inputs = append(inputs,
+		// A nonzero block after an end marker is corrupt, even after a text member.
+		input{"tar_zero_then_entry", bytes.Join([][]byte{tarPair[:1024], make([]byte, 512), tarPair[1024:]}, nil), def},
+		// A partial block after an end marker is also corrupt.
+		input{"tar_zero_then_partial", append(bytes.Clone(tarPair[:2560]), 'x'), def},
+		// PAX path restores a legacy regular file and PAX size controls alignment.
+		input{"tar_pax_path_and_size", tarPAXOverrides(t), def},
+		// GNU long names replace the short path before legacy directory detection.
+		input{"tar_gnu_long_name", tarGNULongName(t), def},
+	)
+
 	got := make([]containerVector, 0, len(inputs))
 	for _, in := range inputs {
 		res := InspectContainer(in.raw, in.lim)
@@ -283,6 +296,51 @@ func tarBytes(t *testing.T, members ...containerMember) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func tarPAXOverrides(t *testing.T) []byte {
+	data := bytes.Repeat([]byte("a"), 513)
+	raw := tarBytes(t,
+		containerMember{"pax", []byte("13 path=file\n12 size=513\n")},
+		containerMember{"short", data},
+		containerMember{"next", []byte("next\n")},
+	)
+	raw[156] = tar.TypeXHeader
+	tarChecksum(raw[:512], false)
+	hdr := raw[1024:1536]
+	copy(hdr, "short/")
+	hdr[156] = tar.TypeRegA
+	copy(hdr[124:136], "00000000001\x00")
+	tarChecksum(hdr, false)
+	return raw[:len(raw)-1024]
+}
+
+func tarGNULongName(t *testing.T) []byte {
+	raw := tarBytes(t,
+		containerMember{"long", append(bytes.Repeat([]byte("a"), 101), 0)},
+		containerMember{"short", []byte("long name content\n")},
+		containerMember{"next", []byte("next\n")},
+	)
+	raw[156] = tar.TypeGNULongName
+	tarChecksum(raw[:512], false)
+	hdr := raw[1024:1536]
+	copy(hdr, "short/")
+	hdr[156] = tar.TypeRegA
+	tarChecksum(hdr, false)
+	return raw[:len(raw)-1024]
+}
+
+func tarChecksum(header []byte, signed bool) {
+	copy(header[148:156], "        ")
+	sum := 0
+	for _, b := range header {
+		if signed {
+			sum += int(int8(b))
+		} else {
+			sum += int(b)
+		}
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", sum))
 }
 
 func diffContainerVector(t *testing.T, got, want containerVector, regenerate string) {
