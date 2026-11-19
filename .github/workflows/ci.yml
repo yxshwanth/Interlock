@@ -12,6 +12,16 @@ permissions:
   contents: read
 
 jobs:
+  # Proves the corpus contract is language-neutral (ROADMAP section 75): a
+  # second implementation language loads the same data files. Replaced by the
+  # real corpus runner when the Rust workspace lands.
+  corpus-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Load the corpus from Rust
+        run: cargo test --locked --manifest-path rust/corpus-stub/Cargo.toml
+
   test:
     runs-on: ubuntu-latest
     steps:

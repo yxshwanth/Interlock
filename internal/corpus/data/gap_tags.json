@@ -1,0 +1,12 @@
+{
+  "encoding_unregistered": "Secret leaves in an encoding or cipher with no registered canonical form.",
+  "capture_window": "Secret sits beyond the sensor's payload capture window.",
+  "tagging_config": "Sink is not tagged external_sink, so the request is never gated.",
+  "egress_reassembly_limit": "Egress fragments evicted, split across labels, or arriving slower than the reassembly window.",
+  "decode_size_limit": "A nested decode layer is larger than the size at which layers are unwrapped again.",
+  "container_cap": "Container descent aborted on a hard cap (parts, bytes, time, depth, encryption).",
+  "semantic_not_byte": "Meaning-preserving transform: detection is byte and encoding overlap, not semantic.",
+  "protocol_blind_spot": "Secret moves over a wire protocol whose bytes are never in tool args or the captured payload.",
+  "sensor_no_payload": "Sensor-only observation with no payload-bearing packet, so overlap has nothing to prove.",
+  "side_channel_no_bytes": "Secret is inferred from a side channel; its bytes never appear on any inspected surface."
+}

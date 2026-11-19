@@ -600,7 +600,7 @@ Interlock/
 
 ## Tests
 
-**385 test functions**, 17 of them `KnownGap` pins that assert what Interlock does **not** catch. On pushes and pull requests to `main`, CI runs build, `gofmt`, `go vet`, `go test ./...`, the corpus and engine-benchmark gate against [`docs/budgets.json`](docs/budgets.json), and `-race -short` on the proxy and engine packages. Live eBPF saturation and LSM tests are gated on root and BPF-LSM and do not run in CI.
+**400 test functions and 11 fuzz targets**, 17 of them `KnownGap` pins that assert what Interlock does **not** catch. On pushes and pull requests to `main`, CI runs build, `gofmt`, `go vet`, `go test ./...`, the corpus and engine-benchmark gate against [`docs/budgets.json`](docs/budgets.json), and `-race -short` on the proxy and engine packages. Live eBPF saturation and LSM tests are gated on root and BPF-LSM and do not run in CI.
 
 ```bash
 make test
