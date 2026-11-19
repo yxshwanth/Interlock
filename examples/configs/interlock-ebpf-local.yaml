@@ -11,8 +11,7 @@ sessions:
 
 enforcement: block
 
-egress_allowlist:
-  - api.anthropic.com
+egress_allowlist: []
 
 servers:
   - id: tickets
