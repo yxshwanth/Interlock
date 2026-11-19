@@ -2,6 +2,7 @@
 
 pub mod bind;
 pub mod chunk;
+pub mod decode;
 mod encoding;
 pub mod evidence;
 pub mod legs;
