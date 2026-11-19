@@ -40,8 +40,10 @@ internal/engine/observer_fanout_test.go	L1
 internal/engine/overlap_test.go	L1
 internal/engine/overlap_vectors_test.go	L4
 internal/engine/path_taint_test.go	L1
+internal/engine/path_taint_vectors_test.go	L4
 internal/engine/session_store_test.go	L1
 internal/engine/tagger_test.go	L1
+internal/engine/tagger_vectors_test.go	L4
 internal/engine/taint_test.go	L1
 internal/engine/vault_test.go	L1
 internal/failclosed/breaker_test.go	L1
