@@ -194,6 +194,8 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"tar_signed_checksum", tarSignedChecksum(t), def},
 		// A short trailing central-directory extra record is ignored.
 		input{"zip_truncated_extra", zipTruncatedExtra(zipOne), def},
+		// A zero CRC with no data descriptor leaves CRC validation disabled.
+		input{"zip_omitted_crc", zipStored(t, []byte("text without a CRC\n"), 0), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -234,6 +236,26 @@ func zipBytes(t *testing.T, members ...containerMember) []byte {
 		if _, err := w.Write(m.data); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func zipStored(t *testing.T, data []byte, crc uint32) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(&zip.FileHeader{
+		Name: "file", Method: zip.Store, CRC32: crc,
+		CompressedSize64: uint64(len(data)), UncompressedSize64: uint64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(data); err != nil {
+		t.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
