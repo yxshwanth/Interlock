@@ -3,7 +3,6 @@
 package engine
 
 import (
-	"crypto/rand"
 	"strings"
 	"testing"
 )
@@ -29,9 +28,11 @@ func TestShannonEntropy_TwoSymbols(t *testing.T) {
 }
 
 func TestShannonEntropy_HighRandom(t *testing.T) {
+	// A fixed permutation of all byte values: entropy is exactly 8 bits, so
+	// the check cannot fail on an unlucky random draw.
 	buf := make([]byte, 256)
-	if _, err := rand.Read(buf); err != nil {
-		t.Fatal(err)
+	for i := range buf {
+		buf[i] = byte(i*167 + 13)
 	}
 	h := ShannonEntropy(buf)
 	if h < 7.0 {
