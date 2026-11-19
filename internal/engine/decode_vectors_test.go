@@ -112,6 +112,9 @@ func decodeVectorInputs(t *testing.T) []decodeInput {
 	exactly := strings.Repeat("!", 8*1024)
 	nested := `{"a":{"b":{"c":"deep"}},"list":["mid",{"d":"deeper"}],"top":"shallow"}`
 	several := `{"b64":"aGVsbG8=","hex":"68656c6c6f","note":"alpha beta"}`
+	nest := func(depth int) string {
+		return strings.Repeat("[", depth) + `"deep"` + strings.Repeat("]", depth)
+	}
 	return []decodeInput{
 		{"base64_padded", "aGVsbG8="},
 		{"base64_missing_padding", "aGVsbG8"},
@@ -139,6 +142,13 @@ func decodeVectorInputs(t *testing.T) []decodeInput {
 		{"json_keys_out_of_order", `{"z":"zulu","a":"alpha","m":"mike"}`},
 		{"json_duplicate_keys", `{"a":"first","a":"last"}`},
 		{"json_escaped_unicode", `{"k":"é中 😀"}`},
+		{"json_lone_surrogate", `{"k":"\ud800followed by text \udc00 \ud83d\ude00"}`},
+		{"json_invalid_utf8", "{\"k\":\"\xff\xe2\x82followed by text\"}"},
+		{"json_depth_200", nest(200)},
+		{"json_at_depth_limit", nest(10000)},
+		{"json_over_depth_limit", nest(10001)},
+		{"json_top_level_array", `["first",null,{"b":"last","a":""}]`},
+		{"json_number_overflow", `{"k":"leaf","n":1e400}`},
 		{"at_min_candidate", "abcd"},
 		{"base64_interior_padding", "aGVs=bG8="},
 		{"hex_0x_prefix", "0x68656c6c6f"},

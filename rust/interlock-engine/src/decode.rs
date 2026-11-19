@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+mod json;
+
 use base64::alphabet;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::Engine;
-use serde_json::Value;
+pub use json::json_string_leaves;
 
 pub const MAX_DECODE_BYTES: usize = 8 * 1024;
 pub const MAX_DECODE_INPUT_BYTES: usize = 64 * 1024;
@@ -118,33 +120,6 @@ pub fn mostly_printable(input: &[u8]) -> bool {
         ),
     };
     total != 0 && printable >= total - total / 5
-}
-
-pub fn json_string_leaves(input: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let value = serde_json::from_slice(input).ok()?;
-    let mut leaves = Vec::new();
-    collect_json_string_leaves(value, &mut leaves);
-    (!leaves.is_empty()).then_some(leaves)
-}
-
-fn collect_json_string_leaves(value: Value, leaves: &mut Vec<Vec<u8>>) {
-    match value {
-        Value::String(text) => leaves.push(text.into_bytes()),
-        Value::Array(items) => {
-            for item in items {
-                collect_json_string_leaves(item, leaves);
-            }
-        }
-        Value::Object(object) => {
-            // Sort explicitly so workspace feature unification cannot change the walk order.
-            let mut entries: Vec<_> = object.into_iter().collect();
-            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
-            for (_, item) in entries {
-                collect_json_string_leaves(item, leaves);
-            }
-        }
-        _ => {}
-    }
 }
 
 pub fn decode_candidates_from_args(input: &[u8]) -> Option<Vec<Vec<u8>>> {
