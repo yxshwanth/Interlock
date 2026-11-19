@@ -1,0 +1,689 @@
+{
+  "sensitive_paths": [
+    {
+      "path": "/data/wallet.p12",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/cert.pfx",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/vault.kdbx",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/report.xlsx",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/report.xlsm",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/report.xls",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/server.pem",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/server.key",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/server.crt",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/server.cer",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/store.jks",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/notes.txt",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "/data/keyboard",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "/home/bob/credentials",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/.ssh/id_rsa",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/.ssh/id_dsa",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/.ssh/id_ecdsa",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/.ssh/id_ed25519",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/srv/app/secrets.yaml",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/.kube/kubeconfig",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/.aws",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/srv/service-account.json",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/credentials/readme.txt",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "/secrets/readme.txt",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "/etc/secrets/db_password",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": true
+    },
+    {
+      "path": "/etc/secrets",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": true
+    },
+    {
+      "path": "/etc/other/db_password",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": false
+    },
+    {
+      "path": "/home/alice/.ssh/config",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": true
+    },
+    {
+      "path": "/home/alice/docs/a.txt",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": false
+    },
+    {
+      "path": "/ETC/secrets/db_password",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": false
+    },
+    {
+      "path": "etc/secrets/db_password",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": false
+    },
+    {
+      "path": "/etc/secrets/db_password",
+      "prefixes": [
+        ""
+      ],
+      "result": false
+    },
+    {
+      "path": "/DATA/SERVER.PEM",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/Credentials",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/home/bob/ID_RSA",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/data/../etc/secrets/x",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": false
+    },
+    {
+      "path": "/data/../data/server.key",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "/etc/secrets/../public/x.txt",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": true
+    },
+    {
+      "path": "/data/credentials/../x.txt",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "id_rsa",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "./server.pem",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "data/readme.md",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "  /data/server.pem  ",
+      "prefixes": [],
+      "result": true
+    },
+    {
+      "path": "  /etc/secrets/x",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": true
+    },
+    {
+      "path": "",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "",
+      "prefixes": [
+        "/etc/secrets/",
+        "/home/alice/.ssh"
+      ],
+      "result": false
+    },
+    {
+      "path": "   ",
+      "prefixes": [],
+      "result": false
+    },
+    {
+      "path": "/",
+      "prefixes": [],
+      "result": false
+    }
+  ],
+  "extract_paths": [
+    {
+      "args_json": "",
+      "paths": []
+    },
+    {
+      "args_json": "not json",
+      "paths": []
+    },
+    {
+      "args_json": "null",
+      "paths": []
+    },
+    {
+      "args_json": "[]",
+      "paths": []
+    },
+    {
+      "args_json": "{}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"path\":\"/data/a.txt\"}",
+      "paths": [
+        "/data/a.txt"
+      ]
+    },
+    {
+      "args_json": "{\"PATH\":\"/data/a.txt\"}",
+      "paths": [
+        "/data/a.txt"
+      ]
+    },
+    {
+      "args_json": "{\"File\":\"plain\"}",
+      "paths": [
+        "plain"
+      ]
+    },
+    {
+      "args_json": "{\"filepath\":\"x\",\"file_path\":\"y\",\"excel_file\":\"z\",\"filename\":\"w\"}",
+      "paths": [
+        "w",
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    {
+      "args_json": "{\"source\":\"a\",\"target\":\"b\"}",
+      "paths": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "args_json": "{\"path\":\"  \"}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"path\":\"\"}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"outer\":{\"inner\":{\"path\":\"/deep/a.txt\"}}}",
+      "paths": [
+        "/deep/a.txt"
+      ]
+    },
+    {
+      "args_json": "{\"files\":[{\"path\":\"a\"},{\"path\":\"b\"}]}",
+      "paths": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "args_json": "{\"path\":[\"a\",\"b\"]}",
+      "paths": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "args_json": "{\"path\":[[\"a\"],[\"b\"]]}",
+      "paths": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "args_json": "{\"note\":\"/etc/passwd\"}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"note\":\"dir/file.txt\"}",
+      "paths": [
+        "dir/file.txt"
+      ]
+    },
+    {
+      "args_json": "{\"note\":\"dir/file\"}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"note\":\"/etc/credentials\"}",
+      "paths": [
+        "/etc/credentials"
+      ]
+    },
+    {
+      "args_json": "{\"note\":\"dir/Credential-store\"}",
+      "paths": [
+        "dir/Credential-store"
+      ]
+    },
+    {
+      "args_json": "{\"note\":\"readme.txt\"}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"note\":\"/\"}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"a\":\"/x/y.txt\",\"b\":\"/x/y.txt\",\"c\":[\"/x/y.txt\"]}",
+      "paths": [
+        "/x/y.txt"
+      ]
+    },
+    {
+      "args_json": "{\"path\":\"/x/y.txt\",\"other\":\"/x/y.txt\"}",
+      "paths": [
+        "/x/y.txt"
+      ]
+    },
+    {
+      "args_json": "{\"path\":7,\"file\":true,\"target\":null,\"note\":1.5}",
+      "paths": []
+    },
+    {
+      "args_json": "{\"path\":\"/data/a.txt\",\"n\":3,\"flag\":false,\"list\":[1,\"b/c.d\",null]}",
+      "paths": [
+        "/data/a.txt",
+        "b/c.d"
+      ]
+    },
+    {
+      "args_json": "{\"path\":\" /padded \"}",
+      "paths": [
+        " /padded "
+      ]
+    }
+  ],
+  "taint": [
+    {
+      "content": "alice,hunter2\nbob,s3cret-pass",
+      "path": "/data/users.xlsx",
+      "source": "files/read_file",
+      "seq": 3,
+      "tainted": [
+        {
+          "value_hex": "616c6963652c68756e746572320a626f622c7333637265742d70617373",
+          "hash": "b910ccadd2daff36f9e3f0f38a375b0e74c49a63aee1277e08b6359343262d45",
+          "preview": "ali...pass",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": "files/read_file (path:/data/users.xlsx)",
+          "seq": 3
+        }
+      ]
+    },
+    {
+      "content": "abcd",
+      "path": "/etc/secrets/a",
+      "source": "fs/read",
+      "seq": 2,
+      "tainted": [
+        {
+          "value_hex": "61626364",
+          "hash": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589",
+          "preview": "****",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": "fs/read (path:/etc/secrets/a)",
+          "seq": 2
+        }
+      ]
+    },
+    {
+      "content": "abcdefghij",
+      "path": "/etc/secrets/a",
+      "source": "fs/read",
+      "seq": 4,
+      "tainted": [
+        {
+          "value_hex": "6162636465666768696a",
+          "hash": "72399361da6a7754fec986dca5b7cbaf1c810a28ded4abaf56b2106d06cb78b0",
+          "preview": "ab...ij",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": "fs/read (path:/etc/secrets/a)",
+          "seq": 4
+        }
+      ]
+    },
+    {
+      "content": "abcdefghijk",
+      "path": "/etc/secrets/a",
+      "source": "fs/read",
+      "seq": 5,
+      "tainted": [
+        {
+          "value_hex": "6162636465666768696a6b",
+          "hash": "ca2f2069ea0c6e4658222e06f8dd639659cbb5e67cbbba6734bc334a3799bc68",
+          "preview": "abc...hijk",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": "fs/read (path:/etc/secrets/a)",
+          "seq": 5
+        }
+      ]
+    },
+    {
+      "content": "  padded value here  \n",
+      "path": "/home/bob/.ssh/id_rsa",
+      "source": "fs/read",
+      "seq": 6,
+      "tainted": [
+        {
+          "value_hex": "7061646465642076616c75652068657265",
+          "hash": "bd7df1974ff0a439297f1381f8f13251ee4d32dc3d683132618321eab9e6c7a8",
+          "preview": "pad...here",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": "fs/read (path:/home/bob/.ssh/id_rsa)",
+          "seq": 6
+        }
+      ]
+    },
+    {
+      "content": "-----BEGIN KEY-----\nMIIEvQIBADANBg\n-----END KEY-----",
+      "path": "/data/server.key",
+      "source": "fs/read",
+      "seq": 7,
+      "tainted": [
+        {
+          "value_hex": "2d2d2d2d2d424547494e204b45592d2d2d2d2d0a4d494945765149424144414e42670a2d2d2d2d2d454e44204b45592d2d2d2d2d",
+          "hash": "148a15130bf61db482d254cb3a6c956aedbaa50aeb0e5aa827a8cdb95388f17e",
+          "preview": "---...----",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": "fs/read (path:/data/server.key)",
+          "seq": 7
+        }
+      ]
+    },
+    {
+      "content": "naïve café ✓",
+      "path": "/data/server.pem",
+      "source": "fs/read",
+      "seq": 8,
+      "tainted": [
+        {
+          "value_hex": "6e61c3af766520636166c3a920e29c93",
+          "hash": "23888e71341419cd61548274abb7629c5551f55080d2135bc65841c1edc7b528",
+          "preview": "na\ufffd... ✓",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": "fs/read (path:/data/server.pem)",
+          "seq": 8
+        }
+      ]
+    },
+    {
+      "content": "value",
+      "path": "",
+      "source": "",
+      "seq": 0,
+      "tainted": [
+        {
+          "value_hex": "76616c7565",
+          "hash": "cd42404d52ad55ccfa9aca4adc828aa5800ad9d385a0671fbcbf724118320619",
+          "preview": "va...ue",
+          "forms": [
+            "literal",
+            "base64",
+            "hex",
+            "url_encoded",
+            "reversed",
+            "base64_hex",
+            "hex_base64",
+            "base64_url",
+            "base64_reversed",
+            "gzip_base64",
+            "brotli_base64",
+            "zstd_base64",
+            "lz4_base64"
+          ],
+          "source": " (path:)",
+          "seq": 0
+        }
+      ]
+    },
+    {
+      "content": "",
+      "path": "/data/server.pem",
+      "source": "fs/read",
+      "seq": 9,
+      "tainted": []
+    },
+    {
+      "content": " \n\t ",
+      "path": "/data/server.pem",
+      "source": "fs/read",
+      "seq": 10,
+      "tainted": []
+    }
+  ]
+}
