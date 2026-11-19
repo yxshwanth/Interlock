@@ -9,7 +9,7 @@ Scope from [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): §75, then §83 (
 - [x] A stub Rust loader reads the same files, rejecting unknown fields, and runs in CI.
 - [x] **§83 (start)** Generated attacks and benign flows (`generate.go`): 13 documented encodings, four secret families, random noise and sinks, a quarter through the eBPF write path. 10 seeds of 1000 produced no miss and no false EXFIL. A fixed seed runs in every PR; the nightly job uses a fresh one.
 - [x] **§83 (start)** A frozen held-out set of 35 scenarios, hash-pinned, with outcomes pinned and published beside the tuned rates: [`heldout_corpus.md`](heldout_corpus.md). Detection is 14/19 (73.7%) there against 100% on the tuned set.
-- [x] **§84** 11 Go native fuzz targets across 6 packages (container walker, overlap, decode, taint extraction, evidence chain, tool-call params, config load, ring-buffer decode, SSE, cgroup id). Seeds run in every PR; `scripts/fuzz.sh` and a nightly job explore. A 20 second pass per target found nothing.
+- [x] **§84** 11 Go native fuzz targets across 6 packages (container walker, overlap, decode, taint extraction, evidence chain, tool-call params, config load, ring-buffer decode, SSE, cgroup id). Seeds run in every PR; `scripts/fuzz.sh` and a nightly job explore. The nightly fuzz job runs 2 minutes per target.
 - [x] **§81 (start)** Two relations: planted literals survive any surrounding text (fuzzed), and a secret split at every boundary within one call is caught (checked at all 43 offsets and mutation-verified).
 
 ## Start gate for §76 (engine port)
@@ -26,4 +26,4 @@ Scope from [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): §75, then §83 (
 - [ ] §83: 1,000 curated scenarios (96 plus 35 now), privacy-scrubbed captures of real benign agent traffic, a 14 day pipeline from a new MCP CVE to scenarios, contributed red-team scenarios. None of these exist yet, and only the last two reduce author bias.
 - [ ] §84: 7 days wall time per target before each minor release, structure-aware grammars for JSON-RPC and Streamable HTTP, DNS wire format, tar/zip/brotli/zstd/lz4 inputs beyond the seeds, Cedar, plugin ABI, sanitizers. OSS-Fuzz application. The nightly job runs 2 minutes per target.
 - [ ] §81: `proptest` suites arrive with the Rust crates. The metamorphic relation "adding unrelated calls never removes a catch" passes but could not be made to fail (150 calls did not remove a catch), so it is a regression guard, not evidence.
-- [ ] The first nightly runs of the fuzz and generated-corpus jobs, and the first CI run of the Rust stub job, have not happened on GitHub yet.
+- [x] The nightly fuzz and generated-corpus jobs and the Rust CI job have run on GitHub and passed. The nightly fuzz job took about 24 minutes.
