@@ -3,13 +3,14 @@
 use interlock_engine::{default_container_limits, inspect_container, looks_like_container};
 use serde_json::Value;
 
+const VECTORS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../internal/engine/testdata/container_vectors.json"
+));
+
 #[test]
 fn matches_go_container_vectors() {
-    let fixture = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../internal/engine/testdata/container_vectors.json"
-    ));
-    let cases: Vec<Value> = serde_json::from_str(fixture).expect("parse Go container vectors");
+    let cases: Vec<Value> = serde_json::from_str(VECTORS).expect("parse Go container vectors");
     for case in cases {
         let name = case["name"].as_str().expect("case name");
         let input = decode_hex(&case["input_hex"], name, "input_hex");
@@ -60,6 +61,40 @@ fn matches_go_container_vectors() {
                 decode_hex(expected, name, &field),
                 "{name}: {field}"
             );
+        }
+    }
+}
+
+#[test]
+fn inspects_random_and_truncated_containers_without_panicking() {
+    let limits = default_container_limits();
+    let cases: Vec<Value> = serde_json::from_str(VECTORS).expect("parse Go container vectors");
+    for case in cases {
+        let name = case["name"].as_str().expect("case name");
+        let input = decode_hex(&case["input_hex"], name, "input_hex");
+        for end in 0..input.len() {
+            inspect_container(&input[..end], &limits);
+        }
+    }
+
+    let mut state = 0x243f_6a88_u32;
+    for _ in 0..64 {
+        let mut input = [0; 600];
+        for byte in &mut input {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = state.to_le_bytes()[0];
+        }
+        for (offset, signature) in [
+            (0, &b"PK\x03\x04"[..]),
+            (0, &b"\x1f\x8b"[..]),
+            (0, &b"\x78\x9c"[..]),
+            (257, &b"ustar"[..]),
+        ] {
+            let mut container = input;
+            container[offset..offset + signature.len()].copy_from_slice(signature);
+            inspect_container(&container, &limits);
         }
     }
 }

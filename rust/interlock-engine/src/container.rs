@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bounded, in-memory archive inspection. The shared vectors cover truncated
-//! ZIP, ZIP data descriptors, encrypted members, gzip multistream and trailer
-//! handling, zlib trailer handling, and byte cutoffs. ZIP64 and trailing ZIP
-//! bytes depend on the zip crate's central directory parser.
+//! Bounded, in-memory archive inspection. The shared vectors cover TAR
+//! extensions, ZIP directory records, descriptors and encryption, compressed
+//! stream trailers, and byte cutoffs.
 //! Compressed readers can disagree with Go about whether EOF or corruption
 //! coincides with the last bytes when a read fills the byte budget.
 
@@ -21,7 +20,8 @@ use zip::{result::ZipError, CompressionMethod, ZipArchive};
 pub struct ContainerLimits {
     pub enabled: bool,
     pub max_decompressed_bytes: isize,
-    /// Maximum recursive descent. Callers should keep this within their stack budget.
+    /// Maximum recursive descent. Positive settings are used directly, so
+    /// callers should keep custom values within their stack budget.
     pub max_descent_depth: isize,
     pub max_parts: isize,
     pub max_inspect: Duration,
@@ -271,6 +271,8 @@ impl Walker {
     }
 
     fn walk_zip(&mut self, raw: &[u8], depth: usize) -> Result<(), Abort> {
+        // Like Go, the ZIP reader loads the central directory before the
+        // per-member time and part checks.
         let Ok(mut archive) = ZipArchive::new(Cursor::new(raw)) else {
             return self.abort(Abort::Corrupt);
         };
