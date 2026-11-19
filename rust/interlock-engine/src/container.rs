@@ -3,8 +3,7 @@
 //! Bounded, in-memory archive inspection. The shared vectors cover truncated
 //! ZIP, ZIP data descriptors, encrypted members, gzip multistream and trailer
 //! handling, zlib trailer handling, and byte cutoffs. ZIP64 and trailing ZIP
-//! bytes depend on the zip crate's central directory parser. The tar crate
-//! stops at the first zero block, while Go checks the next block if present.
+//! bytes depend on the zip crate's central directory parser.
 //! Compressed readers can disagree with Go about whether EOF or corruption
 //! coincides with the last bytes when a read fills the byte budget.
 
@@ -19,6 +18,7 @@ use zip::{result::ZipError, CompressionMethod, ZipArchive};
 pub struct ContainerLimits {
     pub enabled: bool,
     pub max_decompressed_bytes: isize,
+    /// Maximum recursive descent. Callers should keep this within their stack budget.
     pub max_descent_depth: isize,
     pub max_parts: isize,
     pub max_inspect: Duration,
@@ -317,14 +317,15 @@ impl Walker {
     }
 
     fn walk_tar(&mut self, raw: &[u8], depth: usize) -> Result<(), Abort> {
-        let mut archive = tar::Archive::new(raw);
+        let mut cursor = Cursor::new(raw);
+        let mut archive = tar::Archive::new(&mut cursor);
         let Ok(mut entries) = archive.entries() else {
             return self.abort(Abort::Corrupt);
         };
         loop {
             self.check_time()?;
             match entries.next() {
-                None => return Ok(()),
+                None => break,
                 Some(Err(_)) => return self.abort(Abort::Corrupt),
                 Some(Ok(entry)) => {
                     // Tar maps both NUL and ASCII zero to EntryType::Regular.
@@ -340,6 +341,14 @@ impl Walker {
                     self.consider_member(data, depth)?;
                 }
             }
+        }
+        // The iterator consumes the first zero block. Go accepts EOF here
+        // or a second complete zero block, after which it ignores the tail.
+        let remaining = &raw[cursor.position() as usize..];
+        if remaining.is_empty() || remaining.starts_with(&[0; 512]) {
+            Ok(())
+        } else {
+            self.abort(Abort::Corrupt)
         }
     }
 }
