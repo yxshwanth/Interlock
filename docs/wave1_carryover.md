@@ -23,4 +23,4 @@ Items Wave 0 could not finish on a dev laptop, plus follow-ups its checks surfac
 - [x] A per-package coverage floor file (`scripts/coverage_floor.tsv`, CI step) so the "coverage may not drop" ratchet (`docs/testing.md`) is enforced, not just stated.
 - [x] Merge-queue (`merge_group` trigger) and nightly (`nightly.yml`) CI tiers. Both are unexercised until they run on GitHub.
 - [x] Secret scanner (gitleaks) and `govulncheck` in the PR tier. Pinned versions are unverified until CI runs.
-- [ ] Confirm the two git author identities ("Yashwanth Reddy Mali", "Yash") are the same copyright holder, as `GOVERNANCE.md` asserts.
+- [x] Confirm the two git author identities ("Yashwanth Reddy Mali", "Yash") are the same copyright holder, as `GOVERNANCE.md` asserts. Confirmed by the maintainer on 2026-10-24.

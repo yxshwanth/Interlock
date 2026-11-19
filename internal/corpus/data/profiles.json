@@ -1,0 +1,114 @@
+{
+  "cve": {
+    "servers": [
+      {
+        "id": "git",
+        "command": "./mcp-server-git",
+        "provides_tags": []
+      },
+      {
+        "id": "web",
+        "command": "./web",
+        "provides_tags": []
+      },
+      {
+        "id": "secrets",
+        "command": "./secrets",
+        "provides_tags": [
+          "sensitive_source"
+        ]
+      },
+      {
+        "id": "fetch",
+        "command": "./fetch-mcp",
+        "provides_tags": []
+      },
+      {
+        "id": "doris",
+        "command": "./doris-mcp",
+        "provides_tags": []
+      },
+      {
+        "id": "excel",
+        "command": "./excel-mcp-server",
+        "provides_tags": []
+      },
+      {
+        "id": "filesystem",
+        "command": "./filesystem-mcp",
+        "provides_tags": []
+      },
+      {
+        "id": "messenger",
+        "command": "./messenger",
+        "provides_tags": [
+          "external_sink"
+        ]
+      }
+    ],
+    "tool_tags": {
+      "exec_query": [
+        "sensitive_source"
+      ],
+      "fetch_page": [],
+      "fetch_url": [
+        "sensitive_source"
+      ],
+      "git_diff": [
+        "sensitive_source"
+      ],
+      "git_push": [
+        "external_sink"
+      ],
+      "read_excel_file": [
+        "sensitive_source"
+      ],
+      "read_file": [
+        "sensitive_source"
+      ],
+      "read_issue": [],
+      "read_local_config": [
+        "sensitive_source"
+      ],
+      "send_message": [
+        "external_sink"
+      ]
+    }
+  },
+  "fp": {
+    "servers": [
+      {
+        "id": "tickets",
+        "command": "./tickets",
+        "provides_tags": [
+          "sensitive_source"
+        ]
+      },
+      {
+        "id": "messenger",
+        "command": "./messenger",
+        "provides_tags": [
+          "external_sink"
+        ]
+      },
+      {
+        "id": "web",
+        "command": "./web",
+        "provides_tags": []
+      }
+    ],
+    "tool_tags": {
+      "fetch_page": [],
+      "http_post": [
+        "external_sink"
+      ],
+      "internal_note": [],
+      "read_ticket": [
+        "sensitive_source"
+      ],
+      "send_message": [
+        "external_sink"
+      ]
+    }
+  }
+}

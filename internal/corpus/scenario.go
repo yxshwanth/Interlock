@@ -66,6 +66,8 @@ type Scenario struct {
 
 	// KnownGap: malicious scenario expected to miss EXFIL-tier proof under current scope.
 	KnownGap bool
+	// GapTag is the machine-readable reason, one of the keys in data/gap_tags.json.
+	GapTag string
 	// GapNote names the corresponding *_KnownGap unit test when one exists.
 	GapNote string
 

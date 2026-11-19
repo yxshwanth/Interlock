@@ -3,14 +3,11 @@
 package corpus
 
 import (
-	"archive/zip"
 	"bytes"
 	"compress/gzip"
-	"compress/zlib"
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
-	"strconv"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -64,58 +61,4 @@ func lz4B64(s string) string {
 	_, _ = w.Write([]byte(s))
 	_ = w.Close()
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
-}
-
-// zipMember builds a minimal ZIP archive with a single named text member.
-func zipMember(name, contents string) string {
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	w, err := zw.Create(name)
-	if err != nil {
-		return ""
-	}
-	if _, err := w.Write([]byte(contents)); err != nil {
-		_ = zw.Close()
-		return ""
-	}
-	if err := zw.Close(); err != nil {
-		return ""
-	}
-	return buf.String()
-}
-
-// zipManyParts builds a ZIP with n small text members (inspect-bomb fixture).
-func zipManyParts(n int) string {
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for i := 0; i < n; i++ {
-		name := "p" + strconv.Itoa(i) + ".txt"
-		w, err := zw.Create(name)
-		if err != nil {
-			_ = zw.Close()
-			return ""
-		}
-		if _, err := w.Write([]byte("pad")); err != nil {
-			_ = zw.Close()
-			return ""
-		}
-	}
-	if err := zw.Close(); err != nil {
-		return ""
-	}
-	return buf.String()
-}
-
-// zlibWrap compresses s with zlib (packfile-adjacent flat wire shape).
-func zlibWrap(s string) string {
-	var buf bytes.Buffer
-	zw := zlib.NewWriter(&buf)
-	if _, err := zw.Write([]byte(s)); err != nil {
-		_ = zw.Close()
-		return ""
-	}
-	if err := zw.Close(); err != nil {
-		return ""
-	}
-	return buf.String()
 }

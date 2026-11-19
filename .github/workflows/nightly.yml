@@ -20,3 +20,39 @@ jobs:
 
       - name: Everything the hosted runner can run (kernel suite is skipped, not passed)
         run: scripts/verify-all.sh
+
+  # Structure-aware exploration of the Go parsers (ROADMAP section 84). Seeds
+  # run in every PR as ordinary tests; this job does the open-ended search.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+
+      - name: Fuzz every target
+        run: FUZZTIME=2m scripts/fuzz.sh
+
+      - name: Keep any crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: '**/testdata/fuzz/**'
+
+  # Generated attacks and benign flows with a fresh seed each night. A failure
+  # prints the seed; rerun with INTERLOCK_GEN_SEED to reproduce.
+  generated-corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+
+      - name: Generated scenarios
+        run: INTERLOCK_GEN_SEED=$(date +%s) INTERLOCK_GEN_N=5000 go test -count=1 -run TestGenerated ./internal/corpus/
+
