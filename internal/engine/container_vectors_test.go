@@ -189,6 +189,8 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"tar_gnu_long_name", tarGNULongName(t), def},
 		// PAX 1.0 sparse maps are consumed and holes count toward the logical size.
 		input{"tar_pax_sparse_1_0", tarPAXSparse(t), def},
+		// A high-bit name byte distinguishes the accepted signed checksum.
+		input{"tar_signed_checksum", tarSignedChecksum(t), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -344,6 +346,13 @@ func tarPAXSparse(t *testing.T) []byte {
 	raw[156] = tar.TypeXHeader
 	tarChecksum(raw[:512], false)
 	return raw[:len(raw)-1024]
+}
+
+func tarSignedChecksum(t *testing.T) []byte {
+	raw := tarBytes(t, containerMember{"note", []byte("signed header\n")})
+	raw[0] = 0xff
+	tarChecksum(raw[:512], true)
+	return raw[:1024]
 }
 
 func tarChecksum(header []byte, signed bool) {
