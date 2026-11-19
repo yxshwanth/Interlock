@@ -147,6 +147,34 @@ func taggerVectorInputs() []taggerVector {
 			},
 			Queries: []taggerVectorQuery{q("get", "vault")},
 		},
+		{
+			Name: "explicit_sink_on_allowlist",
+			Config: taggerVectorConfig{
+				InheritSinkSuspicion:   true,
+				SinkSuspicionAllowlist: []string{"post"},
+				ToolTags:               map[string][]string{"post": {tagSink}},
+				Servers:                []taggerVectorServer{{ID: "vault", ProvidesTags: []string{tagSource}}},
+			},
+			Queries: []taggerVectorQuery{q("post", "vault")},
+		},
+		{
+			Name: "has_external_sink_ignores_allowlist",
+			Config: taggerVectorConfig{
+				InheritSinkSuspicion:   true,
+				SinkSuspicionAllowlist: []string{"get"},
+				Servers:                []taggerVectorServer{{ID: "vault", ProvidesTags: []string{tagSource}}},
+			},
+			Queries: []taggerVectorQuery{q("get", "vault")},
+		},
+		{
+			Name: "allowlist_exact_case",
+			Config: taggerVectorConfig{
+				InheritSinkSuspicion:   true,
+				SinkSuspicionAllowlist: []string{"Get"},
+				Servers:                []taggerVectorServer{{ID: "vault", ProvidesTags: []string{tagSource}}},
+			},
+			Queries: []taggerVectorQuery{q("Get", "vault"), q("get", "vault")},
+		},
 	}
 }
 
@@ -181,8 +209,8 @@ func TestTaggerVectors(t *testing.T) {
 	checkVectorFile(t, "testdata/tagger_vectors.json", "go test ./internal/engine -run TaggerVectors -update", taggerVectors())
 }
 
-// checkVectorFile rewrites path under -update, otherwise decodes it strictly
-// and fails on the first field that differs from got.
+// checkVectorFile rewrites path under -update, otherwise decodes it strictly.
+// An omitted key fails before the first value that differs from got.
 func checkVectorFile[T any](t *testing.T, path, regenerate string, got T) {
 	t.Helper()
 	if *updateEncodingVectors {
@@ -205,6 +233,10 @@ func checkVectorFile[T any](t *testing.T, path, regenerate string, got T) {
 	if err := dec.Decode(&want); err != nil {
 		t.Fatalf("decode vectors: %v; regenerate with %s", err, regenerate)
 	}
+	var parsed any
+	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&parsed); err != nil {
+		t.Fatalf("decode vectors: %v; regenerate with %s", err, regenerate)
+	}
 	var g, w any
 	for _, p := range []struct {
 		in  any
@@ -218,9 +250,75 @@ func checkVectorFile[T any](t *testing.T, path, regenerate string, got T) {
 			t.Fatal(err)
 		}
 	}
+	if where := missingVectorField(g, parsed, ""); where != "" {
+		t.Fatalf("missing field %s; regenerate with %s", where, regenerate)
+	}
 	if where, gv, wv, ok := firstVectorDiff(g, w, ""); ok {
 		t.Fatalf("%s: got %s, want %s; regenerate with %s", where, gv, wv, regenerate)
 	}
+}
+
+// missingVectorField reports the first key present in full (the encoded
+// result) and absent from raw (the file). Typed decode fills those with
+// zero values, so the key check has to see the file's object.
+func missingVectorField(full, raw any, path string) string {
+	switch f := full.(type) {
+	case map[string]any:
+		r, ok := raw.(map[string]any)
+		if !ok {
+			return ""
+		}
+		keys := make([]string, 0, len(f))
+		for k := range f {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if _, ok := r[k]; !ok {
+				return path + "." + k
+			}
+			if where := missingVectorField(f[k], r[k], path+"."+k); where != "" {
+				return where
+			}
+		}
+	case []any:
+		r, ok := raw.([]any)
+		if !ok {
+			return ""
+		}
+		n := len(f)
+		if len(r) < n {
+			n = len(r)
+		}
+		for i := 0; i < n; i++ {
+			if where := missingVectorField(f[i], r[i], vectorElemPath(path, i, f[i])); where != "" {
+				return where
+			}
+		}
+	}
+	return ""
+}
+
+func vectorElemPath(prefix string, i int, elem any) string {
+	label := fmt.Sprintf("%s[%d]", prefix, i)
+	m, ok := elem.(map[string]any)
+	if !ok {
+		return label
+	}
+	if name, ok := m["name"].(string); ok {
+		label += "(" + name + ")"
+	}
+	if args, ok := m["args_json"].(string); ok {
+		label += "(args=" + args + ")"
+	}
+	if p, ok := m["path"].(string); ok {
+		label += "(path=" + p + ")"
+	}
+	if tool, ok := m["tool"].(string); ok {
+		server, _ := m["server"].(string)
+		label += "(tool=" + tool + " server=" + server + ")"
+	}
+	return label
 }
 
 func firstVectorDiff(got, want any, path string) (string, string, string, bool) {
@@ -254,13 +352,7 @@ func firstVectorDiff(got, want any, path string) (string, string, string, bool) 
 			break
 		}
 		for i := 0; i < len(g) && i < len(w); i++ {
-			label := fmt.Sprintf("%s[%d]", path, i)
-			if m, ok := g[i].(map[string]any); ok {
-				if name, ok := m["name"].(string); ok {
-					label += "(" + name + ")"
-				}
-			}
-			if where, a, b, diff := firstVectorDiff(g[i], w[i], label); diff {
+			if where, a, b, diff := firstVectorDiff(g[i], w[i], vectorElemPath(path, i, g[i])); diff {
 				return where, a, b, true
 			}
 		}

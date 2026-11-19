@@ -579,5 +579,111 @@
     ],
     "has_sensitive_source": true,
     "has_external_sink": false
+  },
+  {
+    "name": "explicit_sink_on_allowlist",
+    "config": {
+      "tool_tags": {
+        "post": [
+          "external_sink"
+        ]
+      },
+      "servers": [
+        {
+          "id": "vault",
+          "provides_tags": [
+            "sensitive_source"
+          ]
+        }
+      ],
+      "inherit_sink_suspicion": true,
+      "sink_suspicion_allowlist": [
+        "post"
+      ]
+    },
+    "queries": [
+      {
+        "tool": "post",
+        "server": "vault",
+        "tags": [
+          "external_sink"
+        ],
+        "sensitive_source": false,
+        "external_sink": true
+      }
+    ],
+    "has_sensitive_source": true,
+    "has_external_sink": true
+  },
+  {
+    "name": "has_external_sink_ignores_allowlist",
+    "config": {
+      "tool_tags": null,
+      "servers": [
+        {
+          "id": "vault",
+          "provides_tags": [
+            "sensitive_source"
+          ]
+        }
+      ],
+      "inherit_sink_suspicion": true,
+      "sink_suspicion_allowlist": [
+        "get"
+      ]
+    },
+    "queries": [
+      {
+        "tool": "get",
+        "server": "vault",
+        "tags": [
+          "sensitive_source"
+        ],
+        "sensitive_source": true,
+        "external_sink": false
+      }
+    ],
+    "has_sensitive_source": true,
+    "has_external_sink": true
+  },
+  {
+    "name": "allowlist_exact_case",
+    "config": {
+      "tool_tags": null,
+      "servers": [
+        {
+          "id": "vault",
+          "provides_tags": [
+            "sensitive_source"
+          ]
+        }
+      ],
+      "inherit_sink_suspicion": true,
+      "sink_suspicion_allowlist": [
+        "Get"
+      ]
+    },
+    "queries": [
+      {
+        "tool": "Get",
+        "server": "vault",
+        "tags": [
+          "sensitive_source"
+        ],
+        "sensitive_source": true,
+        "external_sink": false
+      },
+      {
+        "tool": "get",
+        "server": "vault",
+        "tags": [
+          "sensitive_source"
+        ],
+        "sensitive_source": true,
+        "external_sink": true
+      }
+    ],
+    "has_sensitive_source": true,
+    "has_external_sink": true
   }
 ]
