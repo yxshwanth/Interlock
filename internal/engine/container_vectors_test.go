@@ -207,6 +207,8 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"zip_end_record_inside_member", zipWithFakeEnd(t), def},
 		// A later candidate with an overrunning comment makes Go reject the archive.
 		input{"zip_end_record_truncated_comment", append(bytes.Clone(zipOne), fakeZipEnd()...), def},
+		// A ZIP64 locator and size extra can describe an ordinary small member.
+		input{"zip64", zip64Bytes(zipOne), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -252,6 +254,45 @@ func zipBytes(t *testing.T, members ...containerMember) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func zip64Bytes(raw []byte) []byte {
+	classic := bytes.Clone(raw[len(raw)-22:])
+	central := int(binary.LittleEndian.Uint32(classic[16:]))
+	out := bytes.Clone(raw[:len(raw)-22])
+
+	// Replace the central-directory sizes with ZIP64 sentinels and append
+	// one ZIP64 extra record containing the original sizes.
+	extra := make([]byte, 20)
+	binary.LittleEndian.PutUint16(extra, 1)
+	binary.LittleEndian.PutUint16(extra[2:], 16)
+	binary.LittleEndian.PutUint64(extra[4:], uint64(binary.LittleEndian.Uint32(out[central+24:])))
+	binary.LittleEndian.PutUint64(extra[12:], uint64(binary.LittleEndian.Uint32(out[central+20:])))
+	binary.LittleEndian.PutUint32(out[central+20:], 0xffffffff)
+	binary.LittleEndian.PutUint32(out[central+24:], 0xffffffff)
+	extraSize := binary.LittleEndian.Uint16(out[central+30:])
+	binary.LittleEndian.PutUint16(out[central+30:], extraSize+uint16(len(extra)))
+	out = append(out, extra...)
+
+	end := make([]byte, 56)
+	copy(end, "PK\x06\x06")
+	binary.LittleEndian.PutUint64(end[4:], 44)
+	binary.LittleEndian.PutUint16(end[12:], 45)
+	binary.LittleEndian.PutUint16(end[14:], 45)
+	binary.LittleEndian.PutUint64(end[24:], 1)
+	binary.LittleEndian.PutUint64(end[32:], 1)
+	binary.LittleEndian.PutUint64(end[40:], uint64(len(out)-central))
+	binary.LittleEndian.PutUint64(end[48:], uint64(central))
+
+	locator := make([]byte, 20)
+	copy(locator, "PK\x06\x07")
+	binary.LittleEndian.PutUint64(locator[8:], uint64(len(out)))
+	binary.LittleEndian.PutUint32(locator[16:], 1)
+	binary.LittleEndian.PutUint16(classic[8:], 0xffff)
+	binary.LittleEndian.PutUint16(classic[10:], 0xffff)
+	binary.LittleEndian.PutUint32(classic[12:], 0xffffffff)
+	binary.LittleEndian.PutUint32(classic[16:], 0xffffffff)
+	return bytes.Join([][]byte{out, end, locator, classic}, nil)
 }
 
 func fakeZipEnd() []byte {
