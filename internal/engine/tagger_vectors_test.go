@@ -251,7 +251,7 @@ func checkVectorFile[T any](t *testing.T, path, regenerate string, got T) {
 		}
 	}
 	if where := missingVectorField(g, parsed, ""); where != "" {
-		t.Fatalf("missing field %s; regenerate with %s", where, regenerate)
+		t.Fatalf("missing or null field %s; regenerate with %s", where, regenerate)
 	}
 	if where, gv, wv, ok := firstVectorDiff(g, w, ""); ok {
 		t.Fatalf("%s: got %s, want %s; regenerate with %s", where, gv, wv, regenerate)
@@ -259,9 +259,13 @@ func checkVectorFile[T any](t *testing.T, path, regenerate string, got T) {
 }
 
 // missingVectorField reports the first key present in full (the encoded
-// result) and absent from raw (the file). Typed decode fills those with
-// zero values, so the key check has to see the file's object.
+// result) and absent or null in raw (the file). Typed decode fills those with
+// zero values, so the key check has to see the file's object. A null is only
+// accepted where the encoded result is null too.
 func missingVectorField(full, raw any, path string) string {
+	if raw == nil && full != nil {
+		return path
+	}
 	switch f := full.(type) {
 	case map[string]any:
 		r, ok := raw.(map[string]any)
