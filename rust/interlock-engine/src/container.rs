@@ -316,6 +316,90 @@ impl Walker {
         Ok(())
     }
 
+    fn read_tar_sparse(
+        &mut self,
+        entry: &mut impl Read,
+        stored_size: u64,
+        logical_size: u64,
+    ) -> Result<Vec<u8>, Abort> {
+        let mut map = Vec::new();
+        let mut lines = 0;
+        let mut needed = 1;
+        while lines < needed {
+            self.check_time()?;
+            if map.len() == 1 << 20 {
+                return self.abort(Abort::Corrupt);
+            }
+            let mut block = [0; 512];
+            if entry.read_exact(&mut block).is_err() {
+                return self.abort(Abort::Corrupt);
+            }
+            lines += block.iter().filter(|&&b| b == b'\n').count();
+            map.extend_from_slice(&block);
+            if needed == 1 && lines != 0 {
+                let count = map.split(|&b| b == b'\n').next().and_then(decimal);
+                let Some(count) = count.filter(|&count| count < (1 << 19)) else {
+                    return self.abort(Abort::Corrupt);
+                };
+                needed = 1 + 2 * count as usize;
+                // A zero-entry map still occupies one block.
+                if needed == 1 {
+                    break;
+                }
+            }
+        }
+        let mut fields = map.split(|&b| b == b'\n').skip(1);
+        let mut end = 0;
+        let mut dense_size = 0;
+        let mut extents = Vec::new();
+        for _ in 0..needed / 2 {
+            let (Some(offset), Some(length)) = (
+                fields.next().and_then(decimal),
+                fields.next().and_then(decimal),
+            ) else {
+                return self.abort(Abort::Corrupt);
+            };
+            let Some(next) = offset.checked_add(length) else {
+                return self.abort(Abort::Corrupt);
+            };
+            if offset < end || next > logical_size {
+                return self.abort(Abort::Corrupt);
+            }
+            end = next;
+            dense_size += length;
+            extents.push((offset, next));
+        }
+
+        let limit = logical_size.min(self.remain_budget() as u64);
+        let mut data = Vec::new();
+        for (offset, end) in extents {
+            if offset >= limit {
+                break;
+            }
+            data.resize(offset as usize, 0);
+            let end = end.min(limit) as usize;
+            while data.len() < end {
+                self.check_time()?;
+                let start = data.len();
+                data.resize(end.min(start + (32 << 10)), 0);
+                if entry.read_exact(&mut data[start..]).is_err() {
+                    return self.abort(Abort::Corrupt);
+                }
+            }
+        }
+        if limit < logical_size {
+            return self.abort(Abort::MaxDecompressedBytes);
+        }
+        if stored_size.checked_sub(map.len() as u64) != Some(dense_size) {
+            return self.abort(Abort::Corrupt);
+        }
+        while data.len() < limit as usize {
+            self.check_time()?;
+            data.resize((limit as usize).min(data.len() + (32 << 10)), 0);
+        }
+        Ok(data)
+    }
+
     fn walk_tar(&mut self, raw: &[u8], depth: usize) -> Result<(), Abort> {
         let mut cursor = Cursor::new(raw);
         let mut archive = tar::Archive::new(&mut cursor);
@@ -327,7 +411,7 @@ impl Walker {
             match entries.next() {
                 None => break,
                 Some(Err(_)) => return self.abort(Abort::Corrupt),
-                Some(Ok(entry)) => {
+                Some(Ok(mut entry)) => {
                     // Tar maps both NUL and ASCII zero to EntryType::Regular.
                     // Go treats a NUL type with a trailing slash as a directory.
                     let kind = entry.header().as_bytes()[156];
@@ -337,7 +421,15 @@ impl Walker {
                         continue;
                     }
                     let size = entry.size();
-                    let data = self.read_capped(entry, Some(size), true)?;
+                    let sparse_size = match pax_sparse_size(&mut entry) {
+                        Ok(size) => size,
+                        Err(()) => return self.abort(Abort::Corrupt),
+                    };
+                    let data = if let Some(logical_size) = sparse_size {
+                        self.read_tar_sparse(&mut entry, size, logical_size)?
+                    } else {
+                        self.read_capped(entry, Some(size), true)?
+                    };
                     self.consider_member(data, depth)?;
                 }
             }
@@ -350,6 +442,37 @@ impl Walker {
         } else {
             self.abort(Abort::Corrupt)
         }
+    }
+}
+
+fn decimal(bytes: &[u8]) -> Option<u64> {
+    u64::try_from(std::str::from_utf8(bytes).ok()?.parse::<i64>().ok()?).ok()
+}
+
+fn pax_sparse_size(entry: &mut tar::Entry<'_, impl Read>) -> Result<Option<u64>, ()> {
+    let stored_size = entry.size();
+    let Some(fields) = entry.pax_extensions().map_err(|_| ())? else {
+        return Ok(None);
+    };
+    let (mut major, mut minor, mut size, mut real_size) = (&b""[..], &b""[..], &b""[..], &b""[..]);
+    for field in fields {
+        let field = field.map_err(|_| ())?;
+        match field.key_bytes() {
+            b"GNU.sparse.major" => major = field.value_bytes(),
+            b"GNU.sparse.minor" => minor = field.value_bytes(),
+            b"GNU.sparse.size" => size = field.value_bytes(),
+            b"GNU.sparse.realsize" => real_size = field.value_bytes(),
+            _ => {}
+        }
+    }
+    if (major, minor) != (b"1", b"0") {
+        return Ok(None);
+    }
+    let size = if size.is_empty() { real_size } else { size };
+    if size.is_empty() {
+        Ok(Some(stored_size))
+    } else {
+        decimal(size).map(Some).ok_or(())
     }
 }
 
