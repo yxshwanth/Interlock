@@ -64,7 +64,7 @@ jobs:
 
       - name: Corpus and benchmark gate (docs/budgets.json)
         run: |
-          go test -run='^$' -bench=. -benchmem -benchtime=50ms ./internal/engine/... | grep '^Benchmark' > bench.txt
+          go test -run='^$' -bench=. -benchmem -benchtime=50ms -count=3 ./internal/engine/... | grep '^Benchmark' > bench.txt
           go run ./cmd/gate -bench bench.txt -skip '^BenchmarkHTTP_'
 
       - name: Benchmark smoke

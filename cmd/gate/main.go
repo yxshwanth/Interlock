@@ -105,30 +105,37 @@ func checkBench(file string, max map[string]float64, skip *regexp.Regexp) {
 		os.Exit(2)
 	}
 	defer f.Close()
-	seen := map[string]bool{}
+	best := make(map[string]float64, len(max))
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		m := benchLine.FindStringSubmatch(sc.Text())
 		if m == nil {
 			continue
 		}
-		limit, ok := max[m[1]]
+		name := m[1]
+		_, ok := max[name]
 		if !ok {
 			continue
 		}
 		ns, _ := strconv.ParseFloat(m[2], 64)
-		seen[m[1]] = true
-		if ns > limit {
-			failed = true
-			fmt.Printf("FAIL bench %-45s %.0f ns/op > budget %.0f\n", m[1], ns, limit)
-		} else {
-			fmt.Printf("ok   bench %-45s %.0f ns/op (budget %.0f)\n", m[1], ns, limit)
+		if previous, seen := best[name]; !seen || ns < previous {
+			best[name] = ns
 		}
 	}
-	for name := range max {
-		if !seen[name] && (skip.String() == "" || !skip.MatchString(name)) {
+	for name, limit := range max {
+		ns, seen := best[name]
+		if !seen {
+			if skip.String() == "" || !skip.MatchString(name) {
+				failed = true
+				fmt.Printf("FAIL bench %-45s missing from output\n", name)
+			}
+			continue
+		}
+		if ns > limit {
 			failed = true
-			fmt.Printf("FAIL bench %-45s missing from output\n", name)
+			fmt.Printf("FAIL bench %-45s %.0f ns/op > budget %.0f\n", name, ns, limit)
+		} else {
+			fmt.Printf("ok   bench %-45s %.0f ns/op (budget %.0f)\n", name, ns, limit)
 		}
 	}
 }

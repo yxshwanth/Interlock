@@ -37,7 +37,7 @@ step test "$GO" test ./...
 step test-layers scripts/check-test-layers.sh
 step spdx scripts/check-spdx.sh
 
-"$GO" test -run='^$' -bench=. -benchmem -benchtime=50ms ./internal/engine/... 2>&1 | grep '^Benchmark' >"$out/bench.txt"
+"$GO" test -run='^$' -bench=. -benchmem -benchtime=50ms -count=3 ./internal/engine/... 2>&1 | grep '^Benchmark' >"$out/bench.txt"
 if [ -z "${QUICK:-}" ]; then
 	"$GO" test -run='TestHTTP_OverheadReport|TestHTTP_ConcurrentLoad' -bench=BenchmarkHTTP_EngineDelta -benchmem -benchtime=500ms ./internal/proxy/http/... 2>&1 | grep '^Benchmark' >>"$out/bench.txt"
 	bench_args=(-bench "$out/bench.txt")

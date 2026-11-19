@@ -1,5 +1,6 @@
 # file	layer (see docs/testing.md). Checked by scripts/check-test-layers.sh
 cmd/demo/narrative_test.go	L5
+cmd/gate/main_test.go	L1
 internal/alerting/webhook_test.go	L1
 internal/bridge/bridge_engine_test.go	L5
 internal/bridge/bridge_test.go	L1
