@@ -1,0 +1,556 @@
+[
+  {
+    "name": "literal",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "literal"
+    }
+  },
+  {
+    "name": "base64",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "6332737462476c325a5330314d565234536b464f525751775a56497a595578304d47737a626a6b344e7a59314e444d794d544268596d4e6b5a57593d",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "base64"
+    }
+  },
+  {
+    "name": "hex",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "37333662326436633639373636353264333533313534373834613431346534353634333036353532333336313463373433303662333336653339333833373336333533343333333233313330363136323633363436353636",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "hex"
+    }
+  },
+  {
+    "name": "url_encoded",
+    "result_text": "Auth Token: sk-live+token/special=value",
+    "source": "auth/get_token",
+    "seq": 1,
+    "payload_hex": "736b2d6c697665253242746f6b656e2532467370656369616c25334476616c7565",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652b746f6b656e2f7370656369616c3d76616c7565",
+        "hash": "740d1171580d5bac2008b1d10a60a6d51c0965ebf69b85eae61fdf1912dd881f",
+        "preview": "sk-...alue",
+        "source": "auth/get_token",
+        "seq": 1,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "740d1171580d5bac2008b1d10a60a6d51c0965ebf69b85eae61fdf1912dd881f",
+      "preview": "sk-...alue",
+      "where_found": "egress payload",
+      "match_form": "url_encoded"
+    }
+  },
+  {
+    "name": "reversed",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "666564636261303132333435363738396e336b30744c613352653064454e414a785431352d6576696c2d6b73",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "reversed"
+    }
+  },
+  {
+    "name": "hex_of_hex",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "3337333333363632333236343336363333363339333733363336333533323634333333353333333133353334333733383334363133343331333436353334333533363334333333303336333533353332333333333336333133343633333733343333333033363632333333333336363533333339333333383333333733333336333333353333333433333333333333323333333133333330333633313336333233363333333633343336333533363336",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "decoded_hex"
+    }
+  },
+  {
+    "name": "base64_of_hex",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "4e7a4d32596a4a6b4e6d4d324f5463324e6a55795a444d314d7a45314e4463344e4745304d54526c4e4455324e444d774e6a55314d6a4d7a4e6a4530597a63304d7a4132596a4d7a4e6d557a4f544d344d7a637a4e6a4d314d7a517a4d7a4d794d7a457a4d4459784e6a49324d7a59304e6a55324e673d3d",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "base64_hex"
+    }
+  },
+  {
+    "name": "base64_nest_3",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "5758704b656d5248536b6869524570685658704265465257576c4e4f526b3579556d733555315978526a4e586246704b5a577873566d5645516b35534d30343257573177636b35464e545a5856455a50556b55784e565257556b4e68526d78305647313059565978617a6b3d",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "decoded_base64_base64"
+    }
+  },
+  {
+    "name": "gzip_base64",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "4834734941414141414141412f79724f3173334a4c4576564e54554d7166427939484e4e4d55674e4d6b37304b5448494e73367a744441334d7a55784e6a49305345784b546b6c4e4177514141502f2f65743349586977414141413d",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "gzip_base64"
+    }
+  },
+  {
+    "name": "surrounded_by_noise",
+    "result_text": "note sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef trailer",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "6e6f746520736b2d6c6976652d353154784a414e456430655233614c74306b336e3938373635343332313061626364656620747261696c6572",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "literal"
+    }
+  },
+  {
+    "name": "long_secret_chunk",
+    "result_text": "sk-live-9fK2mQ7xR4pL8wN39fK2mQ7xR4pL8wN39fK2mQ7xR4pL8wN39fK2mQ7xR4pL8wN39fK2mQ7xR4pL8wN39fK2mQ7xR4pL8wN3",
+    "source": "tickets/read_ticket",
+    "seq": 8,
+    "payload_hex": "6e6f7465205234704c38774e3339664b326d5137785234704c38774e3339664b326d51377820747261696c6572",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d39664b326d5137785234704c38774e3339664b326d5137785234704c38774e3339664b326d5137785234704c38774e3339664b326d5137785234704c38774e3339664b326d5137785234704c38774e3339664b326d5137785234704c38774e33",
+        "hash": "dca619ca7e06de8cc73a419958197ba89963faf651f4183f80faf96729b50681",
+        "preview": "sk-...8wN3",
+        "source": "tickets/read_ticket",
+        "seq": 8,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 3
+      }
+    ],
+    "hit": {
+      "tainted_hash": "dca619ca7e06de8cc73a419958197ba89963faf651f4183f80faf96729b50681",
+      "preview": "sk-...8wN3",
+      "where_found": "egress payload",
+      "match_form": "chunk_32"
+    }
+  },
+  {
+    "name": "near_miss",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646567",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": null
+  },
+  {
+    "name": "payload_without_secret",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "737461747573207570646174653a20616c6c20636c656172",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": null
+  },
+  {
+    "name": "no_extractable_secret",
+    "result_text": "Hello, this is a regular message with no secrets.",
+    "source": "src",
+    "seq": 1,
+    "payload_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+    "tainted": [],
+    "hit": null
+  },
+  {
+    "name": "two_secrets",
+    "result_text": "Customer Auth Token: sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef\nAccount ID: acct_prod_jane_7291",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "616363745f70726f645f6a616e655f37323931",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      },
+      {
+        "value_hex": "616363745f70726f645f6a616e655f37323931",
+        "hash": "0fc73bf98db46ee01bd0e6dae230c8820bfaff6c0f862082e1339ee18de4d006",
+        "preview": "acc...7291",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "0fc73bf98db46ee01bd0e6dae230c8820bfaff6c0f862082e1339ee18de4d006",
+      "preview": "acc...7291",
+      "where_found": "egress payload",
+      "match_form": "literal"
+    }
+  }
+]
