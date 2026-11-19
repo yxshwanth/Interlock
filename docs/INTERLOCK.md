@@ -420,7 +420,7 @@ Current path: on `decision.Action == model.ActionContained` (EXFIL only via `var
 
 ### Allowlist and write↔connect correlation
 
-Config `egress_allowlist` feeds `Sensor.allowlist`. `isAllowlisted` matches exact and normalized IPs. Hostnames are never resolved, so a hostname entry (the sample config's `api.anthropic.com`) never matches; the sample's `127.0.0.1` entry means loopback connects arm no write correlation (review #22, open). Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the `(pid, fd)` has a pending non-allowlisted connect (reaped after `staleFDTTL`, **10 minutes**), a pid-wide `sendto` arming within `SuspiciousConnectTTL` (**5 seconds**), or via self-contained sendto/sendmsg with destination (`internal/ebpf/sensor.go`).
+Config `egress_allowlist` is stored as written and passed to the sensor. `buildAllowlist` keeps entries that `net.ParseIP` accepts and drops every other entry with a warning. A hostname never reaches `Sensor.allowlist`. `isAllowlisted` matches the destination IP exactly and in normalized form. A listed `127.0.0.1` exempts loopback. Loopback connects do not arm write correlation. `examples/configs/interlock-http.yaml`, `examples/configs/interlock-http-monitor.yaml`, and `examples/configs/interlock-monitor.yaml` still list `127.0.0.1`. `interlock.yaml`, `examples/configs/interlock-ebpf-local.yaml`, `examples/configs/interlock-sensor.yaml`, and `deploy/k8s/rbac.yaml` do not (review #22). Allowlisted connect/sendto/named-sendmsg are ignored. Writes are processed only if the `(pid, fd)` has a pending non-allowlisted connect (reaped after `staleFDTTL`, **10 minutes**), a pid-wide `sendto` arming within `SuspiciousConnectTTL` (**5 seconds**), or via self-contained sendto/sendmsg with destination (`internal/ebpf/sensor.go`).
 
 This TTL is **not** a proxy↔syscall “recency window” (see [§9](#9-the-correlation-engine)).
 
@@ -1013,7 +1013,7 @@ Known gaps in the code on this tree, from [`security_review.md`](security_review
 | DNS first label only; decoy-flow eviction; decoded layer > 8 KiB skipped | 16–18 |
 | `IngestResult` panic fails open for that result | 20 (partial) |
 | Containment kills the whole process group | 21 |
-| `egress_allowlist` hostnames never match; `127.0.0.1` exempts loopback | 22 |
+| Hostnames in `egress_allowlist` are dropped with a warning. `127.0.0.1` still exempts loopback in the three example configs that list it | 22 |
 
 ### Demand-gated (named, not built)
 
