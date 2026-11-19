@@ -7,7 +7,10 @@
 //! Compressed readers can disagree with Go about whether EOF or corruption
 //! coincides with the last bytes when a read fills the byte budget.
 
-use flate2::{bufread::MultiGzDecoder, Decompress, FlushDecompress, Status};
+use flate2::{
+    bufread::{DeflateDecoder, MultiGzDecoder},
+    Decompress, FlushDecompress, Status,
+};
 use std::{
     io::{self, Cursor, Read, Seek, SeekFrom},
     time::{Duration, Instant},
@@ -300,14 +303,28 @@ impl Walker {
                 continue;
             }
             let size = member.size();
-            let deflated = member.compression() == CompressionMethod::Deflated;
+            let method = member.compression();
+            let deflated = method == CompressionMethod::Deflated;
             let descriptor = member.data_start().checked_add(member.compressed_size());
             let crc = member.crc32();
-            drop(member);
-            let Ok(member) = archive.by_index(index) else {
-                return self.abort(Abort::Corrupt);
+            let data = if crc == 0 && flags & 8 == 0 {
+                // Go skips the CRC only when there is no descriptor.
+                match method {
+                    CompressionMethod::Stored => self.read_capped(member, Some(size), false)?,
+                    CompressionMethod::Deflated => self.read_capped(
+                        DeflateDecoder::new(io::BufReader::new(member)),
+                        Some(size),
+                        true,
+                    )?,
+                    _ => return self.abort(Abort::Corrupt),
+                }
+            } else {
+                drop(member);
+                let Ok(member) = archive.by_index(index) else {
+                    return self.abort(Abort::Corrupt);
+                };
+                self.read_capped(member, Some(size), deflated)?
             };
-            let data = self.read_capped(member, Some(size), deflated)?;
             if flags & 8 != 0 && !valid_zip_descriptor(raw, descriptor, crc) {
                 return self.abort(Abort::Corrupt);
             }
