@@ -15,7 +15,7 @@ Items Wave 0 could not finish on a dev laptop, plus follow-ups its checks surfac
 - [ ] For each finding marked Fixed (8, 10, 11, 12, 13, 15, 19, 23), confirm a regression test exists that fails without the fix; add one where missing.
 - [ ] Finding 20 (partial): make the `IngestResult` recover fail closed, not "FAIL-OPEN for this result".
 - [x] Finding 22: confirm whether the hostname entry `api.anthropic.com` in `egress_allowlist` is ever matched; fix or document. It is not matched. `buildAllowlist` drops it and logs a warning (`TestUpdateAllowlist_DropsHostnamesWithWarning`). `examples/configs/interlock-ebpf-local.yaml` no longer lists it. `127.0.0.1` still exempts loopback in `examples/configs/interlock-http.yaml`, `interlock-http-monitor.yaml`, and `interlock-monitor.yaml`. `interlock.yaml` does not list it.
-- [ ] Triage findings 16, 17, 18, 21: fix, or pin as `KnownGap` with a machine-readable tag. Each pin changes the exact counts in `docs/budgets.json`: edit it in the same PR.
+- [x] Triage findings 16, 17, 18, 21: the DNS label split, slow trickle, decoy-flow eviction and padded nested layer are pinned `KnownGap` scenarios with gap tags (`egress_reassembly_limit`, `decode_size_limit`); 21 is pinned by its containment tests.
 - [ ] Findings 1–7, 9, 14 are the planned Wave 1 scope (§24–§26).
 
 ## Gate and test hygiene

@@ -22,7 +22,7 @@ Scope from [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): §75, then §83 (
 
 ## Carryover
 
-- [ ] **Decide the five held-out misses.** Case change, spacing, base32, `\uXXXX` text, and secret halves in two separate calls. Fixing one changes `heldout_expected.json` and must be recorded in `heldout_corpus.md`. Splitting across calls needs no encoding, so it is the one to decide first.
+- [ ] **Decide the five held-out misses.** Case change, spacing, base32, `\uXXXX` text, and secret halves in two separate calls. Fixing one changes `heldout_expected.json` and must be recorded in `heldout_corpus.md`. Splitting across calls needs no encoding, so it is the one to decide first. Decision: none of the five is fixed on the Go tree. They are detection changes, so they go into the Rust engine port (§76) and the held-out rates are re-published then.
 - [ ] §83: 1,000 curated scenarios (96 plus 35 now), privacy-scrubbed captures of real benign agent traffic, a 14 day pipeline from a new MCP CVE to scenarios, contributed red-team scenarios. None of these exist yet, and only the last two reduce author bias.
 - [ ] §84: 7 days wall time per target before each minor release, structure-aware grammars for JSON-RPC and Streamable HTTP, DNS wire format, tar/zip/brotli/zstd/lz4 inputs beyond the seeds, Cedar, plugin ABI, sanitizers. OSS-Fuzz application. The nightly job runs 2 minutes per target.
 - [ ] §81: `proptest` suites arrive with the Rust crates. The metamorphic relation "adding unrelated calls never removes a catch" passes but could not be made to fail (150 calls did not remove a catch), so it is a regression guard, not evidence.
