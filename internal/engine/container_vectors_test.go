@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -191,6 +192,8 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"tar_pax_sparse_1_0", tarPAXSparse(t), def},
 		// A high-bit name byte distinguishes the accepted signed checksum.
 		input{"tar_signed_checksum", tarSignedChecksum(t), def},
+		// A short trailing central-directory extra record is ignored.
+		input{"zip_truncated_extra", zipTruncatedExtra(zipOne), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -236,6 +239,17 @@ func zipBytes(t *testing.T, members ...containerMember) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func zipTruncatedExtra(raw []byte) []byte {
+	const central = "PK\x01\x02"
+	start := bytes.Index(raw, []byte(central))
+	end := len(raw) - 22
+	out := append(bytes.Clone(raw[:end]), 0xfe, 0xca, 0x01)
+	out = append(out, raw[end:]...)
+	binary.LittleEndian.PutUint16(out[start+30:], binary.LittleEndian.Uint16(raw[start+30:])+3)
+	binary.LittleEndian.PutUint32(out[end+3+12:], uint32(end+3-start))
+	return out
 }
 
 func gzipBytes(t *testing.T, data []byte) []byte {
