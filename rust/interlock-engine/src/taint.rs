@@ -11,7 +11,7 @@ use std::{collections::HashSet, sync::LazyLock};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::{canonical_encodings, Variant};
+use crate::{canonical_encodings, contiguous_chunks, Chunk, Variant};
 
 static SECRET_PATTERNS: LazyLock<[Regex; 6]> = LazyLock::new(|| {
     [
@@ -28,10 +28,19 @@ static SECRET_PATTERNS: LazyLock<[Regex; 6]> = LazyLock::new(|| {
 pub struct TaintedValue {
     pub value: Vec<u8>,
     pub variants: Vec<Variant>,
+    pub chunks: Vec<Chunk>,
     pub hash: String,
     pub preview: String,
     pub source: String,
     pub seq: u64,
+}
+
+impl TaintedValue {
+    pub fn attach_chunks(&mut self, n: usize, min_len: usize) {
+        if !self.value.is_empty() {
+            self.chunks = contiguous_chunks(&self.value, n, min_len);
+        }
+    }
 }
 
 pub fn extract_tainted_values(result_text: &str, source: &str, seq: u64) -> Vec<TaintedValue> {
@@ -42,14 +51,17 @@ pub fn extract_tainted_values(result_text: &str, source: &str, seq: u64) -> Vec<
         for captures in pattern.captures_iter(result_text) {
             let (_, [value]) = captures.extract();
             if seen.insert(value) {
-                values.push(TaintedValue {
+                let mut tainted = TaintedValue {
                     value: value.as_bytes().to_vec(),
                     variants: canonical_encodings(value.as_bytes()),
+                    chunks: Vec::new(),
                     hash: format!("{:x}", Sha256::digest(value.as_bytes())),
                     preview: mask_value(value),
                     source: source.to_owned(),
                     seq,
-                });
+                };
+                tainted.attach_chunks(0, 0);
+                values.push(tainted);
             }
         }
     }

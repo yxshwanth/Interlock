@@ -21,6 +21,7 @@ internal/ebpf/sensor_test.go	L1
 internal/engine/bench_test.go	L11
 internal/engine/bind_test.go	L1
 internal/engine/chunk_test.go	L1
+internal/engine/chunk_vectors_test.go	L4
 internal/engine/container_bomb_test.go	L1
 internal/engine/container_test.go	L1
 internal/engine/egress_reassembly_test.go	L1
