@@ -108,6 +108,14 @@ func containerVectors(t *testing.T) []containerVector {
 		containerMember{"note.txt", []byte("plain text beside the blob\n")},
 	)
 	gz := gzipBytes(t, text)
+	zl := zlibBytes(t, text)
+	encryptedZIP := bytes.Clone(zipOne)
+	// Set the encrypted bit in both headers. The walker must reject the member
+	// before trying to interpret its payload.
+	encryptedZIP[6] |= 1
+	encryptedZIP[bytes.Index(encryptedZIP, []byte("PK\x01\x02"))+8] |= 1
+	badDescriptorZIP := bytes.Clone(zipOne)
+	badDescriptorZIP[bytes.Index(badDescriptorZIP, []byte("PK\x07\x08"))+4] ^= 1
 	// kept is charged first. fills uses the rest of the budget exactly.
 	// over is one byte past that, so the walk aborts on the second member.
 	kept := []byte("alpha\n")
@@ -130,9 +138,15 @@ func containerVectors(t *testing.T) []containerVector {
 	}
 	inputs := []input{
 		{"zip_one_text_member", zipOne, def},
+		{"zip_bad_data_descriptor", badDescriptorZIP, def},
 		{"zip_several_members", zipMany, def},
 		{"gzip", gz, def},
-		{"zlib", zlibBytes(t, text), def},
+		{"gzip_multistream", bytes.Join([][]byte{gz, gzipBytes(t, []byte("second stream\n"))}, nil), def},
+		{"gzip_truncated_trailer", gz[:len(gz)-1], def},
+		{"gzip_trailing_garbage", append(bytes.Clone(gz), 'x'), def},
+		{"zlib", zl, def},
+		{"zlib_truncated_trailer", zl[:len(zl)-1], def},
+		{"zlib_trailing_garbage", append(bytes.Clone(zl), 'x'), def},
 		{"tar", tarBytes(t, containerMember{"note.txt", text}), def},
 		{"tar_dir_then_file", tarBytes(t,
 			containerMember{"dir/", nil},
@@ -146,12 +160,19 @@ func containerVectors(t *testing.T) []containerVector {
 		{"zip_binary_member", zipBinary, def},
 		{"empty_input", nil, def},
 		{"truncated_zip", zipMany[:len(zipMany)/2], def},
+		{"encrypted_zip_member", encryptedZIP, def},
+		{"zip_duplicate_names", zipBytes(t,
+			containerMember{"same.txt", []byte("first\n")},
+			containerMember{"same.txt", []byte("second\n")},
+		), def},
 		{"not_a_container", []byte("just plain text"), def},
 		{"disabled", zipOne, limits(func(l *ContainerLimits) { l.Enabled = false })},
 		{"cap_max_parts", zipMany, limits(func(l *ContainerLimits) { l.MaxParts = 2 })},
 		{"cap_max_bytes", zipOne, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = 16 })},
 		{"cap_max_bytes_later_exact", zipByteExact, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = byteBudget })},
 		{"cap_max_bytes_later_over", zipByteOver, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = byteBudget })},
+		{"cap_tar_exactly_one_byte_over", tarBytes(t, containerMember{"short.txt", fills})[:512+len(fills)],
+			limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = len(fills) - 1 })},
 		{"cap_max_depth", gzipBytes(t, gzipBytes(t, gzipBytes(t, text))), limits(func(l *ContainerLimits) { l.MaxDescentDepth = 1 })},
 	}
 
