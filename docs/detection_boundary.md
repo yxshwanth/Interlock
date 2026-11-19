@@ -117,7 +117,7 @@ after the Wave 1 merge.
 | `sys_enter` user-memory reads are TOCTOU-racy (payload and destination) | 5 |
 | A secret split across two DNS labels is not rejoined (`malicious_gap_dns_label_split`; the full query is scanned) | 16 |
 | Decoy flows evict an accumulating egress flow (32-flow cap) | 17 (cross-destination and trickle parts are pinned above) |
-| A nested decode layer larger than 64 KiB is skipped (`malicious_gap_padded_nested_decode_layer`) | 18 |
+| A decoded layer is matched up to 64 KiB, but is not unwrapped again above 8 KiB (`malicious_gap_padded_nested_decode_layer`) | 18 |
 | `127.0.0.1` in `egress_allowlist` exempts loopback in the shipped HTTP and monitor sample configs (hostname entries are dropped with a warning) | 22 |
 
 ---
