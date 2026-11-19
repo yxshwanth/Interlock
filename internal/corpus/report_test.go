@@ -8,31 +8,41 @@ import (
 	"testing"
 )
 
-// The per-plane breakdown is a partition of the results, so its columns must
-// add up to the headline totals, and the headline in the markdown must print
-// the same numbers the report holds.
-func TestReport_BreakdownMatchesHeadline(t *testing.T) {
+func resultOn(v Variant, o Outcome) Result {
+	return Result{Scenario: Scenario{Variant: v}, Outcome: o}
+}
+
+// Each result must be counted under its own plane and outcome, not just in
+// the totals. Planes come back sorted by name.
+func TestReport_BreakdownAssignsPlanes(t *testing.T) {
+	report := Build([]Result{
+		resultOn(VariantProxyA, OutcomeTruePositive),
+		resultOn(VariantProxyA, OutcomeTruePositive),
+		resultOn(VariantProxyA, OutcomeTrueNegative),
+		resultOn(VariantEbpfB, OutcomeKnownGapMiss),
+		resultOn(VariantEbpfB, OutcomeFalsePositiveExfil),
+	})
+
+	want := []variantBreakdown{
+		{Variant: VariantEbpfB, GapMiss: 1, FPExfil: 1},
+		{Variant: VariantProxyA, TP: 2, TN: 1},
+	}
+	got := report.byVariant()
+	if len(got) != len(want) {
+		t.Fatalf("got %d planes, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("plane %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// The markdown headline must print the numbers the report holds.
+func TestReport_MarkdownHeadline(t *testing.T) {
 	report := Build(Run(All()))
-
-	var tp, fn, gap, bonus, tn, fpt, fpx int
-	for _, vb := range report.byVariant() {
-		tp += vb.TP
-		fn += vb.FN
-		gap += vb.GapMiss
-		bonus += vb.Bonus
-		tn += vb.TN
-		fpt += vb.FPTripwire
-		fpx += vb.FPExfil
-	}
-	got := [...]int{tp, fn, gap, bonus, tn, fpt, fpx}
-	want := [...]int{report.TruePositives, report.FalseNegatives, report.KnownGapMisses, report.BonusCatches, report.TrueNegatives, report.FalsePositiveTripwire, report.FalsePositiveExfil}
-	if got != want {
-		t.Fatalf("breakdown columns %v do not sum to report totals %v", got, want)
-	}
-
-	md := report.Markdown()
 	wantLine := fmt.Sprintf("| **Detection rate** (EXFIL-tier, non-gap malicious) | **%s** (%d/%d) |", pct(report.DetectionRate()), report.TruePositives, report.MaliciousNonGapTotal())
-	if !strings.Contains(md, wantLine) {
+	if !strings.Contains(report.Markdown(), wantLine) {
 		t.Errorf("markdown headline missing %q", wantLine)
 	}
 }
