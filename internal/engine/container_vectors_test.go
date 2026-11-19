@@ -196,6 +196,12 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"zip_truncated_extra", zipTruncatedExtra(zipOne), def},
 		// A zero CRC with no data descriptor leaves CRC validation disabled.
 		input{"zip_omitted_crc", zipStored(t, []byte("text without a CRC\n"), 0), def},
+		// Trailing bytes after the declared ZIP comment are ignored.
+		input{"zip_trailing_after_comment", zipTrailing(zipOne), def},
+		// A non-ZIP prefix prevents container detection.
+		input{"zip_prepended_plain_data", append([]byte("stub"), zipOne...), def},
+		// A local-header signature in the prefix preserves detection and shifts the base offset.
+		input{"zip_prepended_zip_data", append(bytes.Clone(zipOne[:30]), zipOne...), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -241,6 +247,12 @@ func zipBytes(t *testing.T, members ...containerMember) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func zipTrailing(raw []byte) []byte {
+	out := bytes.Clone(raw)
+	binary.LittleEndian.PutUint16(out[len(out)-2:], 3)
+	return append(out, "ziptrailing bytes"...)
 }
 
 func zipStored(t *testing.T, data []byte, crc uint32) []byte {
