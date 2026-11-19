@@ -286,8 +286,7 @@ func (p *Proxy) deliverServerFrame(rt *SessionRuntime, sc *serverConn, frame []b
 			p.engine.IngestResult(ev)
 		}()
 		if panicked {
-			// The engine may still hold its lock, so do not call back into
-			// it; drop the unredacted body instead of logging it.
+			// Drop the raw result before writing the audit event.
 			ev.Result = nil
 			ev.Decision = "blocked"
 			ev.BlockReason = "engine_panic"

@@ -24,7 +24,7 @@ Checked each finding in [`security_review.md`](security_review.md) against the t
 | 17 |Reassembly per-(pid,dest) | Mostly fixed, residual pinned | Per-pid buffer joins cross-destination splits. Slow trickle and 32-decoy-flow eviction remain pinned gaps |
 | 18 |Decoder drops layers >8 KiB | Fixed, residual pinned | Layers up to 64 KiB matched. Nested padded layers remain a pinned gap |
 | 19 | Divider → false EXFIL | **Fixed** | Same fix as 10 |
-| 20 |Ingest path panic | Fixed | Ingest panic withholds the result, fails closed, and the engine lock is released (`defer`). |
+| 20 |Ingest path panic | Fixed | `TestDeliverServerFrame_IngestPanicWithholdsResult` checks the replacement error. `TestIngestResult_PanicReleasesEngineLock` checks that the next result is ingested. |
 | 21 |Containment kills process group | No code change | Group kill only reaches a group whose id is the attributed PID; tests pin it. PID-reuse residual documented |
 | 22 |Allowlist semantics | Fixed | Hostname entries are dropped with a warning; `interlock.yaml` and examples list IPs only |
 | 23 | Viewer unescaped `item.ref` | **Fixed** | `esc(String(item.ref))`, `viewer.html:464` |
