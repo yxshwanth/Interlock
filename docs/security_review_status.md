@@ -1,6 +1,6 @@
 # Security review — status against current code (Wave 0, A1)
 
-Checked each finding in [`security_review.md`](security_review.md) against the tree at `5d9e946` by reading the cited code. "Fixed" means the described defect is gone in the code; it does not mean a regression test exists (not yet verified per finding).
+Checked each finding in [`security_review.md`](security_review.md) against the tree at `5d9e946` by reading the cited code. "Fixed" means the described defect is gone in the code. The rows for findings 8, 10, 11, 12, 13, 15, 19, and 23 name the test that fails when that fix is removed.
 
 | # | Finding | Status | Evidence |
 |---|---|---|---|
@@ -12,22 +12,22 @@ Checked each finding in [`security_review.md`](security_review.md) against the t
 | 5 |TOCTOU on `bpf_probe_read_user` | Pinned as gap | Inherent to `sys_enter` tracepoints; `TestBPFSource_PayloadProbesAreSysEnter_TOCTOUKnownGap`, `threat_model.md` T6 |
 | 6 |Payload not zeroed, read unchecked | Fixed, kernel-verified | Reads sized to the captured length and checked; ringbuf record discarded on failure; loader clamps `Len` to the sample. All programs load and run under the real verifier |
 | 7 |Children inherit privileges | Fixed, verified as root | Root proxy drops children to SUDO_UID/nobody with `no_new_privs`; `TestStartServer_NetNS_ChildCannotSetnsOut` ran and passed as root on the VM. Also found: `DropPostAttach` cleared `CAP_SYS_ADMIN` on one thread only; it now uses `AllThreadsSyscall` (pure-Go builds, as the release build is) |
-| 8 | `ReadContainerFile` traversal | **Fixed** | `proc_root.go` cleans path, rejects `..`, no host fallback |
+| 8 | `ReadContainerFile` traversal | **Fixed** | `proc_root.go` cleans path, rejects `..`, no host fallback. `TestReadContainerFile_PathTraversalContained`, `TestReadContainerFile_NoHostFallbackOracle` |
 | 9 |Unbounded taint/sessions | Fixed | Per-session taint caps (1,024 values / 1 MiB, drop oldest), hash dedupe, 10,000-session LRU cap. Dropped values pinned as gaps |
-| 10 | Low-entropy chunks → false EXFIL | **Fixed** | `minChunkEntropyBitsPerByte = 3.0` in `chunk.go`; confirm against corpus |
-| 11 | Origin validation bypass | **Fixed** | Exact hostname compare, empty entries skipped (`headers.go`) |
-| 12 | Reader goroutine wedge | **Fixed** | Non-blocking `select` with `default` (`dispatch.go`) |
-| 13 | Logs mode 0644 | **Fixed** | `0600` in `evidence_sink.go`, `logger.go`, `evidence_factory.go` |
+| 10 | Low-entropy chunks → false EXFIL | **Fixed** | `minChunkEntropyBitsPerByte = 3.0` in `chunk.go`. `TestContiguousChunks_LowEntropyDividerNotMinted` |
+| 11 | Origin validation bypass | **Fixed** | Exact hostname compare, empty entries skipped (`headers.go`). `TestValidateOrigin_ExactHostname`, `TestValidateOrigin_EmptyAllowedEntryMatchesNothing` |
+| 12 | Reader goroutine wedge | **Fixed** | Non-blocking `select` with `default` (`dispatch.go`). `TestDeliverServerFrame_DuplicateResponseDoesNotBlock` |
+| 13 | Logs mode 0644 | **Fixed** | `0600` in `evidence_sink.go`, `logger.go`, `evidence_factory.go`. `TestJSONLEvidenceSink_FileMode0600`, `TestEventLogger_CreatesFileOwnerOnly`, `TestStandaloneEvidence_FileMode0600` |
 | 14 |Bridge min length / hash unchecked | Fixed | Bridge rejects values under 8 bytes and hashes that do not match the value |
-| 15 | `RedactJSON` malformed JSON | **Fixed** | Parses, redacts leaves, remarshals |
+| 15 | `RedactJSON` malformed JSON | **Fixed** | Parses, redacts leaves, remarshals. `TestRedactJSON_QuoteInSecretStaysValidJSON` |
 | 16 |DNS reassembly first label only | Fixed, residual pinned | Full DNS query scanned. Secret split across two labels is a pinned gap |
 | 17 |Reassembly per-(pid,dest) | Mostly fixed, residual pinned | Per-pid buffer joins cross-destination splits. Slow trickle and 32-decoy-flow eviction remain pinned gaps |
 | 18 |Decoder drops layers >8 KiB | Fixed, residual pinned | Layers up to 64 KiB matched. Nested padded layers remain a pinned gap |
-| 19 | Divider → false EXFIL | **Fixed** | Same fix as 10 |
+| 19 | Divider → false EXFIL | **Fixed** | Same fix as 10. `TestCheckOverlap_LowEntropyDividerNoExfil` |
 | 20 |Ingest path panic | Fixed | `TestDeliverServerFrame_IngestPanicWithholdsResult` checks the replacement error. `TestIngestResult_PanicReleasesEngineLock` checks that the next result is ingested. |
 | 21 |Containment kills process group | No code change | Group kill only reaches a group whose id is the attributed PID; tests pin it. PID-reuse residual documented |
 | 22 |Allowlist semantics | Fixed | Hostname entries are dropped with a warning; `interlock.yaml` and examples list IPs only |
-| 23 | Viewer unescaped `item.ref` | **Fixed** | `esc(String(item.ref))`, `viewer.html:464` |
+| 23 | Viewer unescaped `item.ref` | **Fixed** | `esc(String(item.ref))`, `viewer.html:464`. `TestViewer_ItemRefIsEscaped` |
 
 **Wave 1 (this branch):** 1, 2, 3, 4, 6 and 7 verified on a Linux 7.0 kernel as root (see `baseline_wave0.md`); 5 pinned as a gap; 9, 14, 16, 17, 18, 20, 22 fixed (16, 17, 18 with pinned residuals); 21 needed no code change. Fixed before Wave 1: 8, 10, 11, 12, 13, 15, 19, 23.
 
