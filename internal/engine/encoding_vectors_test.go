@@ -32,6 +32,7 @@ func TestEncodingVectors(t *testing.T) {
 		strings.Repeat("0123456789abcdef", 64),
 		"c2FtcGxl",
 		"x",
+		"$,:;@\x00\xff",
 		"",
 	}
 	forms := []EncodingForm{
