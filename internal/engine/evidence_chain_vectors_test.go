@@ -166,6 +166,16 @@ func buildEvidenceChainVectors(t *testing.T) evidenceChainVectors {
 		}},
 		{"invalid_utf8", model.EvidenceRecord{SessionID: "a\xff\xfe�", SinkCall: "b\xe2\x82"}},
 		{"float_limit", model.EvidenceRecord{SinkCall: math.MaxFloat64, Confidence: math.SmallestNonzeroFloat64}},
+		{"escaped_raw_args", model.EvidenceRecord{SinkCall: map[string]any{
+			"args": json.RawMessage("{ \"message\": \"quote\\\" slash\\\\ \u2028 <>&\" }"),
+		}}},
+		{"nil_raw_args", model.EvidenceRecord{SinkCall: map[string]any{"args": json.RawMessage(nil)}}},
+		{"escaped_map_value", model.EvidenceRecord{SinkCall: map[string]any{
+			"payload_excerpt": "quote\" slash\\ newline\n tab\t nul\x00 bad\xff\xe2\x82",
+		}}},
+		{"unicode_map_key", model.EvidenceRecord{SinkCall: map[string]any{
+			"漢字": true, "café": false, "z": nil,
+		}}},
 	}
 
 	var vectors evidenceChainVectors

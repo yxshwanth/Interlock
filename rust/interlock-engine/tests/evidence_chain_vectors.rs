@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use interlock_engine::evidence::{
-    hash_evidence_record, seal_evidence_record, EvidenceRecord, SinkValue,
+    hash_evidence_record, seal_evidence_record, EvidenceError, EvidenceRecord, GoString, SinkValue,
 };
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -51,15 +51,17 @@ fn typed_sink(json: &str, case: &str) -> SinkValue {
                 .into_iter()
                 .rev()
                 .map(|(key, value)| {
-                    let value = if key == "args" {
-                        SinkValue::Raw(
-                            RawValue::from_string(
-                                r#"{ "z": {"message":"<>& café","items":[null,false,42,1.25,{},[]]}, "a": true }"#.into(),
-                            )
-                            .unwrap(),
-                        )
-                    } else {
-                        typed_sink(value.get(), case)
+                    let value = match (case, key.as_str()) {
+                        ("unicode_nested_args", "args") => SinkValue::from_raw_json(
+                            r#"{ "z": {"message":"<>& café","items":[null,false,42,1.25,{},[]]}, "a": true }"#.as_bytes()
+                        ).unwrap(),
+                        ("escaped_raw_args", "args") => SinkValue::from_raw_json(
+                            "{ \"message\": \"quote\\\" slash\\\\ \u{2028} <>&\" }".as_bytes()
+                        ).unwrap(),
+                        ("escaped_map_value", "payload_excerpt") => SinkValue::Text(GoString(
+                            b"quote\" slash\\ newline\n tab\t nul\x00 bad\xff\xe2\x82".to_vec()
+                        )),
+                        _ => typed_sink(value.get(), case),
                     };
                     (key, value)
                 })
@@ -74,7 +76,7 @@ fn typed_sink(json: &str, case: &str) -> SinkValue {
 }
 
 fn assert_record(record: &EvidenceRecord, expected: &RawValue, case: &str) {
-    let json = record.to_json();
+    let json = record.to_json().unwrap();
     let actual = std::str::from_utf8(&json).unwrap();
     // Fixture indentation is outside strings. Strip it while retaining number
     // spellings, field order and all literal characters inside strings.
@@ -116,7 +118,7 @@ fn evidence_chain_vectors() {
         let name = &hash.name;
         let mut record: EvidenceRecord = parse(hash.record.get(), name, "record");
         assert_eq!(
-            hash_evidence_record(&record),
+            hash_evidence_record(&record).unwrap(),
             hash.hash,
             "{name}: wire hash"
         );
@@ -125,13 +127,16 @@ fn evidence_chain_vectors() {
         record.sink_call = typed_sink(fields["sink_call"].get(), name);
         if name == "invalid_utf8" {
             record.session_id.0 = b"a\xff\xfe\xef\xbf\xbd".to_vec();
-            record.sink_call =
-                SinkValue::Text(interlock_engine::evidence::GoString(b"b\xe2\x82".to_vec()));
+            record.sink_call = SinkValue::Text(GoString(b"b\xe2\x82".to_vec()));
         }
-        assert_eq!(hash_evidence_record(&record), hash.hash, "{name}: hash");
+        assert_eq!(
+            hash_evidence_record(&record).unwrap(),
+            hash.hash,
+            "{name}: hash"
+        );
         assert_record(&record, &hash.record, name);
 
-        seal_evidence_record(&mut record, seq as u64, prev_hash);
+        seal_evidence_record(&mut record, seq as u64, prev_hash).unwrap();
         assert_eq!(record.chain_seq, seal.chain_seq, "{name}: chain_seq");
         assert_eq!(
             record.prev_hash.0,
@@ -141,5 +146,42 @@ fn evidence_chain_vectors() {
         assert_eq!(record.hash.0, seal.hash.as_bytes(), "{name}: sealed hash");
         assert_record(&record, &seal.record, name);
         prev_hash = String::from_utf8(record.hash.0).unwrap();
+    }
+}
+
+#[test]
+fn invalid_raw_utf8_returns_error() {
+    assert!(matches!(
+        SinkValue::from_raw_json(b"\"\xff\""),
+        Err(EvidenceError::InvalidRawUtf8(_))
+    ));
+}
+
+#[test]
+fn non_finite_numbers_return_errors() {
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let records = [
+            EvidenceRecord {
+                confidence: number,
+                ..EvidenceRecord::default()
+            },
+            EvidenceRecord {
+                sink_call: SinkValue::List(vec![SinkValue::Float(number)]),
+                ..EvidenceRecord::default()
+            },
+        ];
+        for mut record in records {
+            assert!(
+                matches!(hash_evidence_record(&record), Err(EvidenceError::Json(_))),
+                "{number}"
+            );
+            assert!(
+                matches!(
+                    seal_evidence_record(&mut record, 0, ""),
+                    Err(EvidenceError::Json(_))
+                ),
+                "{number}"
+            );
+        }
     }
 }

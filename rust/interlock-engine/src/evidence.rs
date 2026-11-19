@@ -3,12 +3,40 @@
 //! Evidence records use Go's JSON field order and omission rules. Serde writes
 //! the typed fields and sorted maps. The formatter applies Go's escaping,
 //! decimal notation, and raw JSON compaction before SHA-256 is computed.
+//! Go's VerifyChain decodes and re-marshals JSON. A Rust wire read preserves
+//! sink JSON spellings and Go's escaped replacement bytes for hashing.
+//! Raw arguments must be UTF-8. The constructor rejects invalid bytes that
+//! Go can retain in a json.RawMessage.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::ser::{CompactFormatter, Formatter};
 use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, io, io::Write};
+use std::{collections::BTreeMap, fmt, io, io::Write};
+
+#[derive(Debug)]
+pub enum EvidenceError {
+    InvalidRawUtf8(std::str::Utf8Error),
+    Json(serde_json::Error),
+}
+
+impl fmt::Display for EvidenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRawUtf8(error) => write!(f, "raw evidence JSON is not UTF-8: {error}"),
+            Self::Json(error) => write!(f, "evidence JSON: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for EvidenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidRawUtf8(error) => Some(error),
+            Self::Json(error) => Some(error),
+        }
+    }
+}
 
 /// Go strings can contain invalid UTF-8, which is escaped once per bad byte.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -106,6 +134,16 @@ pub enum SinkValue {
     Raw(Box<RawValue>),
 }
 
+impl SinkValue {
+    /// Construct a raw JSON value from UTF-8 bytes.
+    pub fn from_raw_json(bytes: &[u8]) -> Result<Self, EvidenceError> {
+        let json = std::str::from_utf8(bytes).map_err(EvidenceError::InvalidRawUtf8)?;
+        serde_json::from_str(json)
+            .map(Self::Raw)
+            .map_err(EvidenceError::Json)
+    }
+}
+
 impl<'de> Deserialize<'de> for SinkValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Box::<RawValue>::deserialize(deserializer).map(Self::Raw)
@@ -199,21 +237,19 @@ pub struct EvidenceRecord {
 
 impl EvidenceRecord {
     /// Encode the record in the same form used by the evidence hash.
-    ///
-    /// Panics if a float in the record is non-finite.
-    pub fn to_json(&self) -> Vec<u8> {
+    pub fn to_json(&self) -> Result<Vec<u8>, EvidenceError> {
         let mut json = Vec::new();
         self.serialize(&mut serde_json::Serializer::with_formatter(
             &mut json,
             GoFormatter,
         ))
-        .expect("serializing evidence into memory");
-        json
+        .map_err(EvidenceError::Json)?;
+        Ok(json)
     }
 }
 
-pub fn hash_evidence_record(record: &EvidenceRecord) -> String {
-    let mut json = record.to_json();
+pub fn hash_evidence_record(record: &EvidenceRecord) -> Result<String, EvidenceError> {
+    let mut json = record.to_json()?;
     // Hash is the final field. The encoded string length also accounts for
     // escapes, so it can be cleared without searching inside the record.
     let mut hash = Vec::new();
@@ -223,16 +259,22 @@ pub fn hash_evidence_record(record: &EvidenceRecord) -> String {
             &mut hash,
             GoFormatter,
         ))
-        .expect("serializing hash into memory");
+        .map_err(EvidenceError::Json)?;
     json.truncate(json.len() - hash.len() - 1);
     json.extend_from_slice(b"\"\"}");
-    format!("{:x}", Sha256::digest(json))
+    Ok(format!("{:x}", Sha256::digest(json)))
 }
 
-pub fn seal_evidence_record(record: &mut EvidenceRecord, seq: u64, prev_hash: impl Into<GoString>) {
+pub fn seal_evidence_record(
+    record: &mut EvidenceRecord,
+    seq: u64,
+    prev_hash: impl Into<GoString>,
+) -> Result<(), EvidenceError> {
     record.chain_seq = seq;
     record.prev_hash = prev_hash.into();
-    record.hash = hash_evidence_record(record).into();
+    record.hash = GoString::default();
+    record.hash = hash_evidence_record(record)?.into();
+    Ok(())
 }
 
 struct GoFormatter;

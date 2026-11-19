@@ -2,8 +2,8 @@
 
 pub mod chunk;
 mod encoding;
-pub mod overlap;
 pub mod evidence;
+pub mod overlap;
 pub mod taint;
 
 pub use chunk::{contiguous_chunks, shannon_entropy, Chunk};
