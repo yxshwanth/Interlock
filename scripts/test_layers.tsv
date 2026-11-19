@@ -89,3 +89,4 @@ internal/corpus/property_test.go	L2
 internal/corpus/report_test.go	L4
 internal/engine/evidence_chain_vectors_test.go	L4
 internal/engine/decode_vectors_test.go	L4
+internal/engine/container_vectors_test.go	L4
