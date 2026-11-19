@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"strconv"
 	"testing"
@@ -202,6 +203,10 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"zip_prepended_plain_data", append([]byte("stub"), zipOne...), def},
 		// A local-header signature in the prefix preserves detection and shifts the base offset.
 		input{"zip_prepended_zip_data", append(bytes.Clone(zipOne[:30]), zipOne...), def},
+		// An end record inside stored member data is ignored in favor of the later real record.
+		input{"zip_end_record_inside_member", zipWithFakeEnd(t), def},
+		// A later candidate with an overrunning comment makes Go reject the archive.
+		input{"zip_end_record_truncated_comment", append(bytes.Clone(zipOne), fakeZipEnd()...), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -247,6 +252,18 @@ func zipBytes(t *testing.T, members ...containerMember) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func fakeZipEnd() []byte {
+	record := make([]byte, 22)
+	copy(record, "PK\x05\x06")
+	binary.LittleEndian.PutUint16(record[20:], 0xffff)
+	return record
+}
+
+func zipWithFakeEnd(t *testing.T) []byte {
+	payload := append(fakeZipEnd(), bytes.Repeat([]byte("text "), 32)...)
+	return zipStored(t, payload, crc32.ChecksumIEEE(payload))
 }
 
 func zipTrailing(raw []byte) []byte {
