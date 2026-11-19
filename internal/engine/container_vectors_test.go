@@ -187,6 +187,8 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"tar_pax_path_and_size", tarPAXOverrides(t), def},
 		// GNU long names replace the short path before legacy directory detection.
 		input{"tar_gnu_long_name", tarGNULongName(t), def},
+		// PAX 1.0 sparse maps are consumed and holes count toward the logical size.
+		input{"tar_pax_sparse_1_0", tarPAXSparse(t), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -327,6 +329,20 @@ func tarGNULongName(t *testing.T) []byte {
 	copy(hdr, "short/")
 	hdr[156] = tar.TypeRegA
 	tarChecksum(hdr, false)
+	return raw[:len(raw)-1024]
+}
+
+func tarPAXSparse(t *testing.T) []byte {
+	data := make([]byte, 512)
+	copy(data, "1\n1\n12\n")
+	data = append(data, "sparse text\n"...)
+	raw := tarBytes(t,
+		containerMember{"pax", []byte("22 GNU.sparse.major=1\n22 GNU.sparse.minor=0\n26 GNU.sparse.realsize=14\n")},
+		containerMember{"sparse", data},
+		containerMember{"next", []byte("next\n")},
+	)
+	raw[156] = tar.TypeXHeader
+	tarChecksum(raw[:512], false)
 	return raw[:len(raw)-1024]
 }
 
