@@ -16,8 +16,8 @@ Status is what is on `main` today.
 | Evidence hash chain | `evidence_chain.go` | none | none | not started |
 | Tool tags and path taint | `tagger.go`, `path_taint.go` | none | none | not started |
 | JSON leaf joining and the overlap composition | `decode.go`, `overlap.go` | none | none | not started |
-| Session state and leg decay | `session_store.go`, `engine.go` | none | none | not started |
-| Verdict and action classifier | `engine.go` | none | none | not started |
+| Session state and leg decay | `session_store.go`, `engine.go` | none | `legs.rs` | core ported |
+| Verdict and action classifier | `engine.go` | none | `verdict.rs`, `bind.rs` | done |
 | Compressor forms | `encoding.go` | none | none | not started, blocked on #81 |
 
 The compressor forms (gzip, brotli, zstd and lz4, each as base64) wait on an open decision, GitHub issue 81, about how the Rust engine matches them.

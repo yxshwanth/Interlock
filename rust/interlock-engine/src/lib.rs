@@ -1,10 +1,13 @@
 //! Rust port of the engine (ROADMAP section 76).
 
+pub mod bind;
 pub mod chunk;
 mod encoding;
 pub mod evidence;
+pub mod legs;
 pub mod overlap;
 pub mod taint;
+pub mod verdict;
 
 pub use chunk::{contiguous_chunks, shannon_entropy, Chunk};
 pub use encoding::{canonical_encodings, Form, Variant};
