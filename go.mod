@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/cilium/ebpf v0.22.0
-	github.com/klauspost/compress v1.19.1
+	github.com/klauspost/compress v1.20.2
 	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/prometheus/client_golang v1.24.1
 	golang.org/x/sys v0.48.0
