@@ -9,7 +9,7 @@
 
 use flate2::{bufread::MultiGzDecoder, Decompress, FlushDecompress, Status};
 use std::{
-    io::{Cursor, Read},
+    io::{self, Cursor, Read, Seek, SeekFrom},
     time::{Duration, Instant},
 };
 use zip::{result::ZipError, CompressionMethod, ZipArchive};
@@ -401,9 +401,12 @@ impl Walker {
     }
 
     fn walk_tar(&mut self, raw: &[u8], depth: usize) -> Result<(), Abort> {
-        let mut cursor = Cursor::new(raw);
-        let mut archive = tar::Archive::new(&mut cursor);
-        let Ok(mut entries) = archive.entries() else {
+        let mut reader = TarReader {
+            cursor: Cursor::new(raw),
+            header: false,
+        };
+        let mut archive = tar::Archive::new(&mut reader);
+        let Ok(mut entries) = archive.entries_with_seek() else {
             return self.abort(Abort::Corrupt);
         };
         loop {
@@ -436,12 +439,62 @@ impl Walker {
         }
         // The iterator consumes the first zero block. Go accepts EOF here
         // or a second complete zero block, after which it ignores the tail.
-        let remaining = &raw[cursor.position() as usize..];
+        let remaining = &raw[reader.cursor.position() as usize..];
         if remaining.is_empty() || remaining.starts_with(&[0; 512]) {
             Ok(())
         } else {
             self.abort(Abort::Corrupt)
         }
+    }
+}
+
+struct TarReader<'a> {
+    cursor: Cursor<&'a [u8]>,
+    header: bool,
+}
+
+impl Seek for TarReader<'_> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let offset = self.cursor.seek(position)?;
+        if offset > self.cursor.get_ref().len() as u64 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        // The tar iterator seeks before reading each header, even for a
+        // zero-length skip. Payload reads do not seek.
+        self.header = true;
+        Ok(offset)
+    }
+}
+
+impl Read for TarReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let n = self.cursor.read(output)?;
+        if std::mem::take(&mut self.header) && n == 512 {
+            normalize_signed_tar_checksum(&mut output[..n]);
+        }
+        Ok(n)
+    }
+}
+
+fn normalize_signed_tar_checksum(header: &mut [u8]) {
+    let field = std::str::from_utf8(&header[148..156]).ok().map(|field| {
+        field
+            .trim_matches([' ', '\0'])
+            .split('\0')
+            .next()
+            .unwrap_or_default()
+    });
+    let Some(stored) = field.and_then(|field| u32::from_str_radix(field, 8).ok()) else {
+        return;
+    };
+    let mut signed = 8 * 32;
+    let mut unsigned = signed;
+    for &byte in header[..148].iter().chain(&header[156..]) {
+        signed += i32::from(byte as i8);
+        unsigned += i32::from(byte);
+    }
+    if i32::try_from(stored) == Ok(signed) && signed != unsigned {
+        header[148..156].copy_from_slice(format!("{unsigned:06o}\0 ").as_bytes());
     }
 }
 
