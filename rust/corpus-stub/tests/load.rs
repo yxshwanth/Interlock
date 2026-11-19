@@ -15,13 +15,25 @@ fn every_data_file_loads_and_is_consistent() {
             assert!(ids.insert(sc.id.clone()), "duplicate id {}", sc.id);
             assert!(!sc.steps.is_empty(), "{}: no steps", sc.id);
             if sc.known_gap {
-                assert!(tags.contains_key(&sc.gap_tag), "{}: gap_tag {:?} not defined", sc.id, sc.gap_tag);
+                assert!(
+                    tags.contains_key(&sc.gap_tag),
+                    "{}: gap_tag {:?} not defined",
+                    sc.id,
+                    sc.gap_tag
+                );
             } else {
                 assert!(sc.gap_tag.is_empty(), "{}: gap_tag on a non-gap", sc.id);
             }
             for s in &sc.steps {
                 assert!(
-                    ["result", "request", "syscall", "syscall_sensor", "advance_time"].contains(&s.kind.as_str()),
+                    [
+                        "result",
+                        "request",
+                        "syscall",
+                        "syscall_sensor",
+                        "advance_time"
+                    ]
+                    .contains(&s.kind.as_str()),
                     "{}: step kind {}",
                     sc.id,
                     s.kind
