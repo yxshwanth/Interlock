@@ -8,6 +8,8 @@ mod encoding;
 pub mod evidence;
 pub mod legs;
 pub mod overlap;
+pub mod path_taint;
+pub mod tagger;
 pub mod taint;
 pub mod verdict;
 
