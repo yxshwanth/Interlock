@@ -136,6 +136,12 @@ func decodeVectorInputs(t *testing.T) []decodeInput {
 		{"payload_several_candidates", several},
 		{"payload_embedded_substrings", "prefix 68656c6c6f middle aGVsbG8= suffix"},
 		{"json_without_string_leaves", `{"n":1,"ok":true}`},
+		{"json_keys_out_of_order", `{"z":"zulu","a":"alpha","m":"mike"}`},
+		{"json_duplicate_keys", `{"a":"first","a":"last"}`},
+		{"json_escaped_unicode", `{"k":"é中 😀"}`},
+		{"at_min_candidate", "abcd"},
+		{"base64_interior_padding", "aGVs=bG8="},
+		{"hex_0x_prefix", "0x68656c6c6f"},
 		{"empty", ""},
 		{"below_min_candidate", "abc"},
 		{"whitespace_only", " \t\r\n"},
@@ -200,6 +206,9 @@ func diffDecodeAttempt(t *testing.T, name, field string, got, want decodeAttempt
 
 func diffHexList(t *testing.T, name, field string, got, want []string, regenerate string) {
 	t.Helper()
+	if (got == nil) != (want == nil) {
+		t.Fatalf("case %s: %s: got nil %t, want nil %t; regenerate with %s", name, field, got == nil, want == nil, regenerate)
+	}
 	if len(got) != len(want) {
 		t.Fatalf("case %s: %s: got %d, want %d; regenerate with %s", name, field, len(got), len(want), regenerate)
 	}

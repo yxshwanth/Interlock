@@ -495,6 +495,139 @@
     ]
   },
   {
+    "name": "json_keys_out_of_order",
+    "input_hex": "7b227a223a227a756c75222c2261223a22616c706861222c226d223a226d696b65227d",
+    "try_base64": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "try_hex": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "plausible_decoded": true,
+    "looks_like_hex": false,
+    "looks_like_base64": false,
+    "payload_candidates": [
+      "7b227a223a227a756c75222c2261223a22616c706861222c226d223a226d696b65227d",
+      "616c706861",
+      "6d696b65",
+      "7a756c75"
+    ],
+    "args_candidates": [
+      "616c706861",
+      "6d696b65",
+      "7a756c75"
+    ]
+  },
+  {
+    "name": "json_duplicate_keys",
+    "input_hex": "7b2261223a226669727374222c2261223a226c617374227d",
+    "try_base64": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "try_hex": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "plausible_decoded": true,
+    "looks_like_hex": false,
+    "looks_like_base64": false,
+    "payload_candidates": [
+      "7b2261223a226669727374222c2261223a226c617374227d",
+      "6c617374"
+    ],
+    "args_candidates": [
+      "6c617374"
+    ]
+  },
+  {
+    "name": "json_escaped_unicode",
+    "input_hex": "7b226b223a22c3a9e4b8ad20f09f9880227d",
+    "try_base64": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "try_hex": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "plausible_decoded": true,
+    "looks_like_hex": false,
+    "looks_like_base64": false,
+    "payload_candidates": [
+      "7b226b223a22c3a9e4b8ad20f09f9880227d",
+      "c3a9e4b8ad20f09f9880"
+    ],
+    "args_candidates": [
+      "c3a9e4b8ad20f09f9880"
+    ]
+  },
+  {
+    "name": "at_min_candidate",
+    "input_hex": "61626364",
+    "try_base64": {
+      "decoded_hex": "69b71d",
+      "ok": true
+    },
+    "try_hex": {
+      "decoded_hex": "abcd",
+      "ok": true
+    },
+    "plausible_decoded": true,
+    "looks_like_hex": true,
+    "looks_like_base64": true,
+    "payload_candidates": [
+      "61626364"
+    ],
+    "args_candidates": [
+      "61626364"
+    ]
+  },
+  {
+    "name": "base64_interior_padding",
+    "input_hex": "614756733d6247383d",
+    "try_base64": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "try_hex": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "plausible_decoded": true,
+    "looks_like_hex": false,
+    "looks_like_base64": false,
+    "payload_candidates": [
+      "614756733d6247383d"
+    ],
+    "args_candidates": [
+      "614756733d6247383d"
+    ]
+  },
+  {
+    "name": "hex_0x_prefix",
+    "input_hex": "307836383635366336633666",
+    "try_base64": {
+      "decoded_hex": "d31ebceb9e9ce9ce9f",
+      "ok": true
+    },
+    "try_hex": {
+      "decoded_hex": "",
+      "ok": false
+    },
+    "plausible_decoded": true,
+    "looks_like_hex": false,
+    "looks_like_base64": true,
+    "payload_candidates": [
+      "307836383635366336633666"
+    ],
+    "args_candidates": [
+      "307836383635366336633666"
+    ]
+  },
+  {
     "name": "empty",
     "input_hex": "",
     "try_base64": {
