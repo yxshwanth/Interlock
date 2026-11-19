@@ -20,7 +20,7 @@ Status is what is on `main` today.
 | Verdict and action classifier | `engine.go` | none | none | not started |
 | Compressor forms | `encoding.go` | none | none | not started, blocked on #81 |
 
-The compressor forms (gzip, zstd and the compressor plus base64 variants) wait on an open decision, GitHub issue 81, about how the Rust engine matches them.
+The compressor forms (gzip, brotli, zstd and lz4, each as base64) wait on an open decision, GitHub issue 81, about how the Rust engine matches them.
 
 The corpus under `internal/corpus/data` is read by the stub loader in `rust/corpus-stub`. It is not yet run through the Rust engine.
 
