@@ -190,6 +190,44 @@
     }
   },
   {
+    "name": "hex_of_hex",
+    "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
+    "source": "tickets/read_ticket",
+    "seq": 5,
+    "payload_hex": "3337333333363632333236343336363333363339333733363336333533323634333333353333333133353334333733383334363133343331333436353334333533363334333333303336333533353332333333333336333133343633333733343333333033363632333333333336363533333339333333383333333733333336333333353333333433333333333333323333333133333330333633313336333233363333333633343336333533363336",
+    "tainted": [
+      {
+        "value_hex": "736b2d6c6976652d353154784a414e456430655233614c74306b336e39383736353433323130616263646566",
+        "hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+        "preview": "sk-...cdef",
+        "source": "tickets/read_ticket",
+        "seq": 5,
+        "forms": [
+          "literal",
+          "base64",
+          "hex",
+          "url_encoded",
+          "reversed",
+          "base64_hex",
+          "hex_base64",
+          "base64_url",
+          "base64_reversed",
+          "gzip_base64",
+          "brotli_base64",
+          "zstd_base64",
+          "lz4_base64"
+        ],
+        "chunk_count": 0
+      }
+    ],
+    "hit": {
+      "tainted_hash": "b3d38d5efd69386488d1c7a004f97a626de526410e0aeacc4331a2437b0679d5",
+      "preview": "sk-...cdef",
+      "where_found": "egress payload",
+      "match_form": "decoded_hex"
+    }
+  },
+  {
     "name": "base64_of_hex",
     "result_text": "sk-live-51TxJANEd0eR3aLt0k3n9876543210abcdef",
     "source": "tickets/read_ticket",

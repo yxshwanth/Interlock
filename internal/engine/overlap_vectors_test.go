@@ -36,6 +36,7 @@ const (
 	payloadURLEncoded
 	payloadReversed
 	payloadBase64Hex
+	payloadHexHex
 	payloadBase64Nest3
 	payloadGzipBase64
 	payloadNoise
@@ -134,6 +135,7 @@ func overlapVectorCases() []overlapInput {
 		{"hex", apiSecret, "tickets/read_ticket", 5, payloadHex},
 		{"url_encoded", "Auth Token: " + urlSecret, "auth/get_token", 1, payloadURLEncoded},
 		{"reversed", apiSecret, "tickets/read_ticket", 5, payloadReversed},
+		{"hex_of_hex", apiSecret, "tickets/read_ticket", 5, payloadHexHex},
 		{"base64_of_hex", apiSecret, "tickets/read_ticket", 5, payloadBase64Hex},
 		{"base64_nest_3", apiSecret, "tickets/read_ticket", 5, payloadBase64Nest3},
 		{"gzip_base64", apiSecret, "tickets/read_ticket", 5, payloadGzipBase64},
@@ -156,13 +158,13 @@ func overlapVectors(t *testing.T) []overlapVector {
 	t.Helper()
 	cases := overlapVectorCases()
 	got := make([]overlapVector, 0, len(cases))
+	e, _ := newTestEngine("block")
 	for _, c := range cases {
-		// ExtractTaintedValues leaves Chunks empty. The engine fills them
-		// before overlap, and a long secret matches only through those chunks.
-		tainted := ExtractTaintedValues(c.resultText, c.source, c.seq)
-		for i := range tainted {
-			AttachChunks(&tainted[i], 0, 0)
-		}
+		// Register through the engine so variants and chunks are attached the
+		// way the engine does it; a long secret matches only through chunks.
+		state := &model.SessionState{SessionID: c.name}
+		e.addTainted(state, ExtractTaintedValues(c.resultText, c.source, c.seq))
+		tainted := state.Tainted
 		payload := overlapPayload(t, c, tainted)
 		hit := CheckOverlapPayload(tainted, payload)
 		got = append(got, overlapSnapshot(c, tainted, payload, hit))
@@ -187,6 +189,8 @@ func overlapPayload(t *testing.T, c overlapInput, tainted []model.TaintedValue) 
 		return url.QueryEscape(secret)
 	case payloadReversed:
 		return model.ReverseString(secret)
+	case payloadHexHex:
+		return hex.EncodeToString([]byte(hex.EncodeToString([]byte(secret))))
 	case payloadBase64Hex:
 		return base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString([]byte(secret))))
 	case payloadBase64Nest3:
