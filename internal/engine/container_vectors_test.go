@@ -108,6 +108,20 @@ func containerVectors(t *testing.T) []containerVector {
 		containerMember{"note.txt", []byte("plain text beside the blob\n")},
 	)
 	gz := gzipBytes(t, text)
+	// kept is charged first. fills uses the rest of the budget exactly.
+	// over is one byte past that, so the walk aborts on the second member.
+	kept := []byte("alpha\n")
+	fills := []byte("beta")
+	over := append(append([]byte{}, fills...), '!')
+	byteBudget := len(kept) + len(fills)
+	zipByteExact := zipBytes(t,
+		containerMember{"a.txt", kept},
+		containerMember{"b.txt", fills},
+	)
+	zipByteOver := zipBytes(t,
+		containerMember{"a.txt", kept},
+		containerMember{"b.txt", over},
+	)
 
 	type input struct {
 		name string
@@ -120,7 +134,15 @@ func containerVectors(t *testing.T) []containerVector {
 		{"gzip", gz, def},
 		{"zlib", zlibBytes(t, text), def},
 		{"tar", tarBytes(t, containerMember{"note.txt", text}), def},
+		{"tar_dir_then_file", tarBytes(t,
+			containerMember{"dir/", nil},
+			containerMember{"dir/note.txt", text},
+		), def},
 		{"zip_inside_gzip", gzipBytes(t, zipOne), def},
+		{"zip_gzip_then_text", zipBytes(t,
+			containerMember{"payload.gz", gzipBytes(t, []byte("nested\n"))},
+			containerMember{"after.txt", []byte("sibling\n")},
+		), def},
 		{"zip_binary_member", zipBinary, def},
 		{"empty_input", nil, def},
 		{"truncated_zip", zipMany[:len(zipMany)/2], def},
@@ -128,6 +150,8 @@ func containerVectors(t *testing.T) []containerVector {
 		{"disabled", zipOne, limits(func(l *ContainerLimits) { l.Enabled = false })},
 		{"cap_max_parts", zipMany, limits(func(l *ContainerLimits) { l.MaxParts = 2 })},
 		{"cap_max_bytes", zipOne, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = 16 })},
+		{"cap_max_bytes_later_exact", zipByteExact, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = byteBudget })},
+		{"cap_max_bytes_later_over", zipByteOver, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = byteBudget })},
 		{"cap_max_depth", gzipBytes(t, gzipBytes(t, gzipBytes(t, text))), limits(func(l *ContainerLimits) { l.MaxDescentDepth = 1 })},
 	}
 
@@ -209,6 +233,8 @@ func tarBytes(t *testing.T, members ...containerMember) []byte {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, m := range members {
+		// A name ending in / is a directory header and has no body.
+		dir := len(m.name) > 0 && m.name[len(m.name)-1] == '/'
 		hdr := &tar.Header{
 			Typeflag: tar.TypeReg,
 			Name:     m.name,
@@ -217,8 +243,16 @@ func tarBytes(t *testing.T, members ...containerMember) []byte {
 			ModTime:  containerVectorTime,
 			Format:   tar.FormatUSTAR,
 		}
+		if dir {
+			hdr.Typeflag = tar.TypeDir
+			hdr.Mode = 0o755
+			hdr.Size = 0
+		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatal(err)
+		}
+		if dir {
+			continue
 		}
 		if _, err := tw.Write(m.data); err != nil {
 			t.Fatal(err)
