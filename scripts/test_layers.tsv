@@ -25,6 +25,7 @@ internal/engine/container_bomb_test.go	L1
 internal/engine/container_test.go	L1
 internal/engine/egress_reassembly_test.go	L1
 internal/engine/encoding_test.go	L1
+internal/engine/encoding_vectors_test.go	L4
 internal/engine/engine_test.go	L1
 internal/engine/entropy_test.go	L1
 internal/engine/evidence_async_observer_test.go	L1
