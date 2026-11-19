@@ -2,6 +2,7 @@
 
 pub mod chunk;
 mod encoding;
+pub mod evidence;
 pub mod overlap;
 pub mod taint;
 

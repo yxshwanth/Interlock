@@ -150,7 +150,32 @@ func buildEvidenceChainVectors(t *testing.T) evidenceChainVectors {
 			ValueOverlap: &model.OverlapHit{},
 			Pod:          &model.PodContext{},
 		}},
+		{"syscall_sink", model.EvidenceRecord{
+			SinkCall: map[string]any{
+				"syscall": "connect", "dest_ip": "192.0.2.1", "dest_port": uint16(443),
+				"pid": uint32(123), "comm": "worker", "path": "/tmp/worker",
+				"payload_excerpt": `{"message":"<>&"}`,
+			},
+		}},
+		{"kernel_denial_sink", model.EvidenceRecord{
+			SinkCall: map[string]any{"syscall": "lsm_deny", "pid": uint32(123), "comm": "worker"},
+		}},
+		{"float_format", model.EvidenceRecord{
+			Confidence: math.Copysign(0, -1),
+			SinkCall:   []any{1.0, 1e-7, 1e-6, 1e20, 1e21, -1e-9, 1.2345678901234567},
+		}},
+		{"invalid_utf8", model.EvidenceRecord{SessionID: "a\xff\xfe�", SinkCall: "b\xe2\x82"}},
 		{"float_limit", model.EvidenceRecord{SinkCall: math.MaxFloat64, Confidence: math.SmallestNonzeroFloat64}},
+		{"escaped_raw_args", model.EvidenceRecord{SinkCall: map[string]any{
+			"args": json.RawMessage("{ \"message\": \"quote\\\" slash\\\\ \u2028 <>&\" }"),
+		}}},
+		{"nil_raw_args", model.EvidenceRecord{SinkCall: map[string]any{"args": json.RawMessage(nil)}}},
+		{"escaped_map_value", model.EvidenceRecord{SinkCall: map[string]any{
+			"payload_excerpt": "quote\" slash\\ newline\n tab\t nul\x00 bad\xff\xe2\x82",
+		}}},
+		{"unicode_map_key", model.EvidenceRecord{SinkCall: map[string]any{
+			"漢字": true, "café": false, "z": nil,
+		}}},
 	}
 
 	var vectors evidenceChainVectors

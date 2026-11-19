@@ -243,6 +243,138 @@
       "hash": "88873927a056e5ab3a011f4fe1daf03dfd0da09048b9d019fd985065e7ee6ea9"
     },
     {
+      "name": "syscall_sink",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "comm": "worker",
+          "dest_ip": "192.0.2.1",
+          "dest_port": 443,
+          "path": "/tmp/worker",
+          "payload_excerpt": "{\"message\":\"\u003c\u003e\u0026\"}",
+          "pid": 123,
+          "syscall": "connect"
+        },
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "3684d02675fe6b8500754438c14c12a128bcbc34007334f95785d62d219c8f84"
+    },
+    {
+      "name": "kernel_denial_sink",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "comm": "worker",
+          "pid": 123,
+          "syscall": "lsm_deny"
+        },
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "3463670e7164e165418ab3eb736df76303788e393381b484897ae04be5fe4bff"
+    },
+    {
+      "name": "float_format",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": -0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": [
+          1,
+          1e-7,
+          0.000001,
+          100000000000000000000,
+          1e+21,
+          -1e-9,
+          1.2345678901234567
+        ],
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "947925625e8c71c44204d0564707be24fa7b70b7b44da6976273538e2b3bdaeb"
+    },
+    {
+      "name": "invalid_utf8",
+      "record": {
+        "session_id": "a\ufffd\ufffd�",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": "b\ufffd\ufffd",
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "daa52f5730a82d84fa3bde8172e926a8a0e34fe7230d9420aea34a1c1c9f68f3"
+    },
+    {
       "name": "float_limit",
       "record": {
         "session_id": "",
@@ -269,6 +401,130 @@
         "hash": ""
       },
       "hash": "cb88a87eb3feccd33f3fa65fd3094b2316b5d3641ed92d783610f6062ca55a72"
+    },
+    {
+      "name": "escaped_raw_args",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "args": {
+            "message": "quote\" slash\\ \u2028 \u003c\u003e\u0026"
+          }
+        },
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "44710dd302e12172769ef209bd73742bded7900858bd0114e7c8b2aa3489d60b"
+    },
+    {
+      "name": "nil_raw_args",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "args": null
+        },
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "c82b011f93b99af5b57d4ddc0a216203b27f4710f77c3b1bc2b3e0ebb5bdab41"
+    },
+    {
+      "name": "escaped_map_value",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "payload_excerpt": "quote\" slash\\ newline\n tab\t nul\u0000 bad\ufffd\ufffd\ufffd"
+        },
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "552546fccffb8d40767a5f3c0c936a523cfea308d95ad468f0d0e9bfbfe07eb4"
+    },
+    {
+      "name": "unicode_map_key",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "café": false,
+          "z": null,
+          "漢字": true
+        },
+        "timeline": null,
+        "chain_seq": 0,
+        "prev_hash": "",
+        "hash": ""
+      },
+      "hash": "c4292658870bd0d084faadd07b437a566b877b3006f3cfb261482f7347800502"
     }
   ],
   "chain": [
@@ -523,7 +779,143 @@
     {
       "chain_seq": 6,
       "prev_hash": "d3a196815aeff31e66fbd15de006c21744c0c181a74b3ad4595c8587d4ad2274",
-      "hash": "a41c28c548ae0f18b26e60723605b612704c6b7634278b5b40c293b6efb1cfcb",
+      "hash": "27e764274ddb14c659e4af4eb3aeef459007d7bde6b63f8619965265c3968abe",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "comm": "worker",
+          "dest_ip": "192.0.2.1",
+          "dest_port": 443,
+          "path": "/tmp/worker",
+          "payload_excerpt": "{\"message\":\"\u003c\u003e\u0026\"}",
+          "pid": 123,
+          "syscall": "connect"
+        },
+        "timeline": null,
+        "chain_seq": 6,
+        "prev_hash": "d3a196815aeff31e66fbd15de006c21744c0c181a74b3ad4595c8587d4ad2274",
+        "hash": "27e764274ddb14c659e4af4eb3aeef459007d7bde6b63f8619965265c3968abe"
+      }
+    },
+    {
+      "chain_seq": 7,
+      "prev_hash": "27e764274ddb14c659e4af4eb3aeef459007d7bde6b63f8619965265c3968abe",
+      "hash": "5b7f343f2124488ee694a7094ab6bc1369d2c172ffe467203cc28ce11cf760c9",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "comm": "worker",
+          "pid": 123,
+          "syscall": "lsm_deny"
+        },
+        "timeline": null,
+        "chain_seq": 7,
+        "prev_hash": "27e764274ddb14c659e4af4eb3aeef459007d7bde6b63f8619965265c3968abe",
+        "hash": "5b7f343f2124488ee694a7094ab6bc1369d2c172ffe467203cc28ce11cf760c9"
+      }
+    },
+    {
+      "chain_seq": 8,
+      "prev_hash": "5b7f343f2124488ee694a7094ab6bc1369d2c172ffe467203cc28ce11cf760c9",
+      "hash": "6572a501bc7523e1c071d427a0e59593996aa6093b9443b5ef0d8057c2afe081",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": -0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": [
+          1,
+          1e-7,
+          0.000001,
+          100000000000000000000,
+          1e+21,
+          -1e-9,
+          1.2345678901234567
+        ],
+        "timeline": null,
+        "chain_seq": 8,
+        "prev_hash": "5b7f343f2124488ee694a7094ab6bc1369d2c172ffe467203cc28ce11cf760c9",
+        "hash": "6572a501bc7523e1c071d427a0e59593996aa6093b9443b5ef0d8057c2afe081"
+      }
+    },
+    {
+      "chain_seq": 9,
+      "prev_hash": "6572a501bc7523e1c071d427a0e59593996aa6093b9443b5ef0d8057c2afe081",
+      "hash": "27dc311b4730c541f11c9dfd782554c0a78313911e820493e9d74be6f8bff391",
+      "record": {
+        "session_id": "a\ufffd\ufffd�",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": "b\ufffd\ufffd",
+        "timeline": null,
+        "chain_seq": 9,
+        "prev_hash": "6572a501bc7523e1c071d427a0e59593996aa6093b9443b5ef0d8057c2afe081",
+        "hash": "27dc311b4730c541f11c9dfd782554c0a78313911e820493e9d74be6f8bff391"
+      }
+    },
+    {
+      "chain_seq": 10,
+      "prev_hash": "27dc311b4730c541f11c9dfd782554c0a78313911e820493e9d74be6f8bff391",
+      "hash": "b2b940308c982dd95145b43c318421a8df47808b5713dd2a344aee5915e1583e",
       "record": {
         "session_id": "",
         "trip_ts_ns": 0,
@@ -544,9 +936,137 @@
         },
         "sink_call": 1.7976931348623157e+308,
         "timeline": null,
-        "chain_seq": 6,
-        "prev_hash": "d3a196815aeff31e66fbd15de006c21744c0c181a74b3ad4595c8587d4ad2274",
-        "hash": "a41c28c548ae0f18b26e60723605b612704c6b7634278b5b40c293b6efb1cfcb"
+        "chain_seq": 10,
+        "prev_hash": "27dc311b4730c541f11c9dfd782554c0a78313911e820493e9d74be6f8bff391",
+        "hash": "b2b940308c982dd95145b43c318421a8df47808b5713dd2a344aee5915e1583e"
+      }
+    },
+    {
+      "chain_seq": 11,
+      "prev_hash": "b2b940308c982dd95145b43c318421a8df47808b5713dd2a344aee5915e1583e",
+      "hash": "d335cbc52e1ada41e91994a4f594efa96ddd421ff7722c32f4dfa8d1ff1671ec",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "args": {
+            "message": "quote\" slash\\ \u2028 \u003c\u003e\u0026"
+          }
+        },
+        "timeline": null,
+        "chain_seq": 11,
+        "prev_hash": "b2b940308c982dd95145b43c318421a8df47808b5713dd2a344aee5915e1583e",
+        "hash": "d335cbc52e1ada41e91994a4f594efa96ddd421ff7722c32f4dfa8d1ff1671ec"
+      }
+    },
+    {
+      "chain_seq": 12,
+      "prev_hash": "d335cbc52e1ada41e91994a4f594efa96ddd421ff7722c32f4dfa8d1ff1671ec",
+      "hash": "7707d9a8f70d29f2228f5c4cf773508738f01c87036e45f71bc30e6c91c8459d",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "args": null
+        },
+        "timeline": null,
+        "chain_seq": 12,
+        "prev_hash": "d335cbc52e1ada41e91994a4f594efa96ddd421ff7722c32f4dfa8d1ff1671ec",
+        "hash": "7707d9a8f70d29f2228f5c4cf773508738f01c87036e45f71bc30e6c91c8459d"
+      }
+    },
+    {
+      "chain_seq": 13,
+      "prev_hash": "7707d9a8f70d29f2228f5c4cf773508738f01c87036e45f71bc30e6c91c8459d",
+      "hash": "aef5a3f6f056db295981b61e0984b6bd1786bc5e79f1d583b1e304495839fa20",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "payload_excerpt": "quote\" slash\\ newline\n tab\t nul\u0000 bad\ufffd\ufffd\ufffd"
+        },
+        "timeline": null,
+        "chain_seq": 13,
+        "prev_hash": "7707d9a8f70d29f2228f5c4cf773508738f01c87036e45f71bc30e6c91c8459d",
+        "hash": "aef5a3f6f056db295981b61e0984b6bd1786bc5e79f1d583b1e304495839fa20"
+      }
+    },
+    {
+      "chain_seq": 14,
+      "prev_hash": "aef5a3f6f056db295981b61e0984b6bd1786bc5e79f1d583b1e304495839fa20",
+      "hash": "af3663efa9df370080f1638b8b2a18d678550324382e956b186009e933d3993d",
+      "record": {
+        "session_id": "",
+        "trip_ts_ns": 0,
+        "verdict": "",
+        "action": "",
+        "variant": "",
+        "confidence": 0,
+        "legs": {
+          "sensitive_source_touched": {
+            "lit": false
+          },
+          "untrusted_content_present": {
+            "lit": false
+          },
+          "external_sink_invoked": {
+            "lit": false
+          }
+        },
+        "sink_call": {
+          "café": false,
+          "z": null,
+          "漢字": true
+        },
+        "timeline": null,
+        "chain_seq": 14,
+        "prev_hash": "aef5a3f6f056db295981b61e0984b6bd1786bc5e79f1d583b1e304495839fa20",
+        "hash": "af3663efa9df370080f1638b8b2a18d678550324382e956b186009e933d3993d"
       }
     }
   ]

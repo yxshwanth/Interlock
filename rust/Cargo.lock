@@ -85,6 +85,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "regex",
+ "serde",
  "serde_json",
  "sha2",
 ]
