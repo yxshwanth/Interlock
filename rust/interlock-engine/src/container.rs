@@ -273,7 +273,10 @@ impl Walker {
     fn walk_zip(&mut self, raw: &[u8], depth: usize) -> Result<(), Abort> {
         // Like Go, the ZIP reader loads the central directory before the
         // per-member time and part checks.
-        let Ok(mut archive) = ZipArchive::new(Cursor::new(raw)) else {
+        let Some(end) = zip_directory_end(raw) else {
+            return self.abort(Abort::Corrupt);
+        };
+        let Ok(mut archive) = ZipArchive::new(Cursor::new(&raw[..end])) else {
             return self.abort(Abort::Corrupt);
         };
         for index in 0..archive.len() {
@@ -546,6 +549,30 @@ fn pax_sparse_size(entry: &mut tar::Entry<'_, impl Read>) -> Result<Option<u64>,
     } else {
         decimal(size).map(Some).ok_or(())
     }
+}
+
+fn zip_directory_end(raw: &[u8]) -> Option<usize> {
+    const RECORD_LEN: usize = 22;
+    for window in [1024, 65 * 1024] {
+        let start = raw.len().saturating_sub(window);
+        let tail = &raw[start..];
+        if let Some(offset) = tail
+            .windows(RECORD_LEN)
+            .rposition(|record| record.starts_with(b"PK\x05\x06"))
+        {
+            let comment = u16::from_le_bytes([tail[offset + 20], tail[offset + 21]]);
+            let end = start + offset + RECORD_LEN;
+            // Go stops scanning a window at the first signature, including
+            // when its declared comment runs past EOF.
+            if usize::from(comment) <= raw.len() - end {
+                return Some(end + usize::from(comment));
+            }
+        }
+        if start == 0 {
+            break;
+        }
+    }
+    None
 }
 
 fn valid_zip_descriptor(raw: &[u8], offset: Option<u64>, crc: u32) -> bool {
