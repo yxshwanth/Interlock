@@ -273,10 +273,16 @@ impl Walker {
     fn walk_zip(&mut self, raw: &[u8], depth: usize) -> Result<(), Abort> {
         // Like Go, the ZIP reader loads the central directory before the
         // per-member time and part checks.
-        let Some(end) = zip_directory_end(raw) else {
+        let Some((record, end)) = zip_directory_end(raw) else {
             return self.abort(Abort::Corrupt);
         };
-        let Ok(mut archive) = ZipArchive::new(Cursor::new(&raw[..end])) else {
+        let mut reader = ZipReader {
+            cursor: Cursor::new(&raw[..end]),
+            record,
+            footer: raw[record..record + 22].try_into().unwrap(),
+        };
+        reader.normalize_directory_size();
+        let Ok(mut archive) = ZipArchive::new(reader) else {
             return self.abort(Abort::Corrupt);
         };
         for index in 0..archive.len() {
@@ -551,7 +557,67 @@ fn pax_sparse_size(entry: &mut tar::Entry<'_, impl Read>) -> Result<Option<u64>,
     }
 }
 
-fn zip_directory_end(raw: &[u8]) -> Option<usize> {
+#[derive(Clone)]
+struct ZipReader<'a> {
+    cursor: Cursor<&'a [u8]>,
+    record: usize,
+    footer: [u8; 22],
+}
+
+impl ZipReader<'_> {
+    fn uses_zip64(&self) -> bool {
+        self.footer[10..12] == [0xff; 2]
+            || self.footer[12..16] == [0xff, 0xff, 0, 0]
+            || self.footer[16..20] == [0xff; 4]
+    }
+
+    fn normalize_directory_size(&mut self) {
+        if self.uses_zip64() {
+            return;
+        }
+        let size = u32::from_le_bytes(self.footer[12..16].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(self.footer[16..20].try_into().unwrap()) as usize;
+        let Some(actual_size) = self.record.checked_sub(offset).filter(|&n| n > size) else {
+            return;
+        };
+        let Ok(actual_size) = u32::try_from(actual_size) else {
+            return;
+        };
+        // A valid central header at the stated offset makes Go use base zero.
+        // Probe one header first, then let the archive reader validate the rest.
+        let mut probe = self.clone();
+        probe.footer[8..12].copy_from_slice(&[1, 0, 1, 0]);
+        probe.footer[12..16].copy_from_slice(&actual_size.to_le_bytes());
+        if ZipArchive::new(probe).is_ok() {
+            self.footer[12..16].copy_from_slice(&actual_size.to_le_bytes());
+        }
+    }
+}
+
+impl Read for ZipReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let start = self.cursor.position();
+        let n = self.cursor.read(output)?;
+        if n > 0 {
+            let start = start as usize;
+            let from = start.max(self.record);
+            let to = (start + n).min(self.record + self.footer.len());
+            if from < to {
+                output[from - start..to - start]
+                    .copy_from_slice(&self.footer[from - self.record..to - self.record]);
+            }
+        }
+        Ok(n)
+    }
+}
+
+impl Seek for ZipReader<'_> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.cursor.seek(position)
+    }
+}
+
+fn zip_directory_end(raw: &[u8]) -> Option<(usize, usize)> {
     const RECORD_LEN: usize = 22;
     for window in [1024, 65 * 1024] {
         let start = raw.len().saturating_sub(window);
@@ -565,7 +631,7 @@ fn zip_directory_end(raw: &[u8]) -> Option<usize> {
             // Go stops scanning a window at the first signature, including
             // when its declared comment runs past EOF.
             if usize::from(comment) <= raw.len() - end {
-                return Some(end + usize::from(comment));
+                return Some((start + offset, end + usize::from(comment)));
             }
         }
         if start == 0 {
