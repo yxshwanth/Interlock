@@ -32,6 +32,7 @@ type containerVectorLimits struct {
 type containerVector struct {
 	Name               string                `json:"name"`
 	InputHex           string                `json:"input_hex"`
+	TrailingZeros      int                   `json:"trailing_zeros,omitempty"`
 	Limits             containerVectorLimits `json:"limits"`
 	LooksLikeContainer bool                  `json:"looks_like_container"`
 	PartsHex           []string              `json:"parts_hex"`
@@ -119,6 +120,12 @@ func containerVectors(t *testing.T) []containerVector {
 	encryptedZIP[bytes.Index(encryptedZIP, []byte("PK\x01\x02"))+8] |= 1
 	badDescriptorZIP := bytes.Clone(zipOne)
 	badDescriptorZIP[bytes.Index(badDescriptorZIP, []byte("PK\x07\x08"))+4] ^= 1
+	badDirectoryOffset := zipShortDirectorySize(zipOne)
+	invalidDirectoryOffset := bytes.Clone(badDirectoryOffset)
+	invalidDirectoryOffset[len(invalidDirectoryOffset)-6]++
+	fakeLocator := zipFakeLocator(zipOne)
+	badZip64Locator := bytes.Clone(fakeLocator)
+	binary.LittleEndian.PutUint32(badZip64Locator[len(badZip64Locator)-6:], 0xffffffff)
 	// kept is charged first. fills uses the rest of the budget exactly.
 	// over is one byte past that, so the walk aborts on the second member.
 	kept := []byte("alpha\n")
@@ -194,11 +201,17 @@ func containerVectors(t *testing.T) []containerVector {
 		// A high-bit name byte distinguishes the accepted signed checksum.
 		input{"tar_signed_checksum", tarSignedChecksum(t), def},
 		// A short trailing central-directory extra record is ignored.
-		input{"zip_truncated_extra", zipTruncatedExtra(zipOne), def},
+		input{"zip_truncated_extra", zipCentralExtra(zipOne, []byte{0xfe, 0xca, 0x01}), def},
+		// The extra record declares two body bytes but only contains one.
+		input{"zip_overrunning_extra", zipCentralExtra(zipOne, []byte{0xfe, 0xca, 2, 0, 1}), def},
 		// A zero CRC with no data descriptor leaves CRC validation disabled.
 		input{"zip_omitted_crc", zipStored(t, []byte("text without a CRC\n"), 0), def},
 		// Trailing bytes after the declared ZIP comment are ignored.
 		input{"zip_trailing_after_comment", zipTrailing(zipOne), def},
+		input{"zip_bad_directory_offset", badDirectoryOffset, def},
+		input{"zip_invalid_directory_offset", invalidDirectoryOffset, def},
+		input{"zip_fake_zip64_locator", fakeLocator, def},
+		input{"zip_bogus_required_zip64_locator", badZip64Locator, def},
 		// A non-ZIP prefix prevents container detection.
 		input{"zip_prepended_plain_data", append([]byte("stub"), zipOne...), def},
 		// A local-header signature in the prefix preserves detection and shifts the base offset.
@@ -222,23 +235,38 @@ func containerVectors(t *testing.T) []containerVector {
 			[]byte("sparse text\n")), def},
 	)
 
+	// Both runners append the recorded number of zero bytes to keep the fixture small.
+	trailingZeros := map[string]int{
+		"zip_trailing_just_past_64k": 65*1024 - 30,
+		"zip_trailing_past_search":   65*1024 + 1,
+	}
+	inputs = append(inputs,
+		input{"zip_trailing_just_past_64k", zipOne, def},
+		input{"zip_trailing_past_search", zipOne, def},
+	)
 	got := make([]containerVector, 0, len(inputs))
 	for _, in := range inputs {
-		res := InspectContainer(in.raw, in.lim)
+		n := trailingZeros[in.name]
+		raw := in.raw
+		if n > 0 {
+			raw = append(bytes.Clone(raw), make([]byte, n)...)
+		}
+		res := InspectContainer(raw, in.lim)
 		parts := make([]string, 0, len(res.Parts))
 		for _, p := range res.Parts {
 			parts = append(parts, hex.EncodeToString([]byte(p)))
 		}
 		got = append(got, containerVector{
-			Name:     in.name,
-			InputHex: hex.EncodeToString(in.raw),
+			Name:          in.name,
+			InputHex:      hex.EncodeToString(in.raw),
+			TrailingZeros: n,
 			Limits: containerVectorLimits{
 				Enabled:              in.lim.Enabled,
 				MaxDecompressedBytes: in.lim.MaxDecompressedBytes,
 				MaxDescentDepth:      in.lim.MaxDescentDepth,
 				MaxParts:             in.lim.MaxParts,
 			},
-			LooksLikeContainer: LooksLikeContainer(in.raw),
+			LooksLikeContainer: LooksLikeContainer(raw),
 			PartsHex:           parts,
 			Abort:              string(res.Abort),
 			Bytes:              res.Bytes,
@@ -344,14 +372,36 @@ func zipStored(t *testing.T, data []byte, crc uint32) []byte {
 	return buf.Bytes()
 }
 
-func zipTruncatedExtra(raw []byte) []byte {
+func zipShortDirectorySize(raw []byte) []byte {
+	end := raw[len(raw)-22:]
+	start := int(binary.LittleEndian.Uint32(end[16:]))
+	junk := []byte("junk")
+	out := bytes.Join([][]byte{raw[:start], junk, raw[start:]}, nil)
+	end = out[len(out)-22:]
+	binary.LittleEndian.PutUint32(end[16:], uint32(start+len(junk)))
+	binary.LittleEndian.PutUint32(end[12:], binary.LittleEndian.Uint32(end[12:])-uint32(len(junk)))
+	return out
+}
+
+func zipFakeLocator(raw []byte) []byte {
+	end := len(raw) - 22
+	start := int(binary.LittleEndian.Uint32(raw[end+16:]))
+	locator := make([]byte, 20)
+	copy(locator, "PK\x06\x07")
+	binary.LittleEndian.PutUint32(locator[16:], 1)
+	out := bytes.Join([][]byte{raw[:end], locator, raw[end:]}, nil)
+	binary.LittleEndian.PutUint16(out[start+32:], uint16(len(locator)))
+	binary.LittleEndian.PutUint32(out[end+len(locator)+12:], uint32(end+len(locator)-start))
+	return out
+}
+
+func zipCentralExtra(raw, extra []byte) []byte {
 	const central = "PK\x01\x02"
 	start := bytes.Index(raw, []byte(central))
 	end := len(raw) - 22
-	out := append(bytes.Clone(raw[:end]), 0xfe, 0xca, 0x01)
-	out = append(out, raw[end:]...)
-	binary.LittleEndian.PutUint16(out[start+30:], binary.LittleEndian.Uint16(raw[start+30:])+3)
-	binary.LittleEndian.PutUint32(out[end+3+12:], uint32(end+3-start))
+	out := bytes.Join([][]byte{raw[:end], extra, raw[end:]}, nil)
+	binary.LittleEndian.PutUint16(out[start+30:], binary.LittleEndian.Uint16(raw[start+30:])+uint16(len(extra)))
+	binary.LittleEndian.PutUint32(out[end+len(extra)+12:], uint32(end+len(extra)-start))
 	return out
 }
 
@@ -507,6 +557,9 @@ func diffContainerVector(t *testing.T, got, want containerVector, regenerate str
 	}
 	checkField(t, name, "name", got.Name, want.Name, regenerate)
 	checkField(t, name, "input_hex", got.InputHex, want.InputHex, regenerate)
+	if got.TrailingZeros != want.TrailingZeros {
+		t.Fatalf("case %s: trailing_zeros: got %d, want %d; regenerate with %s", name, got.TrailingZeros, want.TrailingZeros, regenerate)
+	}
 	if got.Limits != want.Limits {
 		t.Fatalf("case %s: limits: got %+v, want %+v; regenerate with %s", name, got.Limits, want.Limits, regenerate)
 	}

@@ -13,7 +13,14 @@ fn matches_go_container_vectors() {
     let cases: Vec<Value> = serde_json::from_str(VECTORS).expect("parse Go container vectors");
     for case in cases {
         let name = case["name"].as_str().expect("case name");
-        let input = decode_hex(&case["input_hex"], name, "input_hex");
+        let mut input = decode_hex(&case["input_hex"], name, "input_hex");
+        if let Some(zeros) = case.get("trailing_zeros") {
+            let zeros = zeros
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or_else(|| panic!("{name}: invalid trailing_zeros"));
+            input.resize(input.len() + zeros, 0);
+        }
         let limits = &case["limits"];
         let number = |field: &str| {
             limits[field]
