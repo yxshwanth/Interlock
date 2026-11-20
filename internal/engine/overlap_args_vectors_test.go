@@ -96,9 +96,26 @@ func overlapArgsCases(t *testing.T) []overlapArgsInput {
 	gz := base64.StdEncoding.EncodeToString(gzipBytes(t, []byte(secret)))
 	zipBlob := zipBytes(t, containerMember{"note.txt", []byte(secret)})
 	zipWrapped := base64.StdEncoding.EncodeToString(zipBlob)
+	zipHex := base64.StdEncoding.EncodeToString(zipBytes(t, containerMember{"note.txt", []byte(hx)}))
+	zipOfB64 := base64.StdEncoding.EncodeToString(zipBytes(t, containerMember{"note.txt", []byte(b64)}))
+	// One byte over the secret length, so a cap of len(secret) aborts this zip
+	// and still extracts a zip of the secret itself.
+	zipOver := base64.StdEncoding.EncodeToString(zipBytes(t, containerMember{"note.txt", bytes.Repeat([]byte("A"), len(secret)+1)}))
+	zipParts := base64.StdEncoding.EncodeToString(zipBytes(t,
+		containerMember{"a.txt", []byte("x")},
+		containerMember{"b.txt", []byte("y")},
+	))
 	// Tar stores the member in the clear, so the base64 decode matches before
 	// container descent and the form is decoded_base64.
 	tarWrapped := base64.StdEncoding.EncodeToString(tarBytes(t, containerMember{"note.txt", []byte(secret)}))
+	// gzip(secret) is not a substring of the tar bytes or of their base64, so
+	// the hit is container_* only after tar-then-gzip descent.
+	tarGzWrapped := base64.StdEncoding.EncodeToString(tarBytes(t, containerMember{"note.txt", gzipBytes(t, []byte(secret))}))
+	// Three base64 layers around hex(secret). That nest is not a canonical
+	// form, and the hex text appears only on the third decode.
+	deep := base64.StdEncoding.EncodeToString([]byte(hx))
+	deep = base64.StdEncoding.EncodeToString([]byte(deep))
+	deep = base64.StdEncoding.EncodeToString([]byte(deep))
 	gzCanon, err := gzipBase64(secret)
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +126,12 @@ func overlapArgsCases(t *testing.T) []overlapArgsInput {
 	def := defaultOverlapArgsLimits()
 	over := DefaultContainerLimits()
 	over.MaxDecompressedBytes = 1
+	tight := DefaultContainerLimits()
+	tight.MaxDecompressedBytes = len(secret)
+	// First candidate trips max_parts. The later one trips max_decompressed_bytes.
+	last := DefaultContainerLimits()
+	last.MaxParts = 1
+	last.MaxDecompressedBytes = len(secret)
 	off := DefaultContainerLimits()
 	off.Enabled = false
 
@@ -133,18 +156,40 @@ func overlapArgsCases(t *testing.T) []overlapArgsInput {
 		c.payload = body
 		return c
 	}
+	payloadLim := func(name, body string, limits overlapArgsLimits) overlapArgsInput {
+		c := payload(name, body)
+		c.limits = limits
+		return c
+	}
+	// Written z then m. Sorted keys try m first, and m's first blob sorts
+	// after the second, so file order or a lexical array sort picks another
+	// container form.
+	idx0, idx1 := zipHex, zipWrapped
+	if idx0 < idx1 {
+		idx0, idx1 = idx1, idx0
+	}
+	orderArgs := `{"z":"` + zipOfB64 + `","m":["` + idx0 + `","` + idx1 + `"]}`
+	// a aborts, b holds the secret. Same shape for both entry points.
+	abortThenHit := `{"a":"` + zipOver + `","b":"` + zipWrapped + `"}`
+	// a aborts max_parts, b aborts max_decompressed_bytes. The later abort is kept.
+	lastAbort := `{"a":"` + zipParts + `","b":"` + zipOver + `"}`
 
 	return []overlapArgsInput{
 		mk("args_string_leaf", mustOverlapArgsJSON(t, map[string]string{"body": secret}), def),
 		mk("args_split_leaves", mustOverlapArgsJSON(t, split), def),
-		mk("args_base64_and_hex", mustOverlapArgsJSON(t, map[string]string{"b64": b64, "hex": hx}), def),
+		mk("args_base64", mustOverlapArgsJSON(t, map[string]string{"body": b64}), def),
+		mk("args_hex", mustOverlapArgsJSON(t, map[string]string{"body": hx}), def),
 		mk("args_decoded_nest", mustOverlapArgsJSON(t, map[string]string{"body": nest}), def),
 		mk("args_recursive_nest", mustOverlapArgsJSON(t, map[string]string{"body": recursive}), def),
 		mk("args_gzip", mustOverlapArgsJSON(t, map[string]string{"body": gz}), def),
 		mk("args_zip", mustOverlapArgsJSON(t, map[string]string{"body": zipWrapped}), def),
 		mk("args_tar", mustOverlapArgsJSON(t, map[string]string{"body": tarWrapped}), def),
+		mk("args_tar_gzip", mustOverlapArgsJSON(t, map[string]string{"body": tarGzWrapped}), def),
 		mk("args_container_over_cap", mustOverlapArgsJSON(t, map[string]string{"body": zipWrapped}), explicitOverlapArgsLimits(over)),
+		mk("args_container_abort_then_hit", abortThenHit, explicitOverlapArgsLimits(tight)),
+		mk("args_container_last_abort", lastAbort, explicitOverlapArgsLimits(last)),
 		mk("args_container_disabled", mustOverlapArgsJSON(t, map[string]string{"body": zipWrapped}), explicitOverlapArgsLimits(off)),
+		mk("args_order_keys_array", orderArgs, def),
 		// Array of objects. The string leaf is the third level under the root.
 		mk("args_nested_depth_3", mustOverlapArgsJSON(t, []any{
 			map[string]any{"mid": map[string]string{"body": secret}},
@@ -158,7 +203,13 @@ func overlapArgsCases(t *testing.T) []overlapArgsInput {
 		mk("args_near_miss", mustOverlapArgsJSON(t, map[string]string{"body": string(near)}), def),
 		payload("payload_plain", secret),
 		payload("payload_zip_base64", zipWrapped),
-		payload("payload_gzip_base64_in_noise", "note "+gzCanon+" trailer"),
+		payload("payload_gzip_base64_canonical", "note "+gzCanon+" trailer"),
+		payload("payload_decoded_base64_nest", deep),
+		payloadLim("payload_container_abort_then_hit", abortThenHit, explicitOverlapArgsLimits(tight)),
+		// The key is the secret and is not a string leaf. The leaf is the nest
+		// above, which only the recursive decoder finds. The whole-body scan
+		// matches the literal first.
+		payload("payload_order_body_before_leaf", `{"`+secret+`":"`+deep+`"}`),
 	}
 }
 
