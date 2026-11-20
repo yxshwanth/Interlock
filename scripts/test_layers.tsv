@@ -33,6 +33,7 @@ internal/engine/evidence_async_observer_test.go	L1
 internal/engine/evidence_async_test.go	L1
 internal/engine/evidence_chain_test.go	L1
 internal/engine/evidence_sink_test.go	L1
+internal/engine/ingest_vectors_test.go	L4
 internal/engine/evidence_sqlite_test.go	L1
 internal/engine/evidence_standalone_mode_test.go	L1
 internal/engine/fragment_test.go	L1

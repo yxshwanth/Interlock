@@ -322,6 +322,12 @@ func vectorElemPath(prefix string, i int, elem any) string {
 		server, _ := m["server"].(string)
 		label += "(tool=" + tool + " server=" + server + ")"
 	}
+	for _, key := range []string{"result_hex", "source", "seq", "max_decompressed_bytes", "appends", "batches", "counter_batches"} {
+		if value, ok := m[key]; ok {
+			input, _ := json.Marshal(value)
+			label += "(" + key + "=" + string(input) + ")"
+		}
+	}
 	return label
 }
 
