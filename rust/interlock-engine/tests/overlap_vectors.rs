@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use interlock_engine::{
-    check_overlap_string, contiguous_chunks, extract_tainted_values, shannon_entropy, OverlapHit,
+    check_overlap_payload_limited, contiguous_chunks, default_container_limits,
+    extract_tainted_values, shannon_entropy, ContainerAbortReason, OverlapHit,
 };
 use serde_json::Value;
 
-const PENDING: &[(&str, &str)] = &[
-    ("hex_of_hex", "recursive decoding"),
-    ("base64_nest_3", "recursive decoding"),
-    ("gzip_base64", "compressor form"),
-];
+const PENDING: &[(&str, &str)] = &[("gzip_base64", "compressor form")];
 
 fn decode_hex(value: &str) -> Vec<u8> {
     assert_eq!(value.len() % 2, 0, "odd-length fixture hex");
@@ -42,31 +39,36 @@ fn matches_go_overlap_vectors() {
         }
 
         let payload = decode_hex(case["payload_hex"].as_str().expect("payload hex"));
-        let actual = check_overlap_string(&tainted, &payload);
+        let (actual, abort) =
+            check_overlap_payload_limited(&tainted, &payload, &default_container_limits());
+        assert_eq!(abort, ContainerAbortReason::None, "{name}: abort");
         let hit = &case["hit"];
         let expected = (!hit.is_null()).then(|| OverlapHit {
             tainted_hash: hit["tainted_hash"].as_str().expect("hit hash"),
             preview: hit["preview"].as_str().expect("hit preview"),
-            match_form: hit["match_form"].as_str().expect("hit form"),
+            match_form: hit["match_form"].as_str().expect("hit form").into(),
+            where_found: "egress payload",
         });
-        let unsupported = expected.as_ref().and_then(|hit| {
-            let form = hit.match_form;
-            if form.starts_with("decoded_") {
-                Some("recursive decoding")
-            } else if form.starts_with("container_") {
-                Some("container descent")
-            } else if form == "gzip_base64" {
-                Some("compressor form")
-            } else {
-                None
-            }
-        });
+        if let Some(actual) = &actual {
+            assert_eq!(
+                actual.where_found, hit["where_found"],
+                "{name}: where_found"
+            );
+        }
+        let unsupported = expected
+            .as_ref()
+            .filter(|hit| hit.match_form == "gzip_base64")
+            .map(|_| "compressor form");
         let pending = PENDING.iter().find(|&&(case, _)| case == name);
         assert_eq!(pending.map(|&(_, reason)| reason), unsupported, "{name}");
         if let Some((_, reason)) = pending {
             pending_seen += 1;
             assert_ne!(actual, expected, "{name}: now passes ({reason})");
-            assert_eq!(actual, None, "{name}: unexpected plain hit");
+            let fallback = expected.map(|mut hit| {
+                hit.match_form = "container_literal".into();
+                hit
+            });
+            assert_eq!(actual, fallback, "{name}: container fallback");
         } else {
             assert_eq!(actual, expected, "{name}");
         }

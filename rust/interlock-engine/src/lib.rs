@@ -19,5 +19,9 @@ pub use container::{
     ContainerInspectResult, ContainerLimits,
 };
 pub use encoding::{canonical_encodings, Form, Variant};
-pub use overlap::{check_overlap_string, match_tainted_value, OverlapHit};
+pub use overlap::{
+    check_overlap_limited, check_overlap_payload_limited, check_overlap_string,
+    current_max_decode_depth, match_tainted_value, set_max_decode_depth, OverlapHit,
+    DEFAULT_MAX_DECODE_DEPTH,
+};
 pub use taint::{extract_tainted_values, TaintedValue};

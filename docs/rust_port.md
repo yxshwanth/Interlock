@@ -15,7 +15,7 @@ Status is what is on `main` today.
 | Container inspection | `container.go` | `container_vectors.json` | `container.rs` | done |
 | Evidence hash chain | `evidence_chain.go` | `evidence_chain_vectors.json` | `evidence.rs` | done |
 | Tool tags and path taint | `tagger.go`, `path_taint.go` | `tagger_vectors.json`, `path_taint_vectors.json` | `tagger.rs`, `path_taint.rs`, `path_taint/json.rs` | done |
-| JSON leaf joining and the overlap composition | `decode.go`, `overlap.go` | `decode_vectors.json` | `decode.rs` | leaf joining and candidate lists done; recursive decode-and-match not started |
+| JSON leaf joining and the overlap composition | `decode.go`, `overlap.go` | `decode_vectors.json`, `overlap_vectors.json` | `decode.rs`, `overlap.rs` | done, except the gzip, brotli, zstd and lz4 forms (blocked on #81); the sink-args vectors are not on main yet |
 | Session state and leg decay | `session_store.go`, `engine.go` | none | `legs.rs` | leg lighting, pruning and clock rewind only |
 | Verdict and action classifier | `engine.go`, `bind.go` | none | `verdict.rs`, `bind.rs` | trip classification, action mapping and content bind only |
 | Compressor forms | `encoding.go` | none | none | not started, blocked on #81 |
