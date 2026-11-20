@@ -209,6 +209,17 @@ func containerVectors(t *testing.T) []containerVector {
 		input{"zip_end_record_truncated_comment", append(bytes.Clone(zipOne), fakeZipEnd()...), def},
 		// A ZIP64 locator and size extra can describe an ordinary small member.
 		input{"zip64", zip64Bytes(zipOne), def},
+		input{"tar_pax_sparse_huge_realsize",
+			tarPAXSparse10(t, []byte("1\n0\n0\n"), "9223372036854775807"),
+			limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = 128 })},
+		// Compress the repeated map bytes to keep the shared vector small.
+		input{"tar_pax_sparse_map_cap", gzipBytes(t, tarPAXSparse10(t,
+			append(append([]byte("1\n"), bytes.Repeat([]byte("0"), 1<<20)...), '\n', '0', '\n'),
+			"0")), def},
+		input{"tar_pax_sparse_0_1", tarPAXSparseMember(t,
+			"22 GNU.sparse.major=0\n22 GNU.sparse.minor=1\n26 GNU.sparse.numblocks=1\n"+
+				"22 GNU.sparse.size=14\n23 GNU.sparse.map=1,12\n",
+			[]byte("sparse text\n")), def},
 	)
 
 	got := make([]containerVector, 0, len(inputs))
@@ -444,8 +455,22 @@ func tarPAXSparse(t *testing.T) []byte {
 	data := make([]byte, 512)
 	copy(data, "1\n1\n12\n")
 	data = append(data, "sparse text\n"...)
+	return tarPAXSparseMember(t, "22 GNU.sparse.major=1\n22 GNU.sparse.minor=0\n26 GNU.sparse.realsize=14\n", data)
+}
+
+func tarPAXSparse10(t *testing.T, sparseMap []byte, realSize string) []byte {
+	t.Helper()
+	record := "GNU.sparse.realsize=" + realSize + "\n"
+	pax := fmt.Sprintf("22 GNU.sparse.major=1\n22 GNU.sparse.minor=0\n%d %s", len(record)+3, record)
+	data := make([]byte, (len(sparseMap)+511)/512*512)
+	copy(data, sparseMap)
+	return tarPAXSparseMember(t, pax, data)
+}
+
+func tarPAXSparseMember(t *testing.T, pax string, data []byte) []byte {
+	t.Helper()
 	raw := tarBytes(t,
-		containerMember{"pax", []byte("22 GNU.sparse.major=1\n22 GNU.sparse.minor=0\n26 GNU.sparse.realsize=14\n")},
+		containerMember{"pax", []byte(pax)},
 		containerMember{"sparse", data},
 		containerMember{"next", []byte("next\n")},
 	)
