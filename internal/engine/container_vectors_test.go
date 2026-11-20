@@ -8,8 +8,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"hash/crc32"
 	"os"
 	"strconv"
 	"testing"
@@ -29,6 +32,7 @@ type containerVectorLimits struct {
 type containerVector struct {
 	Name               string                `json:"name"`
 	InputHex           string                `json:"input_hex"`
+	TrailingZeros      int                   `json:"trailing_zeros,omitempty"`
 	Limits             containerVectorLimits `json:"limits"`
 	LooksLikeContainer bool                  `json:"looks_like_container"`
 	PartsHex           []string              `json:"parts_hex"`
@@ -108,6 +112,20 @@ func containerVectors(t *testing.T) []containerVector {
 		containerMember{"note.txt", []byte("plain text beside the blob\n")},
 	)
 	gz := gzipBytes(t, text)
+	zl := zlibBytes(t, text)
+	encryptedZIP := bytes.Clone(zipOne)
+	// Set the encrypted bit in both headers. The walker must reject the member
+	// before trying to interpret its payload.
+	encryptedZIP[6] |= 1
+	encryptedZIP[bytes.Index(encryptedZIP, []byte("PK\x01\x02"))+8] |= 1
+	badDescriptorZIP := bytes.Clone(zipOne)
+	badDescriptorZIP[bytes.Index(badDescriptorZIP, []byte("PK\x07\x08"))+4] ^= 1
+	badDirectoryOffset := zipShortDirectorySize(zipOne)
+	invalidDirectoryOffset := bytes.Clone(badDirectoryOffset)
+	invalidDirectoryOffset[len(invalidDirectoryOffset)-6]++
+	fakeLocator := zipFakeLocator(zipOne)
+	badZip64Locator := bytes.Clone(fakeLocator)
+	binary.LittleEndian.PutUint32(badZip64Locator[len(badZip64Locator)-6:], 0xffffffff)
 	// kept is charged first. fills uses the rest of the budget exactly.
 	// over is one byte past that, so the walk aborts on the second member.
 	kept := []byte("alpha\n")
@@ -130,9 +148,15 @@ func containerVectors(t *testing.T) []containerVector {
 	}
 	inputs := []input{
 		{"zip_one_text_member", zipOne, def},
+		{"zip_bad_data_descriptor", badDescriptorZIP, def},
 		{"zip_several_members", zipMany, def},
 		{"gzip", gz, def},
-		{"zlib", zlibBytes(t, text), def},
+		{"gzip_multistream", bytes.Join([][]byte{gz, gzipBytes(t, []byte("second stream\n"))}, nil), def},
+		{"gzip_truncated_trailer", gz[:len(gz)-1], def},
+		{"gzip_trailing_garbage", append(bytes.Clone(gz), 'x'), def},
+		{"zlib", zl, def},
+		{"zlib_truncated_trailer", zl[:len(zl)-1], def},
+		{"zlib_trailing_garbage", append(bytes.Clone(zl), 'x'), def},
 		{"tar", tarBytes(t, containerMember{"note.txt", text}), def},
 		{"tar_dir_then_file", tarBytes(t,
 			containerMember{"dir/", nil},
@@ -146,32 +170,103 @@ func containerVectors(t *testing.T) []containerVector {
 		{"zip_binary_member", zipBinary, def},
 		{"empty_input", nil, def},
 		{"truncated_zip", zipMany[:len(zipMany)/2], def},
+		{"encrypted_zip_member", encryptedZIP, def},
+		{"zip_duplicate_names", zipBytes(t,
+			containerMember{"same.txt", []byte("first\n")},
+			containerMember{"same.txt", []byte("second\n")},
+		), def},
 		{"not_a_container", []byte("just plain text"), def},
 		{"disabled", zipOne, limits(func(l *ContainerLimits) { l.Enabled = false })},
 		{"cap_max_parts", zipMany, limits(func(l *ContainerLimits) { l.MaxParts = 2 })},
 		{"cap_max_bytes", zipOne, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = 16 })},
 		{"cap_max_bytes_later_exact", zipByteExact, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = byteBudget })},
 		{"cap_max_bytes_later_over", zipByteOver, limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = byteBudget })},
+		{"cap_tar_exactly_one_byte_over", tarBytes(t, containerMember{"short.txt", fills})[:512+len(fills)],
+			limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = len(fills) - 1 })},
 		{"cap_max_depth", gzipBytes(t, gzipBytes(t, gzipBytes(t, text))), limits(func(l *ContainerLimits) { l.MaxDescentDepth = 1 })},
 	}
 
+	tarPair := tarBytes(t, containerMember{"first", []byte("first\n")}, containerMember{"next", []byte("next\n")})
+	inputs = append(inputs,
+		// A nonzero block after an end marker is corrupt, even after a text member.
+		input{"tar_zero_then_entry", bytes.Join([][]byte{tarPair[:1024], make([]byte, 512), tarPair[1024:]}, nil), def},
+		// A partial block after an end marker is also corrupt.
+		input{"tar_zero_then_partial", append(bytes.Clone(tarPair[:2560]), 'x'), def},
+		// PAX path restores a legacy regular file and PAX size controls alignment.
+		input{"tar_pax_path_and_size", tarPAXOverrides(t), def},
+		// GNU long names replace the short path before legacy directory detection.
+		input{"tar_gnu_long_name", tarGNULongName(t), def},
+		// PAX 1.0 sparse maps are consumed and holes count toward the logical size.
+		input{"tar_pax_sparse_1_0", tarPAXSparse(t), def},
+		// A high-bit name byte distinguishes the accepted signed checksum.
+		input{"tar_signed_checksum", tarSignedChecksum(t), def},
+		// A short trailing central-directory extra record is ignored.
+		input{"zip_truncated_extra", zipCentralExtra(zipOne, []byte{0xfe, 0xca, 0x01}), def},
+		// The extra record declares two body bytes but only contains one.
+		input{"zip_overrunning_extra", zipCentralExtra(zipOne, []byte{0xfe, 0xca, 2, 0, 1}), def},
+		// A zero CRC with no data descriptor leaves CRC validation disabled.
+		input{"zip_omitted_crc", zipStored(t, []byte("text without a CRC\n"), 0), def},
+		// Trailing bytes after the declared ZIP comment are ignored.
+		input{"zip_trailing_after_comment", zipTrailing(zipOne), def},
+		input{"zip_bad_directory_offset", badDirectoryOffset, def},
+		input{"zip_invalid_directory_offset", invalidDirectoryOffset, def},
+		input{"zip_fake_zip64_locator", fakeLocator, def},
+		input{"zip_bogus_required_zip64_locator", badZip64Locator, def},
+		// A non-ZIP prefix prevents container detection.
+		input{"zip_prepended_plain_data", append([]byte("stub"), zipOne...), def},
+		// A local-header signature in the prefix preserves detection and shifts the base offset.
+		input{"zip_prepended_zip_data", append(bytes.Clone(zipOne[:30]), zipOne...), def},
+		// An end record inside stored member data is ignored in favor of the later real record.
+		input{"zip_end_record_inside_member", zipWithFakeEnd(t), def},
+		// A later candidate with an overrunning comment makes Go reject the archive.
+		input{"zip_end_record_truncated_comment", append(bytes.Clone(zipOne), fakeZipEnd()...), def},
+		// A ZIP64 locator and size extra can describe an ordinary small member.
+		input{"zip64", zip64Bytes(zipOne), def},
+		input{"tar_pax_sparse_huge_realsize",
+			tarPAXSparse10(t, []byte("1\n0\n0\n"), "9223372036854775807"),
+			limits(func(l *ContainerLimits) { l.MaxDecompressedBytes = 128 })},
+		// Compress the repeated map bytes to keep the shared vector small.
+		input{"tar_pax_sparse_map_cap", gzipBytes(t, tarPAXSparse10(t,
+			append(append([]byte("1\n"), bytes.Repeat([]byte("0"), 1<<20)...), '\n', '0', '\n'),
+			"0")), def},
+		input{"tar_pax_sparse_0_1", tarPAXSparseMember(t,
+			"22 GNU.sparse.major=0\n22 GNU.sparse.minor=1\n26 GNU.sparse.numblocks=1\n"+
+				"22 GNU.sparse.size=14\n23 GNU.sparse.map=1,12\n",
+			[]byte("sparse text\n")), def},
+	)
+
+	// Both runners append the recorded number of zero bytes to keep the fixture small.
+	trailingZeros := map[string]int{
+		"zip_trailing_just_past_64k": 65*1024 - 30,
+		"zip_trailing_past_search":   65*1024 + 1,
+	}
+	inputs = append(inputs,
+		input{"zip_trailing_just_past_64k", zipOne, def},
+		input{"zip_trailing_past_search", zipOne, def},
+	)
 	got := make([]containerVector, 0, len(inputs))
 	for _, in := range inputs {
-		res := InspectContainer(in.raw, in.lim)
+		n := trailingZeros[in.name]
+		raw := in.raw
+		if n > 0 {
+			raw = append(bytes.Clone(raw), make([]byte, n)...)
+		}
+		res := InspectContainer(raw, in.lim)
 		parts := make([]string, 0, len(res.Parts))
 		for _, p := range res.Parts {
 			parts = append(parts, hex.EncodeToString([]byte(p)))
 		}
 		got = append(got, containerVector{
-			Name:     in.name,
-			InputHex: hex.EncodeToString(in.raw),
+			Name:          in.name,
+			InputHex:      hex.EncodeToString(in.raw),
+			TrailingZeros: n,
 			Limits: containerVectorLimits{
 				Enabled:              in.lim.Enabled,
 				MaxDecompressedBytes: in.lim.MaxDecompressedBytes,
 				MaxDescentDepth:      in.lim.MaxDescentDepth,
 				MaxParts:             in.lim.MaxParts,
 			},
-			LooksLikeContainer: LooksLikeContainer(in.raw),
+			LooksLikeContainer: LooksLikeContainer(raw),
 			PartsHex:           parts,
 			Abort:              string(res.Abort),
 			Bytes:              res.Bytes,
@@ -198,6 +293,116 @@ func zipBytes(t *testing.T, members ...containerMember) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func zip64Bytes(raw []byte) []byte {
+	classic := bytes.Clone(raw[len(raw)-22:])
+	central := int(binary.LittleEndian.Uint32(classic[16:]))
+	out := bytes.Clone(raw[:len(raw)-22])
+
+	// Replace the central-directory sizes with ZIP64 sentinels and append
+	// one ZIP64 extra record containing the original sizes.
+	extra := make([]byte, 20)
+	binary.LittleEndian.PutUint16(extra, 1)
+	binary.LittleEndian.PutUint16(extra[2:], 16)
+	binary.LittleEndian.PutUint64(extra[4:], uint64(binary.LittleEndian.Uint32(out[central+24:])))
+	binary.LittleEndian.PutUint64(extra[12:], uint64(binary.LittleEndian.Uint32(out[central+20:])))
+	binary.LittleEndian.PutUint32(out[central+20:], 0xffffffff)
+	binary.LittleEndian.PutUint32(out[central+24:], 0xffffffff)
+	extraSize := binary.LittleEndian.Uint16(out[central+30:])
+	binary.LittleEndian.PutUint16(out[central+30:], extraSize+uint16(len(extra)))
+	out = append(out, extra...)
+
+	end := make([]byte, 56)
+	copy(end, "PK\x06\x06")
+	binary.LittleEndian.PutUint64(end[4:], 44)
+	binary.LittleEndian.PutUint16(end[12:], 45)
+	binary.LittleEndian.PutUint16(end[14:], 45)
+	binary.LittleEndian.PutUint64(end[24:], 1)
+	binary.LittleEndian.PutUint64(end[32:], 1)
+	binary.LittleEndian.PutUint64(end[40:], uint64(len(out)-central))
+	binary.LittleEndian.PutUint64(end[48:], uint64(central))
+
+	locator := make([]byte, 20)
+	copy(locator, "PK\x06\x07")
+	binary.LittleEndian.PutUint64(locator[8:], uint64(len(out)))
+	binary.LittleEndian.PutUint32(locator[16:], 1)
+	binary.LittleEndian.PutUint16(classic[8:], 0xffff)
+	binary.LittleEndian.PutUint16(classic[10:], 0xffff)
+	binary.LittleEndian.PutUint32(classic[12:], 0xffffffff)
+	binary.LittleEndian.PutUint32(classic[16:], 0xffffffff)
+	return bytes.Join([][]byte{out, end, locator, classic}, nil)
+}
+
+func fakeZipEnd() []byte {
+	record := make([]byte, 22)
+	copy(record, "PK\x05\x06")
+	binary.LittleEndian.PutUint16(record[20:], 0xffff)
+	return record
+}
+
+func zipWithFakeEnd(t *testing.T) []byte {
+	payload := append(fakeZipEnd(), bytes.Repeat([]byte("text "), 32)...)
+	return zipStored(t, payload, crc32.ChecksumIEEE(payload))
+}
+
+func zipTrailing(raw []byte) []byte {
+	out := bytes.Clone(raw)
+	binary.LittleEndian.PutUint16(out[len(out)-2:], 3)
+	return append(out, "ziptrailing bytes"...)
+}
+
+func zipStored(t *testing.T, data []byte, crc uint32) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(&zip.FileHeader{
+		Name: "file", Method: zip.Store, CRC32: crc,
+		CompressedSize64: uint64(len(data)), UncompressedSize64: uint64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func zipShortDirectorySize(raw []byte) []byte {
+	end := raw[len(raw)-22:]
+	start := int(binary.LittleEndian.Uint32(end[16:]))
+	junk := []byte("junk")
+	out := bytes.Join([][]byte{raw[:start], junk, raw[start:]}, nil)
+	end = out[len(out)-22:]
+	binary.LittleEndian.PutUint32(end[16:], uint32(start+len(junk)))
+	binary.LittleEndian.PutUint32(end[12:], binary.LittleEndian.Uint32(end[12:])-uint32(len(junk)))
+	return out
+}
+
+func zipFakeLocator(raw []byte) []byte {
+	end := len(raw) - 22
+	start := int(binary.LittleEndian.Uint32(raw[end+16:]))
+	locator := make([]byte, 20)
+	copy(locator, "PK\x06\x07")
+	binary.LittleEndian.PutUint32(locator[16:], 1)
+	out := bytes.Join([][]byte{raw[:end], locator, raw[end:]}, nil)
+	binary.LittleEndian.PutUint16(out[start+32:], uint16(len(locator)))
+	binary.LittleEndian.PutUint32(out[end+len(locator)+12:], uint32(end+len(locator)-start))
+	return out
+}
+
+func zipCentralExtra(raw, extra []byte) []byte {
+	const central = "PK\x01\x02"
+	start := bytes.Index(raw, []byte(central))
+	end := len(raw) - 22
+	out := bytes.Join([][]byte{raw[:end], extra, raw[end:]}, nil)
+	binary.LittleEndian.PutUint16(out[start+30:], binary.LittleEndian.Uint16(raw[start+30:])+uint16(len(extra)))
+	binary.LittleEndian.PutUint32(out[end+len(extra)+12:], uint32(end+len(extra)-start))
+	return out
 }
 
 func gzipBytes(t *testing.T, data []byte) []byte {
@@ -264,6 +469,86 @@ func tarBytes(t *testing.T, members ...containerMember) []byte {
 	return buf.Bytes()
 }
 
+func tarPAXOverrides(t *testing.T) []byte {
+	data := bytes.Repeat([]byte("a"), 513)
+	raw := tarBytes(t,
+		containerMember{"pax", []byte("13 path=file\n12 size=513\n")},
+		containerMember{"short", data},
+		containerMember{"next", []byte("next\n")},
+	)
+	raw[156] = tar.TypeXHeader
+	tarChecksum(raw[:512], false)
+	hdr := raw[1024:1536]
+	copy(hdr, "short/")
+	hdr[156] = tar.TypeRegA
+	copy(hdr[124:136], "00000000001\x00")
+	tarChecksum(hdr, false)
+	return raw[:len(raw)-1024]
+}
+
+func tarGNULongName(t *testing.T) []byte {
+	raw := tarBytes(t,
+		containerMember{"long", append(bytes.Repeat([]byte("a"), 101), 0)},
+		containerMember{"short", []byte("long name content\n")},
+		containerMember{"next", []byte("next\n")},
+	)
+	raw[156] = tar.TypeGNULongName
+	tarChecksum(raw[:512], false)
+	hdr := raw[1024:1536]
+	copy(hdr, "short/")
+	hdr[156] = tar.TypeRegA
+	tarChecksum(hdr, false)
+	return raw[:len(raw)-1024]
+}
+
+func tarPAXSparse(t *testing.T) []byte {
+	data := make([]byte, 512)
+	copy(data, "1\n1\n12\n")
+	data = append(data, "sparse text\n"...)
+	return tarPAXSparseMember(t, "22 GNU.sparse.major=1\n22 GNU.sparse.minor=0\n26 GNU.sparse.realsize=14\n", data)
+}
+
+func tarPAXSparse10(t *testing.T, sparseMap []byte, realSize string) []byte {
+	t.Helper()
+	record := "GNU.sparse.realsize=" + realSize + "\n"
+	pax := fmt.Sprintf("22 GNU.sparse.major=1\n22 GNU.sparse.minor=0\n%d %s", len(record)+3, record)
+	data := make([]byte, (len(sparseMap)+511)/512*512)
+	copy(data, sparseMap)
+	return tarPAXSparseMember(t, pax, data)
+}
+
+func tarPAXSparseMember(t *testing.T, pax string, data []byte) []byte {
+	t.Helper()
+	raw := tarBytes(t,
+		containerMember{"pax", []byte(pax)},
+		containerMember{"sparse", data},
+		containerMember{"next", []byte("next\n")},
+	)
+	raw[156] = tar.TypeXHeader
+	tarChecksum(raw[:512], false)
+	return raw[:len(raw)-1024]
+}
+
+func tarSignedChecksum(t *testing.T) []byte {
+	raw := tarBytes(t, containerMember{"note", []byte("signed header\n")})
+	raw[0] = 0xff
+	tarChecksum(raw[:512], true)
+	return raw[:1024]
+}
+
+func tarChecksum(header []byte, signed bool) {
+	copy(header[148:156], "        ")
+	sum := 0
+	for _, b := range header {
+		if signed {
+			sum += int(int8(b))
+		} else {
+			sum += int(b)
+		}
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", sum))
+}
+
 func diffContainerVector(t *testing.T, got, want containerVector, regenerate string) {
 	t.Helper()
 	name := got.Name
@@ -272,6 +557,9 @@ func diffContainerVector(t *testing.T, got, want containerVector, regenerate str
 	}
 	checkField(t, name, "name", got.Name, want.Name, regenerate)
 	checkField(t, name, "input_hex", got.InputHex, want.InputHex, regenerate)
+	if got.TrailingZeros != want.TrailingZeros {
+		t.Fatalf("case %s: trailing_zeros: got %d, want %d; regenerate with %s", name, got.TrailingZeros, want.TrailingZeros, regenerate)
+	}
 	if got.Limits != want.Limits {
 		t.Fatalf("case %s: limits: got %+v, want %+v; regenerate with %s", name, got.Limits, want.Limits, regenerate)
 	}
