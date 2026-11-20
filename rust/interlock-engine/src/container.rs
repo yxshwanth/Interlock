@@ -11,6 +11,7 @@ use flate2::{
     Decompress, FlushDecompress, Status,
 };
 use std::{
+    cell::Cell,
     io::{self, Cursor, Read, Seek, SeekFrom},
     time::{Duration, Instant},
 };
@@ -276,15 +277,20 @@ impl Walker {
         let Some((record, end)) = zip_directory_end(raw) else {
             return self.abort(Abort::Corrupt);
         };
+        let reading_directory = Cell::new(true);
         let mut reader = ZipReader {
             cursor: Cursor::new(&raw[..end]),
             record,
             footer: raw[record..record + 22].try_into().unwrap(),
+            reading_directory: &reading_directory,
+            ignored_locator: None,
         };
+        reader.ignore_classic_locator();
         reader.normalize_directory_size();
         let Ok(mut archive) = ZipArchive::new(reader) else {
             return self.abort(Abort::Corrupt);
         };
+        reading_directory.set(false);
         for index in 0..archive.len() {
             self.check_time()?;
             // Read central directory flags and mode before opening the decoder.
@@ -562,6 +568,8 @@ struct ZipReader<'a> {
     cursor: Cursor<&'a [u8]>,
     record: usize,
     footer: [u8; 22],
+    reading_directory: &'a Cell<bool>,
+    ignored_locator: Option<usize>,
 }
 
 impl ZipReader<'_> {
@@ -569,6 +577,15 @@ impl ZipReader<'_> {
         self.footer[10..12] == [0xff; 2]
             || self.footer[12..16] == [0xff, 0xff, 0, 0]
             || self.footer[16..20] == [0xff; 4]
+    }
+
+    fn ignore_classic_locator(&mut self) {
+        if !self.uses_zip64() {
+            self.ignored_locator = self
+                .record
+                .checked_sub(20)
+                .filter(|&offset| self.cursor.get_ref()[offset..].starts_with(b"PK\x06\x07"));
+        }
     }
 
     fn normalize_directory_size(&mut self) {
@@ -598,13 +615,18 @@ impl Read for ZipReader<'_> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         let start = self.cursor.position();
         let n = self.cursor.read(output)?;
-        if n > 0 {
+        if n > 0 && self.reading_directory.get() {
             let start = start as usize;
             let from = start.max(self.record);
             let to = (start + n).min(self.record + self.footer.len());
             if from < to {
                 output[from - start..to - start]
                     .copy_from_slice(&self.footer[from - self.record..to - self.record]);
+            }
+            if let Some(offset) = self.ignored_locator {
+                if (start..start + n).contains(&offset) {
+                    output[offset - start] = 0;
+                }
             }
         }
         Ok(n)
