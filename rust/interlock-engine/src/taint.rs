@@ -51,15 +51,8 @@ pub fn extract_tainted_values(result_text: &str, source: &str, seq: u64) -> Vec<
         for captures in pattern.captures_iter(result_text) {
             let (_, [value]) = captures.extract();
             if seen.insert(value) {
-                let mut tainted = TaintedValue {
-                    value: value.as_bytes().to_vec(),
-                    variants: canonical_encodings(value.as_bytes()),
-                    chunks: Vec::new(),
-                    hash: format!("{:x}", Sha256::digest(value.as_bytes())),
-                    preview: mask_value(value),
-                    source: source.to_owned(),
-                    seq,
-                };
+                let mut tainted = tainted_value(value.as_bytes(), source.to_owned(), seq);
+                tainted.variants = canonical_encodings(&tainted.value);
                 tainted.attach_chunks(0, 0);
                 values.push(tainted);
             }
@@ -69,8 +62,19 @@ pub fn extract_tainted_values(result_text: &str, source: &str, seq: u64) -> Vec<
     values
 }
 
-fn mask_value(value: &str) -> String {
-    let bytes = value.as_bytes();
+pub(crate) fn tainted_value(value: &[u8], source: String, seq: u64) -> TaintedValue {
+    TaintedValue {
+        value: value.to_vec(),
+        hash: format!("{:x}", Sha256::digest(value)),
+        preview: mask_value(value),
+        source,
+        seq,
+        variants: Vec::new(),
+        chunks: Vec::new(),
+    }
+}
+
+fn mask_value(bytes: &[u8]) -> String {
     let (prefix, suffix) = match bytes.len() {
         0..=4 => return "****".to_owned(),
         5..=10 => (2, 2),

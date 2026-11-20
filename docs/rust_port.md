@@ -14,7 +14,7 @@ Status is what is on `main` today.
 | Decode helpers | `decode.go` | none | none | not started |
 | Container inspection | `container.go` | none | none | not started |
 | Evidence hash chain | `evidence_chain.go` | none | none | not started |
-| Tool tags and path taint | `tagger.go`, `path_taint.go` | none | none | not started |
+| Tool tags and path taint | `tagger.go`, `path_taint.go` | `src/tagger.rs`, `src/path_taint.rs` | `tagger_vectors.json`, `path_taint_vectors.json` | ported |
 | JSON leaf joining and the overlap composition | `decode.go`, `overlap.go` | none | none | not started |
 | Session state and leg decay | `session_store.go`, `engine.go` | none | `legs.rs` | core ported |
 | Verdict and action classifier | `engine.go` | none | `verdict.rs`, `bind.rs` | done |
