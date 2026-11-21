@@ -39,6 +39,7 @@ internal/engine/fragment_test.go	L1
 internal/engine/observer_fanout_test.go	L1
 internal/engine/overlap_test.go	L1
 internal/engine/overlap_vectors_test.go	L4
+internal/engine/overlap_args_vectors_test.go	L4
 internal/engine/path_taint_test.go	L1
 internal/engine/path_taint_vectors_test.go	L4
 internal/engine/session_store_test.go	L1
