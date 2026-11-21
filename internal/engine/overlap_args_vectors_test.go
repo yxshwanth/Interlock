@@ -171,8 +171,11 @@ func overlapArgsCases(t *testing.T) []overlapArgsInput {
 	orderArgs := `{"z":"` + zipOfB64 + `","m":["` + idx0 + `","` + idx1 + `"]}`
 	// a aborts, b holds the secret. Same shape for both entry points.
 	abortThenHit := `{"a":"` + zipOver + `","b":"` + zipWrapped + `"}`
-	// a aborts max_parts, b aborts max_decompressed_bytes. The later abort is kept.
-	lastAbort := `{"a":"` + zipParts + `","b":"` + zipOver + `"}`
+	// a aborts max_parts, b aborts max_decompressed_bytes, c completes within
+	// the limits with no hit. The last non-empty abort (b's) is returned, so
+	// keeping the first abort or the last candidate's empty result both fail.
+	zipClean := base64.StdEncoding.EncodeToString(zipBytes(t, containerMember{"ok.txt", []byte("x")}))
+	lastAbort := `{"a":"` + zipParts + `","b":"` + zipOver + `","c":"` + zipClean + `"}`
 
 	return []overlapArgsInput{
 		mk("args_string_leaf", mustOverlapArgsJSON(t, map[string]string{"body": secret}), def),
